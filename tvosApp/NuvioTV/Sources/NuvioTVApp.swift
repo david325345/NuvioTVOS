@@ -271,10 +271,10 @@ private enum DetailsReturnDestination {
 }
 
 enum TVTab: Hashable, Identifiable, CaseIterable {
-    case profile, home, party, search, library, settings
+    case profile, home, party, search, library, calendar, settings
     case collection(CollectionHomeID)
 
-    static var allCases: [Self] { [.profile, .home, .party, .search, .library, .settings] }
+    static var allCases: [Self] { [.profile, .home, .party, .search, .library, .calendar, .settings] }
     var id: String { rawValue }
     var rawValue: String {
         switch self {
@@ -282,6 +282,7 @@ enum TVTab: Hashable, Identifiable, CaseIterable {
         case .home: return "Home"
         case .search: return "Search"
         case .library: return "Library"
+        case .calendar: return "Calendar"
         case .settings: return "Settings"
         case .party: return "Watch Party"
         case .collection(let id): return "Collection:\(id.key)"
@@ -293,6 +294,7 @@ enum TVTab: Hashable, Identifiable, CaseIterable {
         case .home: return L10n.string("nav_home", fallback: "Home")
         case .search: return L10n.string("nav_search", fallback: "Search")
         case .library: return L10n.string("nav_library", fallback: "Library")
+        case .calendar: return L10n.string("nav_calendar", fallback: "Calendar")
         case .settings: return L10n.string("nav_settings", fallback: "Settings")
         case .party: return "Watch Party"
         case .collection: return L10n.string("tmdb_collections_title", fallback: "Collections")
@@ -304,6 +306,7 @@ enum TVTab: Hashable, Identifiable, CaseIterable {
         case .home: return "house"
         case .search: return "magnifyingglass"
         case .library: return "rectangle.stack"
+        case .calendar: return "calendar"
         case .settings: return "gearshape"
         case .party: return "person.2.fill"
         case .collection: return "rectangle.stack.fill"
@@ -370,6 +373,8 @@ struct ContentView: View {
     @State private var detailsCollectionContext: CollectionPlaybackContext?
     @State private var reopenStreamPickerOnDetails = false
     @State private var reopenStreamPickerEpisode: NuvioVideo?
+    /// Episode to select when Details opens from the calendar.
+    @State private var detailsFocusEpisode: DetailsEpisodeFocus?
     /// Title whose liquid-glass quick-actions menu is showing (long-press on a
     /// card). Presented as an overlay over the tab view, like Details/Player.
     @State private var cardMenuMeta: NuvioMeta?
@@ -889,13 +894,15 @@ struct ContentView: View {
         type: String,
         returnDestination: DetailsReturnDestination = .main,
         startPlayback: Bool = false,
-        collectionContext: CollectionPlaybackContext? = nil
+        collectionContext: CollectionPlaybackContext? = nil,
+        focusEpisode: DetailsEpisodeFocus? = nil
     ) {
         TVHomeDebugTrace.log(
             "details.open.root id=\(id) type=\(type) returnDest=\(returnDestination)"
         )
         detailsBackStack.removeAll()
         detailsCollectionContext = collectionContext
+        detailsFocusEpisode = focusEpisode
         detailsReturnDestination = returnDestination
         if startPlayback {
             nextDetailsPlaybackRequestID &+= 1
@@ -1558,6 +1565,8 @@ struct ContentView: View {
         isActionPlaybackSession: Bool = false
     ) {
         playbackIsActionPlaybackSession = isActionPlaybackSession
+        // The calendar episode focus applies to the first open only.
+        detailsFocusEpisode = nil
         let isTrailer = subtitle == PlaybackMarkers.trailerSubtitle
         let isStandalonePlaybackSession = isTrailer || isActionPlaybackSession
         if !isStandalonePlaybackSession && (creatingParty || choosingPartySource) {
@@ -2246,8 +2255,25 @@ struct ContentView: View {
                     resumeFrom: nil,
                     origin: .cloudLibrary
                 )
+            },
+            onOpenCalendarEntry: { entry in
+                openCalendarEntry(entry)
             }
         )
+    }
+
+    /// Opens a calendar entry: a movie's details, or a series' details with
+    /// the entry's episode selected.
+    private func openCalendarEntry(_ entry: CalendarEntry) {
+        let type = entry.itemType.isEmpty ? (entry.kind == .series ? "series" : "movie") : entry.itemType
+        let focus = entry.seasonNumber.flatMap { season in
+            entry.episodeNumber.map {
+                DetailsEpisodeFocus(metaID: entry.itemId, season: season, episode: $0, airDate: entry.date)
+            }
+        }
+        withAnimation(.easeInOut(duration: 0.28)) {
+            openDetailsRoot(id: entry.itemId, type: type, focusEpisode: focus)
+        }
     }
 
     private func detailsScreen(contentId: String, contentType: String) -> some View {
@@ -2263,6 +2289,7 @@ struct ContentView: View {
             },
             initiallyPresentStreamPicker: reopenStreamPickerOnDetails,
             initialStreamPickerEpisode: reopenStreamPickerEpisode,
+            initialFocusEpisode: detailsFocusEpisode.flatMap { $0.metaID == contentId ? $0 : nil },
             onInitialStreamPickerPresented: {
                 reopenStreamPickerOnDetails = false
                 reopenStreamPickerEpisode = nil
@@ -3389,6 +3416,7 @@ private struct TVMainTabView: View {
     let onLongPressContinueWatching: (ContinueWatchingItem) -> Void
     let onOpenCloudLibrary: () -> Void
     let onPlayCloudFile: (URL, NuvioMeta) -> Void
+    var onOpenCalendarEntry: ((CalendarEntry) -> Void)? = nil
     @AppStorage(SettingsKey.amoled) private var amoled = false
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
     @AppStorage(SettingsKey.discoverLocation) private var discoverLocation = "Search"
@@ -3544,6 +3572,14 @@ private struct TVMainTabView: View {
             .id(activeProfile?.id ?? "none")
     }
 
+    private var calendarTabContent: some View {
+        CalendarView(
+            onOpenEntry: { entry in onOpenCalendarEntry?(entry) },
+            onOpenSettings: { selectedTab = .settings }
+        )
+            .id(activeProfile?.id ?? "none")
+    }
+
     private var settingsTabContent: some View {
         SettingsView(
             activeProfile: displayedProfile,
@@ -3615,6 +3651,9 @@ private struct TVMainTabView: View {
             libraryTabContent
                 .tabItem { Label(TVTab.library.title, systemImage: TVTab.library.symbol) }
                 .tag(TVTab.library)
+            calendarTabContent
+                .tabItem { Label(TVTab.calendar.title, systemImage: TVTab.calendar.symbol) }
+                .tag(TVTab.calendar)
             settingsTabContent.tabItem { settingsTabLabel }.tag(TVTab.settings)
         }
     }
@@ -3649,6 +3688,9 @@ private struct TVMainTabView: View {
             }
             Tab(TVTab.library.title, systemImage: TVTab.library.symbol, value: TVTab.library) {
                 libraryTabContent
+            }
+            Tab(TVTab.calendar.title, systemImage: TVTab.calendar.symbol, value: TVTab.calendar) {
+                calendarTabContent
             }
             Tab(value: TVTab.settings) { settingsTabContent } label: { settingsTabLabel }
             if !directCollectionDestinations.isEmpty {
