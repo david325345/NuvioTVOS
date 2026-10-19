@@ -1,0 +1,63 @@
+name: Kalendář test (IPA)
+
+# Builds only the standalone calendar test app in kalendar-test/,
+# not NuvioTV. Runs on every push to the kalendar-test branch.
+on:
+  push:
+    branches: [kalendar-test]
+    paths:
+      - "kalendar-test/**"
+      - ".github/workflows/kalendar-test.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Only the test app; skips Vendor/, MPVKit and the rest of NuvioTV.
+          sparse-checkout: |
+            kalendar-test
+          sparse-checkout-cone-mode: true
+
+      - name: Xcode version
+        run: xcodebuild -version
+
+      - name: Unit tests (CalendarCore)
+        run: swift test --package-path kalendar-test/CalendarCore
+
+      - name: Install Tuist
+        run: brew install tuist
+
+      - name: Generate Xcode project
+        run: tuist generate --path kalendar-test/App --no-open
+
+      - name: Archive (unsigned)
+        run: |
+          xcodebuild archive \
+            -workspace kalendar-test/App/KalendarTest.xcworkspace \
+            -scheme KalendarTest \
+            -configuration Release \
+            -destination 'generic/platform=tvOS' \
+            -archivePath "$RUNNER_TEMP/KalendarTest.xcarchive" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            -quiet
+
+      - name: Package IPA
+        run: |
+          APP="$RUNNER_TEMP/KalendarTest.xcarchive/Products/Applications/KalendarTest.app"
+          test -d "$APP" || { echo "KalendarTest.app not found"; exit 1; }
+          mkdir -p out/Payload
+          cp -R "$APP" out/Payload/
+          (cd out && zip -qry KalendarTest-unsigned.ipa Payload)
+          ls -lh out/*.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: KalendarTest-unsigned-ipa
+          path: out/KalendarTest-unsigned.ipa
+          retention-days: 7
