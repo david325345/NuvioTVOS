@@ -67,4 +67,5 @@ jobs:
           bash scripts/test-tvos.sh \
             -only-testing:NuvioTVTests/CalendarDayTests \
             -only-testing:NuvioTVTests/CalendarBuilderTests \
-            -only-testing:NuvioTVTests/CalendarServiceTests
+            -only-testing:NuvioTVTests/CalendarServiceTests \
+            -only-testing:NuvioTVTests/CalendarSuggestionTests
