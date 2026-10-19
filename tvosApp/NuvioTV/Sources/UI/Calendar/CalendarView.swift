@@ -103,6 +103,11 @@ struct CalendarView: View {
 
     private var today: CalendarDay { CalendarDay(date: Date()) }
 
+    private var isFocusInPanel: Bool {
+        if case .entry = focus { return true }
+        return false
+    }
+
     private var libraryItems: [String: CalendarItem] {
         if case .loaded(let result, _) = model.state { return result.libraryItems }
         return [:]
@@ -185,6 +190,10 @@ struct CalendarView: View {
             .ignoresSafeArea(.container, edges: [.leading, .trailing])
             .defaultFocus($focus, .day(today))
             .onAppear(perform: focusTodayOnFirstOpen)
+            // Back from the episode list returns to the selected day instead
+            // of jumping to the sidebar (which slides the whole grid over).
+            // Elsewhere nil keeps the system's own Back.
+            .onExitCommand(perform: isFocusInPanel ? { focus = .day(selectedDay) } : nil)
         }
     }
 
