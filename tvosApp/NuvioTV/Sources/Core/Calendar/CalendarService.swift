@@ -18,12 +18,16 @@ struct CalendarService: Sendable {
     let resolveTmdbId: IdResolver
     var maxConcurrent: Int
     var region: String
+    /// Broadcast times for anime (AniList); nil leaves TMDB dates as they are.
+    var animeTimes: CalendarAnimeTimes?
 
-    init(client: CalendarTmdb.Client, maxConcurrent: Int = 6, region: String, resolveTmdbId: @escaping IdResolver) {
+    init(client: CalendarTmdb.Client, maxConcurrent: Int = 6, region: String,
+         animeTimes: CalendarAnimeTimes? = nil, resolveTmdbId: @escaping IdResolver) {
         self.client = client
         self.resolveTmdbId = resolveTmdbId
         self.maxConcurrent = max(1, maxConcurrent)
         self.region = region
+        self.animeTimes = animeTimes
     }
 
     enum Outcome: Sendable {
@@ -76,6 +80,14 @@ struct CalendarService: Sendable {
             case .authFailure:
                 throw CalendarLoadError.invalidApiKey
             }
+        }
+
+        if let animeTimes, entries.contains(where: \.isAnime) {
+            var imdbByTmdb: [Int: String] = [:]
+            for (item, tmdbId) in targets where item.kind == .series && item.id.hasPrefix("tt") {
+                imdbByTmdb[tmdbId] = String(item.id.prefix { $0 != ":" })
+            }
+            entries = await animeTimes.apply(to: entries, imdbByTmdb: imdbByTmdb, first: first, last: last)
         }
 
         return CalendarResult(

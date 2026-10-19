@@ -50,7 +50,7 @@ enum CalendarLibrarySource {
             metas.map { ("\(item(for: $0).kind.rawValue):\($0.id)", $0) },
             uniquingKeysWith: { first, _ in first }
         )
-        return CalendarService(client: makeClient(), region: region) { item in
+        return CalendarService(client: makeClient(), region: region, animeTimes: CalendarAnimeTimes()) { item in
             guard let meta = byKey["\(item.kind.rawValue):\(item.id)"] else { return nil }
             return await TmdbDetailsService.resolveTmdbId(for: meta)?.id
         }

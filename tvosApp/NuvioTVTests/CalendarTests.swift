@@ -478,3 +478,127 @@ final class CalendarAnimeTodayTests: XCTestCase {
         XCTAssertEqual(items[1].kind, .movie)
     }
 }
+
+// MARK: - Anime broadcast times in the calendar
+
+private final class CalendarAnimeTimesMockHTTP: CalendarAnimeHTTPClient, @unchecked Sendable {
+    /// arm path + id ("/api/v2/themoviedb:5") → JSON.
+    let arm: [String: String]
+    let anilist: String
+    private let lock = NSLock()
+    private var posted = 0
+
+    init(arm: [String: String], anilist: String) {
+        self.arm = arm
+        self.anilist = anilist
+    }
+
+    var postCount: Int { lock.withLock { posted } }
+
+    func post(_ url: URL, json: Data) async throws -> (Data, Int) {
+        lock.withLock { posted += 1 }
+        return (Data(anilist.utf8), 200)
+    }
+
+    func getWithoutRedirect(_ url: URL, headers: [String: String]) async throws -> (Data, Int, String?) {
+        let id = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "id" }?.value ?? ""
+        if let body = arm["\(url.path):\(id)"] { return (Data(body.utf8), 200, nil) }
+        return (Data("[]".utf8), 200, nil)
+    }
+}
+
+final class CalendarAnimeTimesTests: XCTestCase {
+    private let prague = TimeZone(identifier: "Europe/Prague")!
+
+    private func entry(_ show: Int, ep: Int, on day: CalendarDay, anime: Bool = true) -> CalendarEntry {
+        var e = CalendarEntry(itemId: "tt\(show)", kind: .series, tmdbId: show, title: "S\(show)", date: day,
+                              releaseKind: .episode, seasonNumber: 1, episodeNumber: ep)
+        e.isAnime = anime
+        return e
+    }
+
+    /// Unix time of a Prague wall-clock moment.
+    private func at(_ day: CalendarDay, _ hour: Int, _ minute: Int = 0) -> Date {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = prague
+        return calendar.date(from: DateComponents(year: day.year, month: day.month, day: day.day, hour: hour, minute: minute))!
+    }
+
+    func testDetectsJapaneseAnime() throws {
+        let json = #"{"id":1,"name":"A","genres":[{"id":16,"name":"Animation"}],"origin_country":["JP"]}"#
+        let details = try JSONDecoder().decode(CalendarTmdb.TvDetails.self, from: Data(json.utf8))
+        XCTAssertTrue(details.isJapaneseAnime)
+        let cn = #"{"id":2,"name":"B","genres":[{"id":16}],"origin_country":["CN"]}"#
+        XCTAssertFalse(try JSONDecoder().decode(CalendarTmdb.TvDetails.self, from: Data(cn.utf8)).isJapaneseAnime)
+    }
+
+    func testParseArmIds() {
+        let ids = CalendarAnimeTimes.parseArmIds(Data(#"[{"anilist":5,"imdb":"tt1"},{"anilist":7},{"anilist":5}]"#.utf8))
+        XCTAssertEqual(ids, [5, 7])
+        XCTAssertEqual(CalendarAnimeTimes.parseArmIds(Data(#"{"anilist":9}"#.utf8)), [9])
+        XCTAssertEqual(CalendarAnimeTimes.parseArmIds(Data("null".utf8)), [])
+    }
+
+    func testLateNightEpisodeMovesToTheLocalDay() {
+        let tmdbDay = CalendarDay(year: 2026, month: 10, day: 20)
+        let local = tmdbDay.adding(days: -1)
+        let airings: [Int: [CalendarAnimeTimes.Airing]] = [
+            1: [.init(mediaId: 100, episode: 3, at: at(local, 18, 30))],
+        ]
+        let out = CalendarAnimeTimes.match([entry(1, ep: 3, on: tmdbDay)], airings: airings, timeZone: prague)
+        XCTAssertEqual(out[0].date, local)
+        XCTAssertEqual(out[0].airTime, at(local, 18, 30))
+    }
+
+    func testUnmatchedAndNonAnimeKeepTheirDate() {
+        let day = CalendarDay(year: 2026, month: 10, day: 20)
+        let airings: [Int: [CalendarAnimeTimes.Airing]] = [
+            1: [.init(mediaId: 100, episode: 3, at: at(day.adding(days: -5), 18))],
+            2: [.init(mediaId: 200, episode: 1, at: at(day, 10))],
+        ]
+        let out = CalendarAnimeTimes.match(
+            [entry(1, ep: 3, on: day), entry(2, ep: 1, on: day, anime: false)],
+            airings: airings, timeZone: prague
+        )
+        XCTAssertEqual(out.map(\.date), [day, day])
+        XCTAssertNil(out[0].airTime)
+        XCTAssertNil(out[1].airTime)
+    }
+
+    func testDoubleEpisodeDayUsesEachAiringOnce() {
+        let day = CalendarDay(year: 2026, month: 10, day: 20)
+        let airings: [Int: [CalendarAnimeTimes.Airing]] = [
+            1: [
+                .init(mediaId: 100, episode: 2, at: at(day, 17, 30)),
+                .init(mediaId: 100, episode: 1, at: at(day, 17)),
+            ],
+        ]
+        let out = CalendarAnimeTimes.match([entry(1, ep: 1, on: day), entry(1, ep: 2, on: day)],
+                                           airings: airings, timeZone: prague)
+        XCTAssertEqual(out[0].airTime, at(day, 17))
+        XCTAssertEqual(out[1].airTime, at(day, 17, 30))
+    }
+
+    func testApplyLooksUpArmByTmdbThenImdb() async {
+        let day = CalendarDay(year: 2026, month: 10, day: 20)
+        let local = day.adding(days: -1)
+        let airingAt = Int(at(local, 23, 45).timeIntervalSince1970)
+        let http = CalendarAnimeTimesMockHTTP(
+            arm: [
+                "/api/v2/themoviedb:1": #"[{"anilist":100}]"#,
+                "/api/v2/imdb:tt2": #"[{"anilist":200}]"#,
+            ],
+            anilist: #"{"data":{"Page":{"pageInfo":{"hasNextPage":false},"airingSchedules":[{"airingAt":\#(airingAt),"episode":4,"mediaId":200}]}}}"#
+        )
+        let times = CalendarAnimeTimes(http: http, timeZone: prague, cache: .init())
+        let out = await times.apply(
+            to: [entry(1, ep: 1, on: day), entry(2, ep: 4, on: day)],
+            imdbByTmdb: [2: "tt2"],
+            first: CalendarDay(year: 2026, month: 10, day: 1),
+            last: CalendarDay(year: 2026, month: 10, day: 31)
+        )
+        XCTAssertEqual(out[0].date, day)
+        XCTAssertEqual(out[1].date, local)
+        XCTAssertEqual(http.postCount, 1)
+    }
+}

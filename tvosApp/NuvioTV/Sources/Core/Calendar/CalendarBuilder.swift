@@ -78,7 +78,7 @@ enum CalendarBuilder {
                   let season = episode.seasonNumber, season > 0,
                   let date = CalendarDay(iso: episode.airDate),
                   date >= first, date <= last else { continue }
-            let entry = CalendarEntry(
+            var entry = CalendarEntry(
                 itemId: item.id,
                 itemType: item.type,
                 kind: .series,
@@ -93,6 +93,7 @@ enum CalendarBuilder {
                 posterURL: poster,
                 stillURL: CalendarTmdb.imageURL(episode.stillPath, size: "w500")
             )
+            entry.isAnime = details.isJapaneseAnime
             if seen.insert(entry.id).inserted {
                 result.append(entry)
             }
@@ -179,6 +180,13 @@ enum CalendarBuilder {
     }
 
     static func entryOrder(_ a: CalendarEntry, _ b: CalendarEntry) -> Bool {
+        // Titles with a known broadcast time first, in airing order.
+        switch (a.airTime, b.airTime) {
+        case let (x?, y?) where x != y: return x < y
+        case (_?, nil): return true
+        case (nil, _?): return false
+        default: break
+        }
         let titleOrder = a.title.localizedCaseInsensitiveCompare(b.title)
         if titleOrder != .orderedSame { return titleOrder == .orderedAscending }
         if (a.seasonNumber ?? 0) != (b.seasonNumber ?? 0) { return (a.seasonNumber ?? 0) < (b.seasonNumber ?? 0) }

@@ -648,10 +648,20 @@ private struct CalendarEntryCard: View {
                 .frame(width: 160, height: 90)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
             VStack(alignment: .leading, spacing: 4) {
-                if let tag = CalendarFormat.tag(entry) {
-                    Text(tag)
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundColor(accent)
+                let time = entry.airTime.map(CalendarFormat.time)
+                if CalendarFormat.tag(entry) != nil || time != nil {
+                    HStack(spacing: 10) {
+                        if let time {
+                            Label(time, systemImage: "clock")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundColor(.white.opacity(0.85))
+                        }
+                        if let tag = CalendarFormat.tag(entry) {
+                            Text(tag)
+                                .font(.system(size: 18, weight: .bold))
+                                .foregroundColor(accent)
+                        }
+                    }
                 }
                 Text(entry.title)
                     .font(.system(size: 22, weight: .bold))
@@ -748,6 +758,14 @@ private struct CalendarSkippedList: View {
 }
 
 enum CalendarFormat {
+    /// Local broadcast time, e.g. "16:00" or "4:00 PM" depending on the app locale.
+    static func time(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = AppLocaleManager.shared.locale
+        formatter.setLocalizedDateFormatFromTemplate("jm")
+        return formatter.string(from: date)
+    }
+
     /// How many posters fit and how many are left for the "+N" tile.
     static func mosaicLayout(count: Int, capacity: Int) -> (shown: Int, overflow: Int) {
         guard capacity > 0 else { return (0, count) }

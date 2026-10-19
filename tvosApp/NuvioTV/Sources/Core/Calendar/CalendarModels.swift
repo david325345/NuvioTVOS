@@ -75,6 +75,13 @@ struct CalendarDay: Hashable, Comparable, Codable, Sendable, CustomStringConvert
 
     /// Noon UTC of this day; safe to format in UTC without slipping to a
     /// neighbouring day.
+    /// Midnight at the start of this day in `timeZone`.
+    func startDate(in timeZone: TimeZone) -> Date {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        return calendar.date(from: DateComponents(year: year, month: month, day: day)) ?? noonDate
+    }
+
     var noonDate: Date {
         CalendarDay.utc.date(from: DateComponents(year: year, month: month, day: day, hour: 12)) ?? Date()
     }
@@ -146,7 +153,8 @@ struct CalendarEntry: Hashable, Identifiable, Sendable {
     let kind: CalendarMediaKind
     let tmdbId: Int
     let title: String
-    let date: CalendarDay
+    /// Local day it comes out. Anime may be moved off TMDB's Japanese date.
+    var date: CalendarDay
     let releaseKind: CalendarReleaseKind
     let seasonNumber: Int?
     let episodeNumber: Int?
@@ -154,6 +162,10 @@ struct CalendarEntry: Hashable, Identifiable, Sendable {
     let overview: String?
     let posterURL: URL?
     let stillURL: URL?
+    /// Japanese anime, eligible for broadcast times from AniList.
+    var isAnime: Bool = false
+    /// Exact broadcast time when known (anime, from AniList).
+    var airTime: Date?
 
     init(
         itemId: String,

@@ -94,22 +94,35 @@ enum CalendarTmdb {
         let nextEpisodeToAir: Episode?
         let lastEpisodeToAir: Episode?
         let seasons: [SeasonSummary]?
+        let genres: [Genre]?
+        let originCountry: [String]?
+
+        struct Genre: Decodable, Hashable, Sendable { let id: Int }
 
         enum CodingKeys: String, CodingKey {
-            case id, name, seasons
+            case id, name, seasons, genres
             case posterPath = "poster_path"
             case nextEpisodeToAir = "next_episode_to_air"
             case lastEpisodeToAir = "last_episode_to_air"
+            case originCountry = "origin_country"
         }
 
         init(id: Int, name: String?, posterPath: String? = nil, nextEpisodeToAir: Episode? = nil,
-             lastEpisodeToAir: Episode? = nil, seasons: [SeasonSummary]? = nil) {
+             lastEpisodeToAir: Episode? = nil, seasons: [SeasonSummary]? = nil,
+             genres: [Genre]? = nil, originCountry: [String]? = nil) {
             self.id = id
             self.name = name
             self.posterPath = posterPath
             self.nextEpisodeToAir = nextEpisodeToAir
             self.lastEpisodeToAir = lastEpisodeToAir
             self.seasons = seasons
+            self.genres = genres
+            self.originCountry = originCountry
+        }
+
+        /// Japanese animation: TMDB dates these by the Japanese broadcast day.
+        var isJapaneseAnime: Bool {
+            (genres ?? []).contains { $0.id == 16 } && (originCountry ?? []).contains("JP")
         }
     }
 
