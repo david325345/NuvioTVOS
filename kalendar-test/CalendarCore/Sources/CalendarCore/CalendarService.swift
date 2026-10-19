@@ -37,19 +37,19 @@ public struct CalendarService: Sendable {
         case authFailure
     }
 
-    public func load(items: [LibraryItem], today: DayKey = DayKey(date: Date())) async throws -> CalendarResult {
+    public func load(items: [CalendarItem], today: DayKey = DayKey(date: Date())) async throws -> CalendarResult {
         guard !client.apiKey.isEmpty else { throw CalendarLoadError.missingApiKey }
         let lastDay = today.adding(days: horizonDays)
 
         // 1. Resolve ids, then drop duplicates (the same show saved twice
         //    under different ids).
-        let resolutions = await concurrentMap(items) { item -> (LibraryItem, Result<IdResolver.Resolution, Error>) in
+        let resolutions = await concurrentMap(items) { item -> (CalendarItem, Result<IdResolver.Resolution, Error>) in
             do { return (item, .success(try await resolver.resolve(item))) }
             catch { return (item, .failure(error)) }
         }
 
         var skipped: [SkippedItem] = []
-        var targets: [(LibraryItem, Int)] = []
+        var targets: [(CalendarItem, Int)] = []
         var seenTargets = Set<String>()
         for (item, result) in resolutions {
             switch result {
@@ -72,7 +72,7 @@ public struct CalendarService: Sendable {
         }
 
         // 2. Fetch upcoming episodes / releases.
-        let outcomes = await concurrentMap(targets) { target -> (LibraryItem, Outcome) in
+        let outcomes = await concurrentMap(targets) { target -> (CalendarItem, Outcome) in
             let (item, tmdbId) = target
             return (item, await fetch(item: item, tmdbId: tmdbId, today: today, lastDay: lastDay))
         }
@@ -101,7 +101,7 @@ public struct CalendarService: Sendable {
         )
     }
 
-    func fetch(item: LibraryItem, tmdbId: Int, today: DayKey, lastDay: DayKey) async -> Outcome {
+    func fetch(item: CalendarItem, tmdbId: Int, today: DayKey, lastDay: DayKey) async -> Outcome {
         do {
             switch item.kind {
             case .series:

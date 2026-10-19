@@ -14,7 +14,7 @@ final class CalendarViewModel: ObservableObject {
     private var loadedSignature: String?
 
     /// Reloads when the library or settings changed, or after `maxAge`.
-    func loadIfNeeded(items: [LibraryItem], maxAge: TimeInterval = 6 * 3600) async {
+    func loadIfNeeded(items: [CalendarItem], maxAge: TimeInterval = 6 * 3600) async {
         let signature = Self.signature(items)
         if case .loaded(_, let loadedAt) = state,
            signature == loadedSignature,
@@ -24,7 +24,7 @@ final class CalendarViewModel: ObservableObject {
         await load(items: items)
     }
 
-    func load(items: [LibraryItem]) async {
+    func load(items: [CalendarItem]) async {
         if case .loading = state { return }
         state = .loading
         let client = AppSettings.makeClient()
@@ -48,7 +48,7 @@ final class CalendarViewModel: ObservableObject {
         }
     }
 
-    private static func signature(_ items: [LibraryItem]) -> String {
+    private static func signature(_ items: [CalendarItem]) -> String {
         let ids = items.map { "\($0.kind.rawValue):\($0.id)" }.sorted().joined(separator: ",")
         return [ids, DayKey(date: Date()).iso, AppSettings.tmdbApiKey, AppSettings.language, AppSettings.region, String(AppSettings.horizonDays)]
             .joined(separator: "|")

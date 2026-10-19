@@ -7,7 +7,7 @@ public enum MediaKind: String, Codable, Hashable, Sendable {
 
 /// One title from the user's library, identified the way Nuvio identifies it
 /// ("tt0903747", "tmdb:1396", ...).
-public struct LibraryItem: Codable, Hashable, Identifiable, Sendable {
+public struct CalendarItem: Codable, Hashable, Identifiable, Sendable {
     public let id: String
     public let kind: MediaKind
     public var name: String?
@@ -105,10 +105,10 @@ public enum SkipReason: Hashable, Sendable {
 
 public struct SkippedItem: Hashable, Identifiable, Sendable {
     public var id: String { item.id }
-    public let item: LibraryItem
+    public let item: CalendarItem
     public let reason: SkipReason
 
-    public init(item: LibraryItem, reason: SkipReason) {
+    public init(item: CalendarItem, reason: SkipReason) {
         self.item = item
         self.reason = reason
     }

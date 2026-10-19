@@ -27,7 +27,7 @@ struct LibraryScreen: View {
                         let id = "tmdb:\(result.id)"
                         Button {
                             if let kind = result.kind {
-                                library.add(LibraryItem(id: id, kind: kind, name: result.displayTitle, posterPath: result.posterPath))
+                                library.add(CalendarItem(id: id, kind: kind, name: result.displayTitle, posterPath: result.posterPath))
                             }
                         } label: {
                             HStack {

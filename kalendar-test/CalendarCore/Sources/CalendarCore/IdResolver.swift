@@ -56,7 +56,7 @@ public actor IdResolver {
         return base
     }
 
-    public func resolve(_ item: LibraryItem) async throws -> Resolution {
+    public func resolve(_ item: CalendarItem) async throws -> Resolution {
         if let direct = IdResolver.directTmdbId(from: item.id) {
             return .resolved(direct)
         }

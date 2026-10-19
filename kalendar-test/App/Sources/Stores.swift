@@ -39,27 +39,27 @@ struct UserDefaultsIdCache: IdCacheStore {
 /// Stand-in for Nuvio's library: the titles the calendar looks at.
 @MainActor
 final class LibraryStore: ObservableObject {
-    @Published private(set) var items: [LibraryItem] = []
+    @Published private(set) var items: [CalendarItem] = []
 
     /// Long-running series with stable IMDb ids, plus two ended shows to show
     /// how skipped titles are reported. Movies are added through search.
-    static let defaults: [LibraryItem] = [
-        LibraryItem(id: "tt0096697", kind: .series, name: "The Simpsons"),
-        LibraryItem(id: "tt0182576", kind: .series, name: "Family Guy"),
-        LibraryItem(id: "tt0121955", kind: .series, name: "South Park"),
-        LibraryItem(id: "tt0397306", kind: .series, name: "American Dad!"),
-        LibraryItem(id: "tt1561755", kind: .series, name: "Bob's Burgers"),
-        LibraryItem(id: "tt0413573", kind: .series, name: "Grey's Anatomy"),
-        LibraryItem(id: "tt0072562", kind: .series, name: "Saturday Night Live"),
-        LibraryItem(id: "tt3530232", kind: .series, name: "Last Week Tonight"),
-        LibraryItem(id: "tt0239195", kind: .series, name: "Survivor"),
-        LibraryItem(id: "tt0903747", kind: .series, name: "Breaking Bad"),
-        LibraryItem(id: "tmdb:1399", kind: .series, name: "Game of Thrones"),
+    static let defaults: [CalendarItem] = [
+        CalendarItem(id: "tt0096697", kind: .series, name: "The Simpsons"),
+        CalendarItem(id: "tt0182576", kind: .series, name: "Family Guy"),
+        CalendarItem(id: "tt0121955", kind: .series, name: "South Park"),
+        CalendarItem(id: "tt0397306", kind: .series, name: "American Dad!"),
+        CalendarItem(id: "tt1561755", kind: .series, name: "Bob's Burgers"),
+        CalendarItem(id: "tt0413573", kind: .series, name: "Grey's Anatomy"),
+        CalendarItem(id: "tt0072562", kind: .series, name: "Saturday Night Live"),
+        CalendarItem(id: "tt3530232", kind: .series, name: "Last Week Tonight"),
+        CalendarItem(id: "tt0239195", kind: .series, name: "Survivor"),
+        CalendarItem(id: "tt0903747", kind: .series, name: "Breaking Bad"),
+        CalendarItem(id: "tmdb:1399", kind: .series, name: "Game of Thrones"),
     ]
 
     init() {
         if let data = UserDefaults.standard.data(forKey: SettingsKey.library),
-           let saved = try? JSONDecoder().decode([LibraryItem].self, from: data) {
+           let saved = try? JSONDecoder().decode([CalendarItem].self, from: data) {
             items = saved
         } else {
             items = Self.defaults
@@ -70,13 +70,13 @@ final class LibraryStore: ObservableObject {
         items.contains { $0.id == id && $0.kind == kind }
     }
 
-    func add(_ item: LibraryItem) {
+    func add(_ item: CalendarItem) {
         guard !contains(item.id, kind: item.kind) else { return }
         items.append(item)
         save()
     }
 
-    func remove(_ item: LibraryItem) {
+    func remove(_ item: CalendarItem) {
         items.removeAll { $0.id == item.id && $0.kind == item.kind }
         save()
     }

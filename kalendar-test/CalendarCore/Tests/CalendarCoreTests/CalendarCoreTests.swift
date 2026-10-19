@@ -78,7 +78,7 @@ final class IdResolverTests: XCTestCase {
     func testImdbLookupIsCached() async throws {
         let http = MockHTTP(["/find/tt0903747": (200, #"{"movie_results":[],"tv_results":[{"id":1396}]}"#)])
         let resolver = IdResolver(client: TmdbClient(apiKey: "k", http: http))
-        let item = LibraryItem(id: "tt0903747", kind: .series)
+        let item = CalendarItem(id: "tt0903747", kind: .series)
         let first = try await resolver.resolve(item)
         let second = try await resolver.resolve(item)
         XCTAssertEqual(first, .resolved(1396))
@@ -89,8 +89,8 @@ final class IdResolverTests: XCTestCase {
     func testUnsupportedAndNotFound() async throws {
         let http = MockHTTP(["/find/tt0000001": (200, #"{"movie_results":[],"tv_results":[]}"#)])
         let resolver = IdResolver(client: TmdbClient(apiKey: "k", http: http))
-        let kitsu = try await resolver.resolve(LibraryItem(id: "kitsu:42", kind: .series))
-        let missing = try await resolver.resolve(LibraryItem(id: "tt0000001", kind: .series))
+        let kitsu = try await resolver.resolve(CalendarItem(id: "kitsu:42", kind: .series))
+        let missing = try await resolver.resolve(CalendarItem(id: "tt0000001", kind: .series))
         XCTAssertEqual(kitsu, .unsupported)
         XCTAssertEqual(missing, .notFound)
     }
@@ -120,7 +120,7 @@ final class SeriesBuilderTests: XCTestCase {
     }
 
     func testEpisodeWindowIsInclusiveAndSkipsUndated() {
-        let item = LibraryItem(id: "tt1", kind: .series)
+        let item = CalendarItem(id: "tt1", kind: .series)
         let details = TmdbTvDetails(id: 7, name: "Show", posterPath: "/p.jpg")
         let episodes = [
             ep(2, 1, "2026-10-18"),            // yesterday
@@ -158,7 +158,7 @@ final class SeriesBuilderTests: XCTestCase {
 // MARK: - Movie building
 
 final class MovieBuilderTests: XCTestCase {
-    let item = LibraryItem(id: "tmdb:9", kind: .movie)
+    let item = CalendarItem(id: "tmdb:9", kind: .movie)
 
     func testUsesRegionReleases() {
         let details = TmdbMovieDetails(id: 9, title: "Film", releaseDate: "2026-11-01", countries: [
@@ -243,12 +243,12 @@ final class CalendarServiceTests: XCTestCase {
             "/movie/9": (200, #"{"id":9,"title":"Film","release_date":"2026-11-01","release_dates":{"results":[]}}"#),
         ])
         let items = [
-            LibraryItem(id: "tt0903747", kind: .series),
-            LibraryItem(id: "tmdb:1396", kind: .series),   // duplicate of the first
-            LibraryItem(id: "tmdb:2", kind: .series),
-            LibraryItem(id: "tmdb:3", kind: .series),
-            LibraryItem(id: "kitsu:5", kind: .series),
-            LibraryItem(id: "tmdb:9", kind: .movie),
+            CalendarItem(id: "tt0903747", kind: .series),
+            CalendarItem(id: "tmdb:1396", kind: .series),   // duplicate of the first
+            CalendarItem(id: "tmdb:2", kind: .series),
+            CalendarItem(id: "tmdb:3", kind: .series),
+            CalendarItem(id: "kitsu:5", kind: .series),
+            CalendarItem(id: "tmdb:9", kind: .movie),
         ]
         let result = try await service(http).load(items: items, today: today)
 
@@ -267,7 +267,7 @@ final class CalendarServiceTests: XCTestCase {
     func testInvalidKeyFailsWholeLoad() async {
         let http = MockHTTP(["/tv/1": (401, #"{"status_code":7}"#)])
         do {
-            _ = try await service(http).load(items: [LibraryItem(id: "tmdb:1", kind: .series)], today: today)
+            _ = try await service(http).load(items: [CalendarItem(id: "tmdb:1", kind: .series)], today: today)
             XCTFail("expected error")
         } catch {
             XCTAssertEqual(error as? CalendarLoadError, .invalidApiKey)
@@ -289,7 +289,7 @@ final class CalendarServiceTests: XCTestCase {
             "/tv/4": (200, #"{"id":4,"name":"Show","next_episode_to_air":{"air_date":"2026-10-22","episode_number":7,"season_number":1}}"#),
             "/tv/4/season/1": (500, ""),
         ])
-        let result = try await service(http).load(items: [LibraryItem(id: "tmdb:4", kind: .series)], today: today)
+        let result = try await service(http).load(items: [CalendarItem(id: "tmdb:4", kind: .series)], today: today)
         XCTAssertEqual(result.days.first?.entries.first?.episodeNumber, 7)
     }
 

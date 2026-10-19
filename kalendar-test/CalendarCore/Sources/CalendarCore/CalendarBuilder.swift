@@ -28,7 +28,7 @@ public enum CalendarBuilder {
     }
 
     public static func episodeEntries(
-        item: LibraryItem,
+        item: CalendarItem,
         details: TmdbTvDetails,
         episodes: [TmdbEpisode],
         today: DayKey,
@@ -80,7 +80,7 @@ public enum CalendarBuilder {
     /// digital or physical date for that region, `fallbackRegion` is used,
     /// and as a last resort the movie's primary release date.
     public static func movieEntries(
-        item: LibraryItem,
+        item: CalendarItem,
         details: TmdbMovieDetails,
         region: String,
         fallbackRegion: String = "US",
