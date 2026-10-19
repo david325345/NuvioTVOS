@@ -120,8 +120,8 @@ struct CalendarSuggestionsView: View {
         loadTask = Task {
             do {
                 let found: [CalendarSuggestionItem]
-                if list == .animeToday && CalendarAnimeToday.isAvailable {
-                    // Exact broadcast times from AniList, ids from Simkl.
+                if list == .animeToday {
+                    // Exact broadcast times from AniList, ids from arm / Simkl.
                     found = try await CalendarAnimeToday.load()
                 } else {
                     found = try await client.list(request.path, query: request.query, pages: CalendarSuggestions.pages)
@@ -208,7 +208,7 @@ private struct CalendarSuggestionCard: View {
 
     private var subtitle: String {
         if inLibrary { return L10n.string("calendar_suggest_in_library", fallback: "In library") }
-        if !result.isAddable { return L10n.string("calendar_suggest_no_ids", fallback: "Not found on Simkl") }
+        if !result.isAddable { return L10n.string("calendar_suggest_no_ids", fallback: "No TMDB or IMDb id") }
         return result.detail ?? result.year.map(String.init) ?? ""
     }
 }

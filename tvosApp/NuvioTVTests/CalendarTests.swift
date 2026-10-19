@@ -355,15 +355,23 @@ final class CalendarSuggestionTests: XCTestCase {
 
 private final class CalendarAnimeMockHTTP: CalendarAnimeHTTPClient, @unchecked Sendable {
     let anilist: String
+    /// AniList id → arm-server JSON.
+    let arm: [Int: String]
     /// AniList id → Location header of the Simkl redirect.
     let redirects: [Int: String]
     /// Simkl path ("/anime/1") → details JSON.
     let details: [String: String]
 
-    init(anilist: String, redirects: [Int: String], details: [String: String]) {
+    init(anilist: String, arm: [Int: String] = [:], redirects: [Int: String], details: [String: String]) {
         self.anilist = anilist
+        self.arm = arm
         self.redirects = redirects
         self.details = details
+    }
+
+    private func anilistId(in url: URL, name: String) -> Int? {
+        URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?.first { $0.name == name }?.value.flatMap(Int.init)
     }
 
     func post(_ url: URL, json: Data) async throws -> (Data, Int) {
@@ -371,10 +379,12 @@ private final class CalendarAnimeMockHTTP: CalendarAnimeHTTPClient, @unchecked S
     }
 
     func getWithoutRedirect(_ url: URL, headers: [String: String]) async throws -> (Data, Int, String?) {
+        if url.path == "/api/v2/ids" {
+            if let id = anilistId(in: url, name: "id"), let body = arm[id] { return (Data(body.utf8), 200, nil) }
+            return (Data("null".utf8), 200, nil)
+        }
         if url.path == "/redirect" {
-            let id = URLComponents(url: url, resolvingAgainstBaseURL: false)?
-                .queryItems?.first { $0.name == "anilist" }?.value.flatMap(Int.init)
-            if let id, let location = redirects[id] { return (Data(), 301, location) }
+            if let id = anilistId(in: url, name: "anilist"), let location = redirects[id] { return (Data(), 301, location) }
             return (Data(), 404, nil)
         }
         if let body = details[url.path] { return (Data(body.utf8), 200, nil) }
@@ -384,6 +394,12 @@ private final class CalendarAnimeMockHTTP: CalendarAnimeHTTPClient, @unchecked S
 
 final class CalendarAnimeTodayTests: XCTestCase {
     private let prague = TimeZone(identifier: "Europe/Prague")!
+
+    func testArmParse() {
+        let ids = CalendarAnimeToday.Arm.parse(Data(#"{"anilist":21,"imdb":"tt0388629","themoviedb":37854,"anime-planet":"one-piece"}"#.utf8))
+        XCTAssertEqual(ids, .init(tmdb: 37854, imdb: "tt0388629"))
+        XCTAssertEqual(CalendarAnimeToday.Arm.parse(Data("null".utf8)), .init(tmdb: nil, imdb: nil))
+    }
 
     func testSimklTargetFromLocation() {
         XCTAssertEqual(CalendarAnimeToday.Simkl.simklTarget(fromLocation: "https://simkl.com/anime/3012710/hello-i-am-a-witch")?.id, "3012710")
@@ -412,14 +428,20 @@ final class CalendarAnimeTodayTests: XCTestCase {
             "title":{"romaji":"Donghua","english":null}}},
           {"airingAt":1792402000,"episode":2,"media":{"id":40,"format":"TV","countryOfOrigin":"JP","isAdult":true,
             "title":{"romaji":"Adult","english":null}}},
+          {"airingAt":1792415000,"episode":7,"media":{"id":50,"format":"TV","countryOfOrigin":"JP","isAdult":false,
+            "title":{"romaji":"Goblin","english":null}}},
           {"airingAt":1792420000,"episode":4,"media":{"id":10,"format":"TV","countryOfOrigin":"JP","isAdult":false,
             "title":{"romaji":"Majo","english":"Hello, I am a Witch"}}}
         ]}}}
         """#
         let http = CalendarAnimeMockHTTP(
             anilist: anilist,
-            redirects: [10: "https://simkl.com/anime/3012710/hello"],
-            details: ["/anime/3012710": #"{"ids":{"simkl":3012710,"imdb":"tt43650300","tmdb":"313068"}}"#]
+            arm: [
+                10: #"{"anilist":10,"myanimelist":1,"imdb":"tt43650300","themoviedb":313068}"#,
+                50: #"{"anilist":50,"myanimelist":2}"#,
+            ],
+            redirects: [50: "https://simkl.com/anime/3046168/goblin"],
+            details: ["/anime/3046168": #"{"ids":{"simkl":3046168,"imdb":"tt43691383","tmdb":"316694"}}"#]
         )
         let items = try await CalendarAnimeToday.load(
             now: Date(timeIntervalSince1970: 1_792_410_000),
@@ -427,7 +449,10 @@ final class CalendarAnimeTodayTests: XCTestCase {
             http: http,
             clientID: "test-\(UUID().uuidString)"
         )
-        XCTAssertEqual(items.map(\.title), ["Yuusanchi", "Hello, I am a Witch"])
+        XCTAssertEqual(items.map(\.title), ["Yuusanchi", "Hello, I am a Witch", "Goblin"])
+        // Not on arm, found on Simkl.
+        XCTAssertEqual(items[2].key, "series:316694")
+        XCTAssertEqual(items[2].imdbId, "tt43691383")
         XCTAssertFalse(items[0].isAddable)
         XCTAssertEqual(items[1].key, "series:313068")
         XCTAssertEqual(items[1].imdbId, "tt43650300")

@@ -2,9 +2,9 @@ import Foundation
 
 /// "Anime today" built from AniList's airing schedule, which has exact
 /// broadcast times, so the list follows the Apple TV's own day instead of the
-/// Japanese date TMDB uses. TMDB and IMDb ids come from Simkl by AniList id
-/// (needs only the Simkl Client ID, no login). Without a Client ID the
-/// suggestions fall back to the TMDB list.
+/// Japanese date TMDB uses. TMDB and IMDb ids come from arm-server
+/// (arm.haglund.dev, no key) by AniList id, and from Simkl for titles arm
+/// doesn't map yet when a Simkl Client ID is set (no login needed).
 enum CalendarAnimeToday {
     struct Airing: Hashable, Sendable {
         let anilistId: Int
@@ -20,8 +20,6 @@ enum CalendarAnimeToday {
         let tmdb: Int?
         let imdb: String?
     }
-
-    static var isAvailable: Bool { SimklConfig.isConfigured }
 
     /// Start and end (exclusive) of the local day containing `date`.
     static func dayBounds(of date: Date, timeZone: TimeZone = .current) -> (start: Date, end: Date) {
@@ -42,8 +40,8 @@ enum CalendarAnimeToday {
     ) async throws -> [CalendarSuggestionItem] {
         let bounds = dayBounds(of: now, timeZone: timeZone)
         let airings = try await AniList(http: http).airings(from: bounds.start, to: bounds.end)
-        let simkl = Simkl(http: http, clientID: clientID)
-        let ids = await simkl.ids(for: airings.map(\.anilistId))
+        let resolver = Resolver(http: http, clientID: clientID)
+        let ids = await resolver.ids(for: airings.map(\.anilistId))
         return items(airings, ids: ids, timeZone: timeZone)
     }
 
@@ -182,10 +180,8 @@ enum CalendarAnimeToday {
         }
     }
 
-    // MARK: - Simkl
-
     /// Ids already looked up this session, so switching lists back and forth
-    /// doesn't ask Simkl again.
+    /// doesn't ask arm or Simkl again.
     actor IdCache {
         static let shared = IdCache()
         private var values: [Int: Ids] = [:]
@@ -193,11 +189,97 @@ enum CalendarAnimeToday {
         func set(_ id: Int, _ ids: Ids) { values[id] = ids }
     }
 
-    struct Simkl: Sendable {
+    /// arm first (no key, its TMDB ids match the entries TMDB lists episodes
+    /// under), then Simkl for what arm doesn't have.
+    struct Resolver: Sendable {
         let http: CalendarAnimeHTTPClient
         let clientID: String
         var cache: IdCache = .shared
         static let maxConcurrent = 4
+
+        func ids(for anilistIds: [Int]) async -> [Int: Ids] {
+            var result: [Int: Ids] = [:]
+            var pending: [Int] = []
+            for id in anilistIds {
+                if let cached = await cache.get(id) { result[id] = cached } else { pending.append(id) }
+            }
+            await withTaskGroup(of: (Int, Ids?).self) { group in
+                var index = 0
+                while index < min(Self.maxConcurrent, pending.count) {
+                    let id = pending[index]
+                    group.addTask { (id, await resolve(anilistId: id)) }
+                    index += 1
+                }
+                while let pair = await group.next() {
+                    if let ids = pair.1 {
+                        result[pair.0] = ids
+                        await cache.set(pair.0, ids)
+                    }
+                    if index < pending.count {
+                        let id = pending[index]
+                        group.addTask { (id, await resolve(anilistId: id)) }
+                        index += 1
+                    }
+                }
+            }
+            return result
+        }
+
+        /// nil = every source failed to answer (try again next time).
+        func resolve(anilistId: Int) async -> Ids? {
+            let fromArm = await Arm(http: http).lookup(anilistId: anilistId)
+            if let fromArm, fromArm.tmdb != nil || fromArm.imdb != nil { return fromArm }
+            guard !clientID.isEmpty else { return fromArm }
+            let fromSimkl = await Simkl(http: http, clientID: clientID).lookup(anilistId: anilistId)
+            return fromSimkl ?? fromArm
+        }
+    }
+
+    // MARK: - arm-server
+
+    struct Arm: Sendable {
+        let http: CalendarAnimeHTTPClient
+        static let base = "https://arm.haglund.dev/api/v2/ids"
+
+        /// nil = request failed; empty Ids = arm has no TMDB/IMDb id.
+        func lookup(anilistId: Int) async -> Ids? {
+            var components = URLComponents(string: Self.base)!
+            components.queryItems = [
+                URLQueryItem(name: "source", value: "anilist"),
+                URLQueryItem(name: "id", value: String(anilistId)),
+            ]
+            guard let url = components.url,
+                  let response = try? await http.getWithoutRedirect(url, headers: ["Accept": "application/json"]) else {
+                return nil
+            }
+            if response.1 == 404 { return Ids(tmdb: nil, imdb: nil) }
+            guard (200..<300).contains(response.1) else { return nil }
+            return Self.parse(response.0)
+        }
+
+        static func parse(_ data: Data) -> Ids {
+            guard let object = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]),
+                  let dict = object as? [String: Any] else {
+                return Ids(tmdb: nil, imdb: nil)
+            }
+            let tmdb: Int?
+            if let number = dict["themoviedb"] as? Int {
+                tmdb = number
+            } else if let text = dict["themoviedb"] as? String {
+                tmdb = Int(text)
+            } else {
+                tmdb = nil
+            }
+            let imdb = (dict["imdb"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return Ids(tmdb: tmdb, imdb: (imdb?.hasPrefix("tt") ?? false) ? imdb : nil)
+        }
+    }
+
+    // MARK: - Simkl
+
+    struct Simkl: Sendable {
+        let http: CalendarAnimeHTTPClient
+        let clientID: String
 
         private var appQuery: [URLQueryItem] {
             [
@@ -213,35 +295,6 @@ enum CalendarAnimeToday {
                 "simkl-api-key": clientID,
                 "Accept": "application/json",
             ]
-        }
-
-        func ids(for anilistIds: [Int]) async -> [Int: Ids] {
-            guard !clientID.isEmpty else { return [:] }
-            var result: [Int: Ids] = [:]
-            var pending: [Int] = []
-            for id in anilistIds {
-                if let cached = await cache.get(id) { result[id] = cached } else { pending.append(id) }
-            }
-            await withTaskGroup(of: (Int, Ids?).self) { group in
-                var index = 0
-                while index < min(Self.maxConcurrent, pending.count) {
-                    let id = pending[index]
-                    group.addTask { (id, await lookup(anilistId: id)) }
-                    index += 1
-                }
-                while let pair = await group.next() {
-                    if let ids = pair.1 {
-                        result[pair.0] = ids
-                        await cache.set(pair.0, ids)
-                    }
-                    if index < pending.count {
-                        let id = pending[index]
-                        group.addTask { (id, await lookup(anilistId: id)) }
-                        index += 1
-                    }
-                }
-            }
-            return result
         }
 
         /// nil = request failed (try again next time); empty Ids = not on Simkl.
