@@ -263,7 +263,6 @@ struct CalendarView: View {
     private func monthGrid(result: CalendarResult) -> some View {
         let firstWeekday = Calendar.current.firstWeekday
         let cells = CalendarBuilder.monthGrid(for: displayedMonth, firstWeekday: firstWeekday)
-        let columns = Array(repeating: GridItem(.flexible(), spacing: 10), count: 7)
         let rows = max(1, cells.count / 7)
         let cellHeight: CGFloat = rows > 5 ? 118 : 140
 
@@ -277,28 +276,19 @@ struct CalendarView: View {
                         .padding(.leading, 8)
                 }
             }
-            LazyVGrid(columns: columns, spacing: 10) {
-                ForEach(Array(cells.enumerated()), id: \.offset) { index, day in
-                    if let day {
-                        CalendarDayCell(
-                            day: day,
-                            entries: result.entries(on: day),
-                            isToday: day == today,
-                            isSelected: day == selectedDay,
-                            accent: accent,
-                            height: cellHeight,
-                            growth: CalendarDayCellGrowth(column: index % 7, row: index / 7, rows: rows)
-                        ) {
-                            if let first = result.entries(on: day).first {
-                                focus = .entry(first.id)
-                            }
+            // Plain stacks instead of LazyVGrid: zIndex on the focused row and
+            // cell is what lets the grown card cover its neighbours, and lazy
+            // grids don't honour it.
+            VStack(spacing: 10) {
+                ForEach(0..<rows, id: \.self) { row in
+                    HStack(spacing: 10) {
+                        ForEach(0..<7, id: \.self) { column in
+                            let index = row * 7 + column
+                            let day = index < cells.count ? cells[index] : nil
+                            dayCell(day, result: result, column: column, row: row, rows: rows, height: cellHeight)
                         }
-                        .focused($focus, equals: .day(day))
-                        // The focused cell grows over its neighbours.
-                        .zIndex(focus == .day(day) ? 1 : 0)
-                    } else {
-                        Color.clear.frame(height: cellHeight)
                     }
+                    .zIndex(focusedRow(in: cells) == row ? 1 : 0)
                 }
             }
         }
@@ -310,6 +300,38 @@ struct CalendarView: View {
         .onChange(of: displayedMonth) { _, month in
             selectedDay = month.isSameMonth(as: today) ? today : month
         }
+    }
+
+    @ViewBuilder
+    private func dayCell(
+        _ day: CalendarDay?, result: CalendarResult, column: Int, row: Int, rows: Int, height: CGFloat
+    ) -> some View {
+        if let day {
+            CalendarDayCell(
+                day: day,
+                entries: result.entries(on: day),
+                isToday: day == today,
+                isSelected: day == selectedDay,
+                accent: accent,
+                height: height,
+                growth: CalendarDayCellGrowth(column: column, row: row, rows: rows)
+            ) {
+                if let first = result.entries(on: day).first {
+                    focus = .entry(first.id)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .focused($focus, equals: .day(day))
+            // The focused cell grows over its neighbours.
+            .zIndex(focus == .day(day) ? 1 : 0)
+        } else {
+            Color.clear.frame(maxWidth: .infinity).frame(height: height)
+        }
+    }
+
+    private func focusedRow(in cells: [CalendarDay?]) -> Int? {
+        guard case .day(let day) = focus, let index = cells.firstIndex(of: day) else { return nil }
+        return index / 7
     }
 }
 
@@ -425,12 +447,14 @@ private struct CalendarDayCellBody: View {
         }
         .padding(8)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // Opaque fills, so a grown card hides the cells under it and posters
+        // can't spill out of their own cell.
         .background(
             RoundedRectangle(cornerRadius: 10)
-                .fill(isFocused
-                    ? Color(white: 0.22)
-                    : Color.white.opacity(isToday ? 0.14 : (isSelected ? 0.1 : 0.05)))
+                .fill(Color(white: isFocused ? 0.2 : (isToday ? 0.15 : (isSelected ? 0.12 : 0.09))))
         )
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .shadow(color: .black.opacity(isFocused ? 0.7 : 0), radius: 24)
         .overlay(
             RoundedRectangle(cornerRadius: 10)
                 .strokeBorder(
