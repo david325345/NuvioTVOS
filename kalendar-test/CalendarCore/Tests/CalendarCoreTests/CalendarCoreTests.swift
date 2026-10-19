@@ -12,7 +12,7 @@ final class MockHTTP: HTTPClient, @unchecked Sendable {
     init(_ routes: [String: (Int, String)]) { self.routes = routes }
 
     func get(_ url: URL) async throws -> (Data, Int) {
-        lock.lock(); requested.append(url); lock.unlock()
+        lock.withLock { requested.append(url) }
         let path = url.path
         let match = routes.keys
             .filter { path.hasSuffix($0) }
@@ -24,8 +24,7 @@ final class MockHTTP: HTTPClient, @unchecked Sendable {
     }
 
     func count(containing fragment: String) -> Int {
-        lock.lock(); defer { lock.unlock() }
-        return requested.filter { $0.path.contains(fragment) }.count
+        lock.withLock { requested.filter { $0.path.contains(fragment) }.count }
     }
 }
 
@@ -141,6 +140,7 @@ final class SeriesBuilderTests: XCTestCase {
         XCTAssertEqual(CalendarBuilder.releaseKind(for: ep(3, 1, nil), season: 3, number: 1), .seasonPremiere)
         XCTAssertEqual(CalendarBuilder.releaseKind(for: ep(3, 8, nil, type: "finale"), season: 3, number: 8), .seasonFinale)
         XCTAssertEqual(CalendarBuilder.releaseKind(for: ep(3, 4, nil, type: "standard"), season: 3, number: 4), .episode)
+        XCTAssertEqual(CalendarBuilder.releaseKind(for: ep(0, 1, nil), season: 0, number: 1), .episode)
     }
 
     func testGroupingSortsDaysAndTitles() {

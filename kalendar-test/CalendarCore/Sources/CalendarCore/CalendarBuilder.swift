@@ -65,7 +65,8 @@ public enum CalendarBuilder {
     }
 
     static func releaseKind(for episode: TmdbEpisode, season: Int, number: Int) -> ReleaseKind {
-        if number == 1 { return season <= 1 ? .seriesPremiere : .seasonPremiere }
+        if season == 0 { return .episode }
+        if number == 1 { return season == 1 ? .seriesPremiere : .seasonPremiere }
         if episode.episodeType?.lowercased() == "finale" { return .seasonFinale }
         return .episode
     }

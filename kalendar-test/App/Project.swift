@@ -24,7 +24,6 @@ let project = Project(
             deploymentTargets: .tvOS("17.0"),
             infoPlist: .extendingDefault(with: [
                 "CFBundleDisplayName": "Kalendář test",
-                "UILaunchScreen": [:],
             ]),
             sources: ["Sources/**/*.swift"],
             dependencies: [

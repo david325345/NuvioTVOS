@@ -50,7 +50,7 @@ final class CalendarViewModel: ObservableObject {
 
     private static func signature(_ items: [LibraryItem]) -> String {
         let ids = items.map { "\($0.kind.rawValue):\($0.id)" }.sorted().joined(separator: ",")
-        return [ids, AppSettings.tmdbApiKey, AppSettings.language, AppSettings.region, String(AppSettings.horizonDays)]
+        return [ids, DayKey(date: Date()).iso, AppSettings.tmdbApiKey, AppSettings.language, AppSettings.region, String(AppSettings.horizonDays)]
             .joined(separator: "|")
     }
 }
@@ -153,7 +153,7 @@ struct EntryRow: View {
                             .font(.caption2.weight(.bold))
                             .padding(.horizontal, 10)
                             .padding(.vertical, 4)
-                            .background(.tint.opacity(0.25), in: Capsule())
+                            .background(Color.accentColor.opacity(0.25), in: Capsule())
                     }
                 }
                 Text(Formatting.subtitle(entry))

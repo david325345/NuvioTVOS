@@ -63,7 +63,11 @@ public struct CalendarService: Sendable {
                 skipped.append(SkippedItem(item: item, reason: .notFoundOnTmdb))
             case .failure(let error):
                 if Self.isAuthError(error) { throw CalendarLoadError.invalidApiKey }
-                skipped.append(SkippedItem(item: item, reason: .failed(Self.describe(error))))
+                if case TmdbError.notFound = error {
+                    skipped.append(SkippedItem(item: item, reason: .notFoundOnTmdb))
+                } else {
+                    skipped.append(SkippedItem(item: item, reason: .failed(Self.describe(error))))
+                }
             }
         }
 
