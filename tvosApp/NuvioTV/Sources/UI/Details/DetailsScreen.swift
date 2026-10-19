@@ -3445,11 +3445,9 @@ struct TvDetailsContent: View {
                     hasAppearedBefore = true
                     // Opened from the calendar: start on that episode card
                     // instead of Play.
-                    calendarEpisodeKey = initialFocusEpisode.flatMap { focus in
-                        episodePresentation.guide.episodes.first {
-                            $0.season == focus.season && $0.episode == focus.episode
-                        }
-                    }.map { TvEpisodeFocus.card($0.id) }
+                    calendarEpisodeKey = initialFocusEpisode
+                        .flatMap { $0.pick(from: episodePresentation.guide.episodes) }
+                        .map { TvEpisodeFocus.card($0.id) }
                 }
                 if let calendarEpisodeKey {
                     focusedDetailsSection = .episodes
@@ -6251,9 +6249,7 @@ private final class TvDetailsEpisodeCache: ObservableObject {
             let episodeWatchCounts = watchedSnapshot.catalogEpisodeWatchCounts(meta: meta)
             // A calendar entry asks for a specific episode; otherwise follow
             // progress as before.
-            let focusedEpisode = focusEpisode.flatMap { focus in
-                guide.episodes.first { $0.season == focus.season && $0.episode == focus.episode }
-            }
+            let focusedEpisode = focusEpisode.flatMap { $0.pick(from: guide.episodes) }
             let initialEpisode = focusedEpisode ?? guide.initialEpisode(
                 continueItem: continueItem,
                 watchedKeys: watchedKeys

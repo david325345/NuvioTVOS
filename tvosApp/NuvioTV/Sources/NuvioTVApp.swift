@@ -2003,7 +2003,9 @@ struct ContentView: View {
     private func openCalendarEntry(_ entry: CalendarEntry) {
         let type = entry.itemType.isEmpty ? (entry.kind == .series ? "series" : "movie") : entry.itemType
         let focus = entry.seasonNumber.flatMap { season in
-            entry.episodeNumber.map { DetailsEpisodeFocus(metaID: entry.itemId, season: season, episode: $0) }
+            entry.episodeNumber.map {
+                DetailsEpisodeFocus(metaID: entry.itemId, season: season, episode: $0, airDate: entry.date)
+            }
         }
         withAnimation(.easeInOut(duration: 0.28)) {
             openDetailsRoot(id: entry.itemId, type: type, focusEpisode: focus)

@@ -638,3 +638,31 @@ final class CalendarReadableTitleTests: XCTestCase {
         XCTAssertNil(entries.first?.episodeName)
     }
 }
+
+// MARK: - Opening an episode whose season numbering differs
+
+final class DetailsEpisodeFocusTests: XCTestCase {
+    private let videos = [
+        NuvioVideo(id: "tt1:2:3", title: "Old S2E3", season: 2, episode: 3, released: "2005-03-01T00:00:00.000Z"),
+        NuvioVideo(id: "tt1:17:3", title: "TYBW", season: 17, episode: 3, released: "2026-10-19T15:00:00.000Z"),
+        NuvioVideo(id: "tt1:17:4", title: "TYBW next", season: 17, episode: 4, released: "2026-10-26T15:00:00.000Z"),
+    ]
+
+    func testSameNumberWinsWhenItsDateAgrees() {
+        let focus = DetailsEpisodeFocus(metaID: "tt1", season: 17, episode: 4, airDate: CalendarDay(year: 2026, month: 10, day: 27))
+        XCTAssertEqual(focus.pick(from: videos)?.id, "tt1:17:4")
+    }
+
+    func testFindsTheEpisodeByDateWhenSeasonsDiffer() {
+        // TMDB calls it S2E3; the addon has it as S17E3.
+        let focus = DetailsEpisodeFocus(metaID: "tt1", season: 2, episode: 3, airDate: CalendarDay(year: 2026, month: 10, day: 19))
+        XCTAssertEqual(focus.pick(from: videos)?.id, "tt1:17:3")
+    }
+
+    func testFallsBackToTheNumberWithoutADateMatch() {
+        let focus = DetailsEpisodeFocus(metaID: "tt1", season: 2, episode: 3, airDate: CalendarDay(year: 2030, month: 1, day: 1))
+        XCTAssertEqual(focus.pick(from: videos)?.id, "tt1:2:3")
+        let noDate = DetailsEpisodeFocus(metaID: "tt1", season: 2, episode: 3)
+        XCTAssertEqual(noDate.pick(from: videos)?.id, "tt1:2:3")
+    }
+}

@@ -244,4 +244,36 @@ struct DetailsEpisodeFocus: Hashable, Sendable {
     let metaID: String
     let season: Int
     let episode: Int
+    /// When the episode airs, to find it when the addon numbers seasons
+    /// differently from TMDB (Bleach TYBW is TMDB season 2 but a later
+    /// season on Cinemeta).
+    var airDate: CalendarDay? = nil
+
+    /// Days an addon's release date may differ from TMDB's (time zones,
+    /// Japanese vs local broadcast day).
+    static let dateTolerance = 2
+
+    /// The addon episode this focus means: the same season/episode when its
+    /// date agrees (or no date is known), otherwise the episode released
+    /// closest to the air date within the tolerance.
+    func pick(from videos: [NuvioVideo]) -> NuvioVideo? {
+        let exact = videos.first { $0.season == season && $0.episode == episode }
+        guard let airDate else { return exact }
+        func distance(_ video: NuvioVideo) -> Int? {
+            guard let released = CalendarDay(iso: video.released) else { return nil }
+            let gap = abs(released.days(until: airDate))
+            return gap <= Self.dateTolerance ? gap : nil
+        }
+        if let exact, distance(exact) != nil { return exact }
+        let byDate = videos
+            .filter { $0.season > 0 }
+            .compactMap { video in distance(video).map { (video, $0) } }
+            .min { a, b in
+                if a.1 != b.1 { return a.1 < b.1 }
+                // Same distance: prefer the same episode number, then season.
+                if (a.0.episode == episode) != (b.0.episode == episode) { return a.0.episode == episode }
+                return a.0.season == season && b.0.season != season
+            }
+        return byDate?.0 ?? exact
+    }
 }
