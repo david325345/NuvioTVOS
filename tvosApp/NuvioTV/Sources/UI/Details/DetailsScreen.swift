@@ -3438,13 +3438,28 @@ struct TvDetailsContent: View {
             // button. Move it onto Play explicitly once the content appears
             // (async so it runs after the focus engine's own first pass).
             .onAppear {
+                var calendarEpisodeKey: String?
                 if hasAppearedBefore {
                     refreshProgressAfterReturn()
                 } else {
                     hasAppearedBefore = true
+                    // Opened from the calendar: start on that episode card
+                    // instead of Play.
+                    calendarEpisodeKey = initialFocusEpisode.flatMap { focus in
+                        episodePresentation.guide.episodes.first {
+                            $0.season == focus.season && $0.episode == focus.episode
+                        }
+                    }.map { TvEpisodeFocus.card($0.id) }
                 }
-                focusedDetailsSection = .actions
-                DispatchQueue.main.async { actionFocus = .play }
+                if let calendarEpisodeKey {
+                    focusedDetailsSection = .episodes
+                    restoreGeneration &+= 1
+                    restoreEpisodeKey = calendarEpisodeKey
+                    restoreEpisodeFocus(to: calendarEpisodeKey, generation: restoreGeneration)
+                } else {
+                    focusedDetailsSection = .actions
+                    DispatchQueue.main.async { actionFocus = .play }
+                }
                 scheduleBackgroundTrailer(for: meta)
             }
             .onDisappear {
