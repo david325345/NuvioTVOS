@@ -312,6 +312,33 @@ final class CalendarSuggestionTests: XCTestCase {
         XCTAssertEqual(CalendarSuggestionList.upcomingMovies.kind, .movie)
     }
 
+    func testTodayListsUseTodayOnly() {
+        let anime = CalendarSuggestions.request(for: .animeToday, today: today, region: "CZ")
+        XCTAssertEqual(anime.query["air_date.gte"], "2026-10-19")
+        XCTAssertEqual(anime.query["air_date.lte"], "2026-10-19")
+        XCTAssertEqual(anime.query["with_origin_country"], "JP")
+        let series = CalendarSuggestions.request(for: .seriesToday, today: today, region: "CZ")
+        XCTAssertEqual(series.query["air_date.lte"], "2026-10-19")
+        XCTAssertEqual(series.query["without_genres"], CalendarSuggestions.airingNowExcludedGenres)
+    }
+
+    func testListStopsAtTheLastPage() async throws {
+        let http = CalendarMockHTTP([
+            "/movie/upcoming": (200, #"{"results":[{"id":5,"title":"M"}],"total_pages":1}"#),
+        ])
+        let results = try await CalendarTmdb.Client(apiKey: "k", http: http).list("movie/upcoming", pages: 5)
+        XCTAssertEqual(results.map(\.id), [5])
+        XCTAssertEqual(http.count(containing: "/movie/upcoming"), 1)
+    }
+
+    func testMosaicLayout() {
+        XCTAssertEqual(CalendarFormat.mosaicLayout(count: 20, capacity: 6).shown, 5)
+        XCTAssertEqual(CalendarFormat.mosaicLayout(count: 20, capacity: 6).overflow, 15)
+        XCTAssertEqual(CalendarFormat.mosaicLayout(count: 6, capacity: 6).overflow, 0)
+        XCTAssertEqual(CalendarFormat.mosaicLayout(count: 20, capacity: 12).overflow, 9)
+        XCTAssertEqual(CalendarFormat.mosaicLayout(count: 2, capacity: 6).shown, 2)
+    }
+
     func testListPagesAreMergedWithoutDuplicates() async throws {
         let http = CalendarMockHTTP([
             "/discover/tv": (200, #"{"results":[{"id":1,"name":"A","first_air_date":"2026-10-03"},{"id":2,"name":"B"}]}"#),

@@ -3,7 +3,9 @@ import Foundation
 /// Ready-made TMDB lists for adding many titles to the library at once
 /// ("anime this season", "series airing now", "upcoming movies").
 enum CalendarSuggestionList: String, CaseIterable, Identifiable, Sendable {
+    case animeToday
     case animeThisSeason
+    case seriesToday
     case airingNow
     case upcomingMovies
 
@@ -15,7 +17,9 @@ enum CalendarSuggestionList: String, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
+        case .animeToday: return L10n.string("calendar_suggest_anime_today", fallback: "Anime today")
         case .animeThisSeason: return L10n.string("calendar_suggest_anime", fallback: "Anime this season")
+        case .seriesToday: return L10n.string("calendar_suggest_series_today", fallback: "Series today")
         case .airingNow: return L10n.string("calendar_suggest_airing", fallback: "Series airing now")
         case .upcomingMovies: return L10n.string("calendar_suggest_movies", fallback: "Upcoming movies")
         }
@@ -28,6 +32,9 @@ struct CalendarSuggestionRequest: Equatable, Sendable {
 }
 
 enum CalendarSuggestions {
+    /// TMDB pages per list (20 titles each).
+    static let pages = 5
+
     /// The anime broadcast season `day` falls in: winter Jan–Mar, spring
     /// Apr–Jun, summer Jul–Sep, fall Oct–Dec.
     static func animeSeason(containing day: CalendarDay) -> (first: CalendarDay, last: CalendarDay) {
@@ -43,6 +50,21 @@ enum CalendarSuggestions {
 
     static func request(for list: CalendarSuggestionList, today: CalendarDay, region: String) -> CalendarSuggestionRequest {
         switch list {
+        case .animeToday:
+            return CalendarSuggestionRequest(path: "discover/tv", query: [
+                "with_genres": "16",
+                "with_origin_country": "JP",
+                "air_date.gte": today.iso,
+                "air_date.lte": today.iso,
+                "sort_by": "popularity.desc",
+            ])
+        case .seriesToday:
+            return CalendarSuggestionRequest(path: "discover/tv", query: [
+                "without_genres": airingNowExcludedGenres,
+                "air_date.gte": today.iso,
+                "air_date.lte": today.iso,
+                "sort_by": "popularity.desc",
+            ])
         case .animeThisSeason:
             let season = animeSeason(containing: today)
             return CalendarSuggestionRequest(path: "discover/tv", query: [

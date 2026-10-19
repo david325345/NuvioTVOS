@@ -203,6 +203,12 @@ enum CalendarTmdb {
 
     struct ListPage: Decodable, Sendable {
         let results: [ListResult]?
+        let totalPages: Int?
+
+        enum CodingKeys: String, CodingKey {
+            case results
+            case totalPages = "total_pages"
+        }
     }
 
     struct ExternalIds: Decodable, Sendable {
@@ -246,6 +252,7 @@ enum CalendarTmdb {
                 for result in response.results ?? [] where seen.insert(result.id).inserted {
                     all.append(result)
                 }
+                if let total = response.totalPages, page >= total { break }
             }
             return all
         }

@@ -6,7 +6,7 @@ struct CalendarSuggestionsView: View {
     let accent: Color
     let onClose: (_ added: Int) -> Void
 
-    @State private var list: CalendarSuggestionList = .animeThisSeason
+    @State private var list: CalendarSuggestionList = .animeToday
     @State private var results: [CalendarTmdb.ListResult] = []
     @State private var isLoading = false
     @State private var errorText: String?
@@ -18,11 +18,10 @@ struct CalendarSuggestionsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
+            Text(L10n.string("calendar_suggest_title", fallback: "Add to library"))
+                .font(.system(size: 40, weight: .bold))
+                .foregroundColor(.white)
             HStack(spacing: 20) {
-                Text(L10n.string("calendar_suggest_title", fallback: "Add to library"))
-                    .font(.system(size: 40, weight: .bold))
-                    .foregroundColor(.white)
-                Spacer()
                 ForEach(CalendarSuggestionList.allCases) { option in
                     Button {
                         guard option != list else { return }
@@ -123,7 +122,7 @@ struct CalendarSuggestionsView: View {
         let client = CalendarLibrarySource.makeClient()
         loadTask = Task {
             do {
-                let found = try await client.list(request.path, query: request.query)
+                let found = try await client.list(request.path, query: request.query, pages: CalendarSuggestions.pages)
                 guard !Task.isCancelled else { return }
                 results = found
                 isLoading = false

@@ -278,7 +278,7 @@ struct CalendarView: View {
                 }
             }
             LazyVGrid(columns: columns, spacing: 10) {
-                ForEach(Array(cells.enumerated()), id: \.offset) { _, day in
+                ForEach(Array(cells.enumerated()), id: \.offset) { index, day in
                     if let day {
                         CalendarDayCell(
                             day: day,
@@ -286,13 +286,16 @@ struct CalendarView: View {
                             isToday: day == today,
                             isSelected: day == selectedDay,
                             accent: accent,
-                            height: cellHeight
+                            height: cellHeight,
+                            growth: CalendarDayCellGrowth(column: index % 7, row: index / 7, rows: rows)
                         ) {
                             if let first = result.entries(on: day).first {
                                 focus = .entry(first.id)
                             }
                         }
                         .focused($focus, equals: .day(day))
+                        // The focused cell grows over its neighbours.
+                        .zIndex(focus == .day(day) ? 1 : 0)
                     } else {
                         Color.clear.frame(height: cellHeight)
                     }
@@ -319,6 +322,20 @@ enum CalendarFocus: Hashable {
 
 // MARK: - Day cell
 
+/// Which way a focused cell grows, so cells at the edges of the grid grow
+/// inwards instead of off the grid.
+struct CalendarDayCellGrowth: Equatable {
+    let column: Int
+    let row: Int
+    let rows: Int
+
+    var alignment: Alignment {
+        let horizontal: HorizontalAlignment = column == 0 ? .leading : (column == 6 ? .trailing : .center)
+        let vertical: VerticalAlignment = row == 0 ? .top : (row >= rows - 1 ? .bottom : .center)
+        return Alignment(horizontal: horizontal, vertical: vertical)
+    }
+}
+
 private struct CalendarDayCell: View {
     let day: CalendarDay
     let entries: [CalendarEntry]
@@ -326,13 +343,14 @@ private struct CalendarDayCell: View {
     let isSelected: Bool
     let accent: Color
     let height: CGFloat
+    let growth: CalendarDayCellGrowth
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             CalendarDayCellBody(
                 day: day, entries: entries, isToday: isToday, isSelected: isSelected,
-                accent: accent, height: height
+                accent: accent, height: height, growth: growth
             )
         }
         .buttonStyle(PosterCardButtonStyle())
@@ -341,6 +359,8 @@ private struct CalendarDayCell: View {
 }
 
 private struct CalendarDayCellBody: View {
+    static let focusedScale: CGFloat = 1.7
+
     @Environment(\.isFocused) private var isFocused
     let day: CalendarDay
     let entries: [CalendarEntry]
@@ -348,6 +368,7 @@ private struct CalendarDayCellBody: View {
     let isSelected: Bool
     let accent: Color
     let height: CGFloat
+    let growth: CalendarDayCellGrowth
 
     private var posters: [CalendarEntry] {
         // One poster per title per day.
@@ -356,6 +377,22 @@ private struct CalendarDayCellBody: View {
     }
 
     var body: some View {
+        // The cell keeps its grid slot; the visible card is drawn on top of
+        // it and grows past it while focused.
+        GeometryReader { proxy in
+            let scale = isFocused ? Self.focusedScale : 1
+            ZStack(alignment: growth.alignment) {
+                Color.clear
+                card
+                    .frame(width: proxy.size.width * scale, height: proxy.size.height * scale)
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: growth.alignment)
+        }
+        .frame(height: height)
+        .animation(.easeOut(duration: 0.18), value: isFocused)
+    }
+
+    private var card: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Text("\(day.day)")
@@ -369,27 +406,30 @@ private struct CalendarDayCellBody: View {
                         .foregroundColor(accent)
                         .lineLimit(1)
                 }
+                Spacer(minLength: 0)
+                if isFocused, entries.count > 0 {
+                    Text(CalendarFormat.entryCount(entries.count))
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.75))
+                        .lineLimit(1)
+                }
             }
-            HStack(spacing: 6) {
-                ForEach(posters.prefix(2)) { entry in
-                    CalendarImage(url: entry.posterURL, symbol: entry.kind == .movie ? "film" : "tv")
-                        .aspectRatio(2.0 / 3.0, contentMode: .fit)
-                        .frame(height: height - 52)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                }
-                if posters.count > 2 {
-                    Text("+\(posters.count - 2)")
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundColor(.white.opacity(0.8))
-                }
+            if !posters.isEmpty {
+                CalendarPosterMosaic(
+                    entries: posters,
+                    columns: isFocused ? 4 : 3,
+                    rows: isFocused ? 3 : 2
+                )
             }
             Spacer(minLength: 0)
         }
         .padding(8)
-        .frame(maxWidth: .infinity, minHeight: height, maxHeight: height, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(
             RoundedRectangle(cornerRadius: 10)
-                .fill(Color.white.opacity(isFocused ? 0.2 : (isToday ? 0.14 : (isSelected ? 0.1 : 0.05))))
+                .fill(isFocused
+                    ? Color(white: 0.22)
+                    : Color.white.opacity(isToday ? 0.14 : (isSelected ? 0.1 : 0.05)))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 10)
@@ -398,8 +438,46 @@ private struct CalendarDayCellBody: View {
                     lineWidth: isFocused ? 4 : 3
                 )
         )
-        .scaleEffect(isFocused ? 1.04 : 1)
-        .animation(.easeOut(duration: 0.15), value: isFocused)
+    }
+}
+
+/// Up to `columns × rows` cropped poster tiles; when there are more titles
+/// the last tile shows how many are left.
+private struct CalendarPosterMosaic: View {
+    let entries: [CalendarEntry]
+    let columns: Int
+    let rows: Int
+
+    var body: some View {
+        let layout = CalendarFormat.mosaicLayout(count: entries.count, capacity: columns * rows)
+        VStack(spacing: 4) {
+            ForEach(0..<rows, id: \.self) { row in
+                HStack(spacing: 4) {
+                    ForEach(0..<columns, id: \.self) { column in
+                        tile(at: row * columns + column, shown: layout.shown, overflow: layout.overflow)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func tile(at index: Int, shown: Int, overflow: Int) -> some View {
+        if index < shown {
+            let entry = entries[index]
+            CalendarImage(url: entry.posterURL, symbol: entry.kind == .movie ? "film" : "tv")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+        } else if overflow > 0, index == shown {
+            Text("+\(overflow)")
+                .font(.system(size: 18, weight: .bold))
+                .foregroundColor(.white.opacity(0.85))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(RoundedRectangle(cornerRadius: 4).fill(Color.white.opacity(0.08)))
+        } else {
+            Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
     }
 }
 
@@ -588,6 +666,20 @@ private struct CalendarSkippedList: View {
 }
 
 enum CalendarFormat {
+    /// How many posters fit and how many are left for the "+N" tile.
+    static func mosaicLayout(count: Int, capacity: Int) -> (shown: Int, overflow: Int) {
+        guard capacity > 0 else { return (0, count) }
+        if count <= capacity { return (count, 0) }
+        let shown = capacity - 1
+        return (shown, count - shown)
+    }
+
+    static func entryCount(_ count: Int) -> String {
+        count == 1
+            ? L10n.string("calendar_one_entry", fallback: "1 episode")
+            : L10n.format("calendar_entries", fallback: "%d episodes", count)
+    }
+
     /// Black on the white accent, white on the coloured ones.
     static func textColor(on accent: Color) -> Color {
         accent == .white ? .black : .white
