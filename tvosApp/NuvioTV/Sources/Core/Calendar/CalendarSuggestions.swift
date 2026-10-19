@@ -15,6 +15,42 @@ enum CalendarSuggestionList: String, CaseIterable, Identifiable, Sendable {
         self == .upcomingMovies ? .movie : .series
     }
 
+    /// Top-level button the list sits under in Add shows.
+    enum Group: String, CaseIterable, Identifiable, Sendable {
+        case anime, series, movies
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .anime: return L10n.string("calendar_suggest_group_anime", fallback: "Anime")
+            case .series: return L10n.string("calendar_suggest_group_series", fallback: "Series")
+            case .movies: return L10n.string("calendar_suggest_group_movies", fallback: "Movies")
+            }
+        }
+
+        var lists: [CalendarSuggestionList] {
+            CalendarSuggestionList.allCases.filter { $0.group == self }
+        }
+    }
+
+    var group: Group {
+        switch self {
+        case .animeToday, .animeThisSeason: return .anime
+        case .seriesToday, .airingNow: return .series
+        case .upcomingMovies: return .movies
+        }
+    }
+
+    /// Name inside its group's menu.
+    var shortTitle: String {
+        switch self {
+        case .animeToday, .seriesToday: return L10n.string("calendar_suggest_today", fallback: "Today")
+        case .animeThisSeason: return L10n.string("calendar_suggest_this_season", fallback: "This season")
+        case .airingNow: return L10n.string("calendar_suggest_airing_now", fallback: "Airing now")
+        case .upcomingMovies: return L10n.string("calendar_suggest_upcoming", fallback: "Upcoming")
+        }
+    }
+
     var title: String {
         switch self {
         case .animeToday: return L10n.string("calendar_suggest_anime_today", fallback: "Anime today")

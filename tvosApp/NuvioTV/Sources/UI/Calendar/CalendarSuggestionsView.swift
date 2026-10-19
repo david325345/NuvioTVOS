@@ -49,14 +49,37 @@ struct CalendarSuggestionsView: View {
             // Lists and actions share the row right above the posters, so
             // confirming is one step up instead of a scroll to the end.
             HStack(spacing: 20) {
-                ForEach(CalendarSuggestionList.allCases) { option in
-                    Button {
-                        guard option != list else { return }
-                        list = option
-                        load()
-                    } label: {
-                        Text(option.title)
-                            .font(.system(size: 22, weight: option == list ? .bold : .regular))
+                // Anime and Series open a small menu (Today / This season,
+                // Today / Airing now); Movies has a single list.
+                ForEach(CalendarSuggestionList.Group.allCases) { group in
+                    let isCurrent = list.group == group
+                    let label = isCurrent && group.lists.count > 1
+                        ? "\(group.title): \(list.shortTitle)"
+                        : group.title
+                    if group.lists.count > 1 {
+                        Menu {
+                            ForEach(group.lists) { option in
+                                Button {
+                                    pick(option)
+                                } label: {
+                                    if option == list {
+                                        Label(option.shortTitle, systemImage: "checkmark")
+                                    } else {
+                                        Text(option.shortTitle)
+                                    }
+                                }
+                            }
+                        } label: {
+                            Label(label, systemImage: "chevron.down")
+                                .font(.system(size: 22, weight: isCurrent ? .bold : .regular))
+                        }
+                    } else if let only = group.lists.first {
+                        Button {
+                            pick(only)
+                        } label: {
+                            Text(label)
+                                .font(.system(size: 22, weight: isCurrent ? .bold : .regular))
+                        }
                     }
                 }
                 Spacer(minLength: 20)
@@ -137,6 +160,12 @@ struct CalendarSuggestionsView: View {
             }
             .scrollClipDisabledIfAvailable()
         }
+    }
+
+    private func pick(_ option: CalendarSuggestionList) {
+        guard option != list else { return }
+        list = option
+        load()
     }
 
     private func toggleSelection(_ result: CalendarSuggestionItem) {
