@@ -48,7 +48,7 @@ let signingXCConfig: Path = .relativeToManifest("Configurations/Signing.xcconfig
 
 // MARK: - Shared values
 
-let bundleID = "com.pyksel.nuviotvos"
+let bundleID = "com.pyksel.nuviotvos.david"
 let marketingVersion = "3.4.4"
 let projectVersion = "75"
 // LibTrueHD 2.2.0 requires tvOS 18; APAC rendering itself is gated to tvOS 26+.
