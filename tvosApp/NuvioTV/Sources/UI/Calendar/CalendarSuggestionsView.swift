@@ -18,9 +18,17 @@ struct CalendarSuggestionsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
-            Text(L10n.string("calendar_suggest_title", fallback: "Add to library"))
-                .font(.system(size: 40, weight: .bold))
-                .foregroundColor(.white)
+            HStack(alignment: .firstTextBaseline, spacing: 24) {
+                Text(L10n.string("calendar_suggest_title", fallback: "Add to library"))
+                    .font(.system(size: 40, weight: .bold))
+                    .foregroundColor(.white)
+                Spacer()
+                Text(L10n.string("calendar_suggest_play_hint", fallback: "Play/Pause adds the selected titles"))
+                    .font(.system(size: 18))
+                    .foregroundColor(.white.opacity(0.5))
+            }
+            // Lists and actions share the row right above the posters, so
+            // confirming is one step up instead of a scroll to the end.
             HStack(spacing: 20) {
                 ForEach(CalendarSuggestionList.allCases) { option in
                     Button {
@@ -32,39 +40,41 @@ struct CalendarSuggestionsView: View {
                             .font(.system(size: 22, weight: option == list ? .bold : .regular))
                     }
                 }
+                Spacer(minLength: 20)
+                Group {
+                    Button {
+                        addSelected()
+                    } label: {
+                        Label(
+                            isAdding
+                                ? L10n.string("calendar_suggest_adding", fallback: "Adding…")
+                                : L10n.format("calendar_suggest_add", fallback: "Add %d to library", selected.count),
+                            systemImage: "plus"
+                        )
+                    }
+                    .disabled(selected.isEmpty || isAdding)
+
+                    Button(L10n.string("calendar_suggest_select_all", fallback: "Select all")) {
+                        selected = Set(results.filter { $0.isAddable && !libraryKeys.contains($0.key) }.map(\.key))
+                    }
+                    .disabled(results.isEmpty || isAdding)
+
+                    Button(L10n.string("action_close", fallback: "Close")) { onClose(0) }
+                        .disabled(isAdding)
+                }
+                .font(.system(size: 22, weight: .semibold))
             }
 
             content
-
-            HStack(spacing: 24) {
-                Button {
-                    addSelected()
-                } label: {
-                    Label(
-                        isAdding
-                            ? L10n.string("calendar_suggest_adding", fallback: "Adding…")
-                            : L10n.format("calendar_suggest_add", fallback: "Add %d to library", selected.count),
-                        systemImage: "plus"
-                    )
-                }
-                .disabled(selected.isEmpty || isAdding)
-
-                Button(L10n.string("calendar_suggest_select_all", fallback: "Select all")) {
-                    selected = Set(results.filter { $0.isAddable && !libraryKeys.contains($0.key) }.map(\.key))
-                }
-                .disabled(results.isEmpty || isAdding)
-
-                Spacer()
-
-                Button(L10n.string("action_close", fallback: "Close")) { onClose(0) }
-                    .disabled(isAdding)
-            }
-            .font(.system(size: 24, weight: .semibold))
         }
         .padding(.horizontal, 70)
         .padding(.vertical, 50)
         .background(Color.black.opacity(0.92).ignoresSafeArea())
         .onAppear { load() }
+        // Play/Pause on the remote adds the selection from anywhere in the grid.
+        .onPlayPauseCommand {
+            if !selected.isEmpty && !isAdding { addSelected() }
+        }
         .onDisappear { loadTask?.cancel() }
     }
 
