@@ -33,16 +33,42 @@ enum CalendarTmdbError: Error, Equatable, Sendable {
 }
 
 enum CalendarText {
-    /// True when the text is written in Japanese, Chinese or Korean script.
-    static func isCJK(_ text: String) -> Bool {
+    /// True when the text is written in a script most viewers of a Latin,
+    /// Cyrillic or Greek UI can't read: Japanese, Chinese, Korean, Indic
+    /// (Devanagari, Bengali, Tamil…), Thai, Lao, Khmer, Myanmar, Arabic,
+    /// Hebrew, Georgian, Armenian or Ethiopic. TMDB falls back to such
+    /// original titles when the app language has no translation.
+    static func isNonLatin(_ text: String) -> Bool {
         text.unicodeScalars.contains { scalar in
             switch scalar.value {
-            case 0x3040...0x30FF, 0x3400...0x4DBF, 0x4E00...0x9FFF, 0xAC00...0xD7AF, 0xF900...0xFAFF, 0xFF66...0xFF9F:
+            case 0x0530...0x058F,           // Armenian
+                 0x0590...0x05FF,           // Hebrew
+                 0x0600...0x06FF, 0x0750...0x077F, 0x08A0...0x08FF, // Arabic
+                 0x0900...0x0DFF,           // Indic scripts, Sinhala
+                 0x0E00...0x0EFF,           // Thai, Lao
+                 0x1000...0x109F,           // Myanmar
+                 0x10A0...0x10FF,           // Georgian
+                 0x1100...0x11FF,           // Hangul Jamo
+                 0x1200...0x137F,           // Ethiopic
+                 0x1780...0x17FF,           // Khmer
+                 0x3040...0x30FF,           // Hiragana, Katakana
+                 0x3400...0x4DBF, 0x4E00...0x9FFF, 0xF900...0xFAFF, // CJK
+                 0xAC00...0xD7AF,           // Hangul
+                 0xFB1D...0xFDFF, 0xFE70...0xFEFF, // Hebrew/Arabic forms
+                 0xFF66...0xFF9F:           // Half-width Katakana
                 return true
             default:
                 return false
             }
         }
+    }
+
+    /// Languages whose own script `isNonLatin` covers: native titles are
+    /// fine for these viewers.
+    static func readsNonLatin(_ language: String) -> Bool {
+        let code = language.lowercased().prefix(2)
+        return ["ja", "zh", "ko", "hi", "bn", "ta", "te", "kn", "ml", "mr", "gu", "pa", "si",
+                "th", "lo", "km", "my", "ar", "fa", "ur", "he", "ka", "hy", "am"].contains(String(code))
     }
 }
 
@@ -136,13 +162,13 @@ enum CalendarTmdb {
         }
 
         /// A name the viewer can read: the localized one, or English when
-        /// TMDB fell back to Japanese, Chinese or Korean script.
+        /// TMDB fell back to an original title in another script.
         var readableName: String? {
-            if let name, !name.isEmpty, !CalendarText.isCJK(name) { return name }
+            if let name, !name.isEmpty, !CalendarText.isNonLatin(name) { return name }
             let english = translations?.translations?
                 .first { $0.language == "en" }?.data?.name?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            if let english, !english.isEmpty, !CalendarText.isCJK(english) { return english }
+            if let english, !english.isEmpty, !CalendarText.isNonLatin(english) { return english }
             return nil
         }
 
@@ -304,14 +330,14 @@ enum CalendarTmdb {
                 q["page"] = String(page)
                 let response: ListPage = try await get(path, query: q)
                 var results = response.results ?? []
-                // TMDB falls back to the original Japanese/Chinese/Korean title
+                // TMDB falls back to the original title (Japanese, Hindi, Thai…)
                 // when there's no translation; fetch the page in English then.
-                if !Self.readsCJK(language), results.contains(where: { CalendarText.isCJK($0.displayTitle) }),
+                if !CalendarText.readsNonLatin(language), results.contains(where: { CalendarText.isNonLatin($0.displayTitle) }),
                    let english: ListPage = try? await get(path, query: q, language: "en-US") {
                     let names = Dictionary((english.results ?? []).map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
                     results = results.map { result in
-                        guard CalendarText.isCJK(result.displayTitle), let en = names[result.id],
-                              !CalendarText.isCJK(en.displayTitle) else { return result }
+                        guard CalendarText.isNonLatin(result.displayTitle), let en = names[result.id],
+                              !CalendarText.isNonLatin(en.displayTitle) else { return result }
                         return ListResult(id: result.id, name: en.name, title: en.title, posterPath: result.posterPath,
                                           firstAirDate: result.firstAirDate, releaseDate: result.releaseDate)
                     }
@@ -331,12 +357,6 @@ enum CalendarTmdb {
                 return nil
             }
             return imdb
-        }
-
-        /// The viewer reads these scripts, so native titles are fine.
-        static func readsCJK(_ language: String) -> Bool {
-            let code = language.lowercased()
-            return code.hasPrefix("ja") || code.hasPrefix("zh") || code.hasPrefix("ko")
         }
 
         func get<T: Decodable>(_ path: String, query: [String: String] = [:], language: String? = nil) async throws -> T {

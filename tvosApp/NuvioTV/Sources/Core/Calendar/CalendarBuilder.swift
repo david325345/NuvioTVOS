@@ -71,7 +71,7 @@ enum CalendarBuilder {
         // A library name in Japanese/Chinese/Korean script gives way to the
         // readable (localized or English) TMDB name.
         let libraryName = nonEmpty(item.name)
-        let title = libraryName.flatMap { CalendarText.isCJK($0) ? nil : $0 }
+        let title = libraryName.flatMap { CalendarText.isNonLatin($0) ? nil : $0 }
             ?? details.readableName
             ?? libraryName ?? nonEmpty(details.name) ?? item.id
         let poster = CalendarTmdb.imageURL(details.posterPath, size: "w342")
@@ -94,7 +94,7 @@ enum CalendarBuilder {
                 seasonNumber: season,
                 episodeNumber: number,
                 // Untranslated episode titles come back in Japanese; leave them out.
-                episodeName: nonEmpty(episode.name).flatMap { CalendarText.isCJK($0) ? nil : $0 },
+                episodeName: nonEmpty(episode.name).flatMap { CalendarText.isNonLatin($0) ? nil : $0 },
                 overview: nonEmpty(episode.overview),
                 posterURL: poster,
                 stillURL: CalendarTmdb.imageURL(episode.stillPath, size: "w500")

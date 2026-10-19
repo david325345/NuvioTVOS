@@ -606,11 +606,16 @@ final class CalendarAnimeTimesTests: XCTestCase {
 // MARK: - Readable titles
 
 final class CalendarReadableTitleTests: XCTestCase {
-    func testDetectsCJKScript() {
-        XCTAssertTrue(CalendarText.isCJK("薬屋のひとりごと"))
-        XCTAssertTrue(CalendarText.isCJK("나 혼자만 레벨업"))
-        XCTAssertFalse(CalendarText.isCJK("The Apothecary Diaries"))
-        XCTAssertFalse(CalendarText.isCJK("Šílenství"))
+    func testDetectsNonLatinScript() {
+        XCTAssertTrue(CalendarText.isNonLatin("薬屋のひとりごと"))
+        XCTAssertTrue(CalendarText.isNonLatin("나 혼자만 레벨업"))
+        XCTAssertFalse(CalendarText.isNonLatin("The Apothecary Diaries"))
+        XCTAssertFalse(CalendarText.isNonLatin("Šílenství"))
+        XCTAssertTrue(CalendarText.isNonLatin("क्योंकि सास भी कभी बहू थी"))
+        XCTAssertTrue(CalendarText.isNonLatin("บุพเพสันนิวาส"))
+        XCTAssertFalse(CalendarText.isNonLatin("Слово пацана"))
+        XCTAssertTrue(CalendarText.readsNonLatin("hi-IN"))
+        XCTAssertFalse(CalendarText.readsNonLatin("cs-CZ"))
     }
 
     func testTvDetailsFallsBackToEnglish() throws {

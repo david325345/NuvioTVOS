@@ -121,7 +121,8 @@ struct CalendarSuggestionsView: View {
         }
         .padding(.horizontal, 70)
         .padding(.vertical, 50)
-        .background(Color.black.opacity(0.92).ignoresSafeArea())
+        // Opaque, so the calendar doesn't show through behind the posters.
+        .background(Color.black.ignoresSafeArea())
         .onAppear { load() }
         // Play/Pause on the remote adds the selection from anywhere in the grid.
         .onPlayPauseCommand {
