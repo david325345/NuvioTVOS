@@ -271,6 +271,7 @@ enum TVTab: String, CaseIterable, Identifiable {
     case home = "Home"
     case search = "Search"
     case library = "Library"
+    case calendar = "Calendar"
     case settings = "Settings"
 
     var id: String { rawValue }
@@ -286,6 +287,8 @@ enum TVTab: String, CaseIterable, Identifiable {
             return L10n.string("nav_search", fallback: "Search")
         case .library:
             return L10n.string("nav_library", fallback: "Library")
+        case .calendar:
+            return L10n.string("nav_calendar", fallback: "Calendar")
         case .settings:
             return L10n.string("nav_settings", fallback: "Settings")
         }
@@ -297,6 +300,7 @@ enum TVTab: String, CaseIterable, Identifiable {
         case .home: return "house"
         case .search: return "magnifyingglass"
         case .library: return "rectangle.stack"
+        case .calendar: return "calendar"
         case .settings: return "gearshape"
         }
     }
@@ -352,6 +356,8 @@ struct ContentView: View {
     @State private var playbackDidStart = false
     @State private var reopenStreamPickerOnDetails = false
     @State private var reopenStreamPickerEpisode: NuvioVideo?
+    /// Episode to select when Details opens from the calendar.
+    @State private var detailsFocusEpisode: DetailsEpisodeFocus?
     /// Title whose liquid-glass quick-actions menu is showing (long-press on a
     /// card). Presented as an overlay over the tab view, like Details/Player.
     @State private var cardMenuMeta: NuvioMeta?
@@ -829,12 +835,14 @@ struct ContentView: View {
         id: String,
         type: String,
         returnDestination: DetailsReturnDestination = .main,
-        startPlayback: Bool = false
+        startPlayback: Bool = false,
+        focusEpisode: DetailsEpisodeFocus? = nil
     ) {
         TVHomeDebugTrace.log(
             "details.open.root id=\(id) type=\(type) returnDest=\(returnDestination)"
         )
         detailsBackStack.removeAll()
+        detailsFocusEpisode = focusEpisode
         detailsReturnDestination = returnDestination
         if startPlayback {
             nextDetailsPlaybackRequestID &+= 1
@@ -1452,6 +1460,8 @@ struct ContentView: View {
         videoHash: String? = nil,
         startupBenchmarkToken: UUID? = nil
     ) {
+        // The calendar episode focus applies to the first open only.
+        detailsFocusEpisode = nil
         let isTrailer = subtitle == PlaybackMarkers.trailerSubtitle
         let store = ProfileSettings.store(for: profileViewModel.activeProfile?.id)
         let defaultPlayer = ExternalPlayer.from(store.string(forKey: SettingsKey.externalPlayer))
@@ -1981,8 +1991,23 @@ struct ContentView: View {
                     resumeFrom: nil,
                     origin: .cloudLibrary
                 )
+            },
+            onOpenCalendarEntry: { entry in
+                openCalendarEntry(entry)
             }
         )
+    }
+
+    /// Opens a calendar entry: a movie's details, or a series' details with
+    /// the entry's episode selected.
+    private func openCalendarEntry(_ entry: CalendarEntry) {
+        let type = entry.itemType.isEmpty ? (entry.kind == .series ? "series" : "movie") : entry.itemType
+        let focus = entry.seasonNumber.flatMap { season in
+            entry.episodeNumber.map { DetailsEpisodeFocus(metaID: entry.itemId, season: season, episode: $0) }
+        }
+        withAnimation(.easeInOut(duration: 0.28)) {
+            openDetailsRoot(id: entry.itemId, type: type, focusEpisode: focus)
+        }
     }
 
     private func detailsScreen(contentId: String, contentType: String) -> some View {
@@ -1997,6 +2022,7 @@ struct ContentView: View {
             },
             initiallyPresentStreamPicker: reopenStreamPickerOnDetails,
             initialStreamPickerEpisode: reopenStreamPickerEpisode,
+            initialFocusEpisode: detailsFocusEpisode.flatMap { $0.metaID == contentId ? $0 : nil },
             onInitialStreamPickerPresented: {
                 reopenStreamPickerOnDetails = false
                 reopenStreamPickerEpisode = nil
@@ -3081,6 +3107,7 @@ private struct TVMainTabView: View {
     let onLongPressContinueWatching: (ContinueWatchingItem) -> Void
     let onOpenCloudLibrary: () -> Void
     let onPlayCloudFile: (URL, NuvioMeta) -> Void
+    var onOpenCalendarEntry: ((CalendarEntry) -> Void)? = nil
     @AppStorage(SettingsKey.amoled) private var amoled = false
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
     @AppStorage(SettingsKey.discoverLocation) private var discoverLocation = "Search"
@@ -3230,6 +3257,16 @@ private struct TVMainTabView: View {
                     Label(TVTab.library.title, systemImage: TVTab.library.symbol)
                 }
                 .tag(TVTab.library)
+
+            CalendarView(
+                onOpenEntry: { entry in onOpenCalendarEntry?(entry) },
+                onOpenSettings: { selectedTab = .settings }
+            )
+                .id(activeProfile?.id ?? "none")
+                .tabItem {
+                    Label(TVTab.calendar.title, systemImage: TVTab.calendar.symbol)
+                }
+                .tag(TVTab.calendar)
 
             SettingsView(
                 activeProfile: displayedProfile,

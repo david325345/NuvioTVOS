@@ -1,0 +1,283 @@
+import Foundation
+import XCTest
+@testable import NuvioTV
+
+// MARK: - Helpers
+
+private final class CalendarMockHTTP: CalendarHTTPClient, @unchecked Sendable {
+    /// Path suffix → (status, JSON body). The longest matching suffix wins.
+    let routes: [String: (Int, String)]
+    private let lock = NSLock()
+    private var requested: [URL] = []
+
+    init(_ routes: [String: (Int, String)]) { self.routes = routes }
+
+    func get(_ url: URL) async throws -> (Data, Int) {
+        lock.withLock { requested.append(url) }
+        let match = routes.keys.filter { url.path.hasSuffix($0) }.max { $0.count < $1.count }
+        guard let key = match, let route = routes[key] else { return (Data("{}".utf8), 404) }
+        return (Data(route.1.utf8), route.0)
+    }
+
+    func count(containing fragment: String) -> Int {
+        lock.withLock { requested.filter { $0.path.contains(fragment) }.count }
+    }
+}
+
+private let today = CalendarDay(year: 2026, month: 10, day: 19)
+private let periodFirst = CalendarDay(year: 2026, month: 9, day: 1)
+private let periodLast = CalendarDay(year: 2026, month: 12, day: 31)
+
+private func ep(_ season: Int, _ number: Int, _ date: String?, type: String? = nil) -> CalendarTmdb.Episode {
+    CalendarTmdb.Episode(airDate: date, episodeNumber: number, seasonNumber: season, name: "E\(number)", episodeType: type)
+}
+
+// MARK: - Days and grid
+
+final class CalendarDayTests: XCTestCase {
+    func testParsing() {
+        XCTAssertEqual(CalendarDay(iso: "2026-10-19"), today)
+        XCTAssertEqual(CalendarDay(iso: "2026-10-30T00:00:00.000Z"), CalendarDay(year: 2026, month: 10, day: 30))
+        XCTAssertNil(CalendarDay(iso: nil))
+        XCTAssertNil(CalendarDay(iso: "2026-02-30"))
+        XCTAssertNil(CalendarDay(iso: "garbage!!!"))
+    }
+
+    func testArithmetic() {
+        XCTAssertEqual(today.adding(days: 90), CalendarDay(year: 2027, month: 1, day: 17))
+        XCTAssertEqual(CalendarDay(year: 2026, month: 1, day: 31).addingMonths(1), CalendarDay(year: 2026, month: 2, day: 28))
+        XCTAssertEqual(CalendarDay(year: 2026, month: 1, day: 15).addingMonths(-1), CalendarDay(year: 2025, month: 12, day: 15))
+        XCTAssertEqual(today.lastOfMonth, CalendarDay(year: 2026, month: 10, day: 31))
+        XCTAssertEqual(CalendarDay(year: 2028, month: 2, day: 3).daysInMonth, 29)
+        XCTAssertEqual(today.weekday, 2) // 19 Oct 2026 is a Monday
+    }
+
+    func testDayUsesGivenTimeZone() {
+        let date = ISO8601DateFormatter().date(from: "2026-10-19T23:30:00Z")!
+        XCTAssertEqual(CalendarDay(date: date, timeZone: TimeZone(identifier: "UTC")!), today)
+        XCTAssertEqual(CalendarDay(date: date, timeZone: TimeZone(identifier: "Europe/Prague")!), today.adding(days: 1))
+    }
+
+    func testPeriod() {
+        let period = CalendarBuilder.period(today: today)
+        XCTAssertEqual(period.first, periodFirst)
+        XCTAssertEqual(period.last, periodLast)
+    }
+
+    func testMonthGridStartsOnFirstWeekday() {
+        // October 2026 starts on a Thursday.
+        let monday = CalendarBuilder.monthGrid(for: today, firstWeekday: 2)
+        XCTAssertEqual(monday.prefix(4).filter { $0 == nil }.count, 3)
+        XCTAssertEqual(monday[3], CalendarDay(year: 2026, month: 10, day: 1))
+        XCTAssertEqual(monday.count % 7, 0)
+        XCTAssertEqual(monday.compactMap { $0 }.count, 31)
+
+        let sunday = CalendarBuilder.monthGrid(for: today, firstWeekday: 1)
+        XCTAssertEqual(sunday[4], CalendarDay(year: 2026, month: 10, day: 1))
+        XCTAssertEqual(CalendarBuilder.weekdayOrder(firstWeekday: 2), [2, 3, 4, 5, 6, 7, 1])
+    }
+}
+
+// MARK: - Series and movies
+
+final class CalendarBuilderTests: XCTestCase {
+    func testSeasonsToFetch() {
+        let details = CalendarTmdb.TvDetails(
+            id: 1, name: "Show",
+            nextEpisodeToAir: ep(2, 5, "2026-10-25"),
+            lastEpisodeToAir: ep(2, 4, "2026-10-18"),
+            seasons: [
+                .init(seasonNumber: 0, airDate: "2026-11-01"),
+                .init(seasonNumber: 1, airDate: "2024-01-01"),
+                .init(seasonNumber: 2, airDate: "2026-09-01"),
+                .init(seasonNumber: 3, airDate: "2026-12-20"),
+                .init(seasonNumber: 4, airDate: "2027-06-01"),
+            ]
+        )
+        XCTAssertEqual(CalendarBuilder.seasonsToFetch(for: details, first: periodFirst, last: periodLast), [2, 3])
+    }
+
+    func testEndedShowStillShowsEpisodesFromThisPeriod() {
+        let details = CalendarTmdb.TvDetails(id: 1, name: "Show", lastEpisodeToAir: ep(4, 10, "2026-09-20"))
+        XCTAssertEqual(CalendarBuilder.seasonsToFetch(for: details, first: periodFirst, last: periodLast), [4])
+        let old = CalendarTmdb.TvDetails(id: 1, name: "Show", lastEpisodeToAir: ep(4, 10, "2020-09-20"))
+        XCTAssertEqual(CalendarBuilder.seasonsToFetch(for: old, first: periodFirst, last: periodLast), [])
+    }
+
+    func testEpisodeEntriesStayInsideThePeriod() {
+        let item = CalendarItem(id: "tt1", kind: .series, name: "Library Name")
+        let details = CalendarTmdb.TvDetails(id: 7, name: "TMDB Name", posterPath: "/p.jpg")
+        let episodes = [
+            ep(2, 1, "2026-08-31"),
+            ep(2, 2, "2026-09-01"),
+            ep(2, 3, "2026-12-31"),
+            ep(2, 4, "2027-01-01"),
+            ep(2, 5, nil),
+            ep(2, 2, "2026-09-01"),
+            ep(0, 1, "2026-10-01"),
+        ]
+        let entries = CalendarBuilder.episodeEntries(item: item, details: details, episodes: episodes, first: periodFirst, last: periodLast)
+        XCTAssertEqual(entries.map(\.episodeNumber), [2, 3])
+        XCTAssertEqual(entries.first?.title, "Library Name")
+        XCTAssertEqual(entries.first?.posterURL?.absoluteString, "https://image.tmdb.org/t/p/w342/p.jpg")
+    }
+
+    func testReleaseKinds() {
+        XCTAssertEqual(CalendarBuilder.releaseKind(for: ep(1, 1, nil), season: 1, number: 1), .seriesPremiere)
+        XCTAssertEqual(CalendarBuilder.releaseKind(for: ep(3, 1, nil), season: 3, number: 1), .seasonPremiere)
+        XCTAssertEqual(CalendarBuilder.releaseKind(for: ep(3, 8, nil, type: "finale"), season: 3, number: 8), .seasonFinale)
+        XCTAssertEqual(CalendarBuilder.releaseKind(for: ep(3, 4, nil, type: "standard"), season: 3, number: 4), .episode)
+        XCTAssertEqual(CalendarBuilder.releaseKind(for: ep(0, 1, nil), season: 0, number: 1), .episode)
+    }
+
+    func testMovieRegionThenFallbacks() {
+        let item = CalendarItem(id: "tmdb:9", kind: .movie)
+        let regional = CalendarTmdb.MovieDetails(id: 9, title: "Film", releaseDate: "2026-11-01", countries: [
+            .init(country: "CZ", releaseDates: [
+                .init(releaseDate: "2026-11-05T00:00:00.000Z", type: 3),
+                .init(releaseDate: "2026-12-20T00:00:00.000Z", type: 4),
+                .init(releaseDate: "2026-10-01T00:00:00.000Z", type: 1),
+            ]),
+            .init(country: "US", releaseDates: [.init(releaseDate: "2026-10-30T00:00:00.000Z", type: 3)]),
+        ])
+        XCTAssertEqual(
+            CalendarBuilder.movieEntries(item: item, details: regional, region: "CZ", first: periodFirst, last: periodLast).map(\.releaseKind),
+            [.theatrical, .digital]
+        )
+
+        let usOnly = CalendarTmdb.MovieDetails(id: 9, title: "Film", releaseDate: "2026-11-01", countries: [
+            .init(country: "US", releaseDates: [.init(releaseDate: "2026-11-20T00:00:00.000Z", type: 4)]),
+        ])
+        XCTAssertEqual(
+            CalendarBuilder.movieEntries(item: item, details: usOnly, region: "CZ", first: periodFirst, last: periodLast).map(\.releaseKind),
+            [.digital]
+        )
+
+        let bare = CalendarTmdb.MovieDetails(id: 9, title: "Film", releaseDate: "2026-11-01")
+        XCTAssertEqual(
+            CalendarBuilder.movieEntries(item: item, details: bare, region: "CZ", first: periodFirst, last: periodLast).map(\.date.iso),
+            ["2026-11-01"]
+        )
+    }
+
+    func testGroupingSortsDaysAndTitles() {
+        let day1 = CalendarDay(year: 2026, month: 10, day: 20)
+        let a = CalendarEntry(itemId: "a", kind: .series, tmdbId: 1, title: "Zeta", date: day1, releaseKind: .episode, seasonNumber: 1, episodeNumber: 2)
+        let b = CalendarEntry(itemId: "b", kind: .series, tmdbId: 2, title: "alpha", date: day1, releaseKind: .episode, seasonNumber: 1, episodeNumber: 1)
+        let c = CalendarEntry(itemId: "c", kind: .movie, tmdbId: 3, title: "Film", date: today, releaseKind: .digital)
+        let days = CalendarBuilder.groupByDay([a, b, c])
+        XCTAssertEqual(days.map(\.date), [today, day1])
+        XCTAssertEqual(days[1].entries.map(\.itemId), ["b", "a"])
+    }
+
+    func testDecodesTmdbPayloads() throws {
+        let tv = #"""
+        {"id":1396,"name":"Show","poster_path":"/x.jpg","status":"Returning Series",
+         "next_episode_to_air":{"air_date":"2026-10-25","episode_number":5,"season_number":2,"still_path":null,"episode_type":"standard","id":1},
+         "last_episode_to_air":null,"seasons":[{"air_date":"2026-09-01","episode_count":10,"season_number":2,"id":5}],"extra":true}
+        """#
+        let details = try JSONDecoder().decode(CalendarTmdb.TvDetails.self, from: Data(tv.utf8))
+        XCTAssertEqual(details.nextEpisodeToAir?.episodeNumber, 5)
+        XCTAssertNil(details.lastEpisodeToAir)
+
+        let movie = #"""
+        {"id":9,"title":"Film","release_date":"2026-11-01","release_dates":{"results":[{"iso_3166_1":"CZ","release_dates":[{"release_date":"2026-11-05T00:00:00.000Z","type":3,"note":""}]}]}}
+        """#
+        let movieDetails = try JSONDecoder().decode(CalendarTmdb.MovieDetails.self, from: Data(movie.utf8))
+        XCTAssertEqual(movieDetails.releaseDates?.results?.first?.releaseDates?.first?.type, 3)
+    }
+}
+
+// MARK: - Service
+
+final class CalendarServiceTests: XCTestCase {
+    private func service(_ http: CalendarMockHTTP, ids: [String: Int]) -> CalendarService {
+        CalendarService(client: CalendarTmdb.Client(apiKey: "k", http: http), maxConcurrent: 2, region: "CZ") { item in
+            ids[item.id]
+        }
+    }
+
+    func testLoadsShowsAndMoviesAndReportsSkips() async throws {
+        let http = CalendarMockHTTP([
+            "/tv/1396": (200, #"{"id":1396,"name":"Show A","next_episode_to_air":{"air_date":"2026-10-20","episode_number":3,"season_number":2},"seasons":[{"season_number":2,"air_date":"2026-10-06"}]}"#),
+            "/tv/1396/season/2": (200, #"{"episodes":[{"air_date":"2026-10-06","episode_number":1,"season_number":2},{"air_date":"2026-10-20","episode_number":3,"season_number":2},{"air_date":"2026-10-27","episode_number":4,"season_number":2,"episode_type":"finale"}]}"#),
+            "/tv/2": (200, #"{"id":2,"name":"Ended","next_episode_to_air":null,"last_episode_to_air":{"air_date":"2019-05-19","episode_number":6,"season_number":8}}"#),
+            "/tv/3": (500, "oops"),
+            "/movie/9": (200, #"{"id":9,"title":"Film","release_date":"2026-11-01","release_dates":{"results":[]}}"#),
+        ])
+        let items = [
+            CalendarItem(id: "tt0903747", kind: .series, name: "Show A"),
+            CalendarItem(id: "tmdb:1396", kind: .series),
+            CalendarItem(id: "tmdb:2", kind: .series),
+            CalendarItem(id: "tmdb:3", kind: .series),
+            CalendarItem(id: "kitsu:5", kind: .series),
+            CalendarItem(id: "tmdb:9", kind: .movie),
+        ]
+        let ids = ["tt0903747": 1396, "tmdb:1396": 1396, "tmdb:2": 2, "tmdb:3": 3, "tmdb:9": 9]
+        let result = try await service(http, ids: ids).load(items: items, first: periodFirst, last: periodLast)
+
+        XCTAssertEqual(result.days.map(\.date.iso), ["2026-10-06", "2026-10-20", "2026-10-27", "2026-11-01"])
+        XCTAssertEqual(result.days[0].entries.first?.releaseKind, .seasonPremiere)
+        XCTAssertEqual(result.days[2].entries.first?.releaseKind, .seasonFinale)
+
+        let reasons = Dictionary(uniqueKeysWithValues: result.skipped.map { ($0.item.id, $0.reason) })
+        XCTAssertNil(reasons["tmdb:2"], "nothing in the period is not a problem")
+        XCTAssertEqual(reasons["tmdb:3"], .failed("HTTP 500"))
+        XCTAssertEqual(reasons["kitsu:5"], .unsupportedId)
+        XCTAssertNil(reasons["tmdb:1396"], "the duplicate is dropped silently")
+        XCTAssertEqual(http.count(containing: "/tv/1396/season/2"), 1)
+    }
+
+    func testLongReleasedMoviesAreNotRequested() async throws {
+        let http = CalendarMockHTTP([:])
+        let old = CalendarItem(id: "tmdb:11", kind: .movie, year: 1999)
+        let result = try await service(http, ids: ["tmdb:11": 11]).load(items: [old], first: periodFirst, last: periodLast)
+        XCTAssertEqual(http.count(containing: "/movie/"), 0)
+        XCTAssertTrue(result.skipped.isEmpty)
+    }
+
+    func testEntriesKeepTheLibraryType() {
+        let item = CalendarItem(id: "tt9", kind: .series, type: "anime")
+        let details = CalendarTmdb.TvDetails(id: 9, name: "Show")
+        let entries = CalendarBuilder.episodeEntries(item: item, details: details, episodes: [ep(1, 2, "2026-10-20")], first: periodFirst, last: periodLast)
+        XCTAssertEqual(entries.first?.itemType, "anime")
+    }
+
+    func testRejectedKeyFailsTheWholeLoad() async {
+        let http = CalendarMockHTTP(["/tv/1": (401, #"{"status_code":7}"#)])
+        do {
+            _ = try await service(http, ids: ["tmdb:1": 1]).load(items: [CalendarItem(id: "tmdb:1", kind: .series)], first: periodFirst, last: periodLast)
+            XCTFail("expected an error")
+        } catch {
+            XCTAssertEqual(error as? CalendarLoadError, .invalidApiKey)
+        }
+    }
+
+    func testMissingKey() async {
+        let s = CalendarService(client: CalendarTmdb.Client(apiKey: " ", http: CalendarMockHTTP([:])), region: "CZ") { _ in nil }
+        do {
+            _ = try await s.load(items: [], first: periodFirst, last: periodLast)
+            XCTFail("expected an error")
+        } catch {
+            XCTAssertEqual(error as? CalendarLoadError, .tmdbNotConfigured)
+        }
+    }
+
+    func testSeasonPageFailureFallsBackToKnownEpisodes() async throws {
+        let http = CalendarMockHTTP([
+            "/tv/4": (200, #"{"id":4,"name":"Show","next_episode_to_air":{"air_date":"2026-10-22","episode_number":7,"season_number":1}}"#),
+            "/tv/4/season/1": (500, ""),
+        ])
+        let result = try await service(http, ids: ["tmdb:4": 4]).load(items: [CalendarItem(id: "tmdb:4", kind: .series)], first: periodFirst, last: periodLast)
+        XCTAssertEqual(result.days.first?.entries.first?.episodeNumber, 7)
+    }
+
+    func testConcurrentMapKeepsOrder() async {
+        let s = service(CalendarMockHTTP([:]), ids: [:])
+        let out = await s.concurrentMap(Array(0..<20)) { value -> Int in
+            try? await Task.sleep(nanoseconds: UInt64((20 - value) * 1_000_000))
+            return value * 2
+        }
+        XCTAssertEqual(out, (0..<20).map { $0 * 2 })
+    }
+}

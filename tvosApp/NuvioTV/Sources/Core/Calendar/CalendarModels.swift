@@ -1,0 +1,231 @@
+import Foundation
+
+/// A calendar day without a time or time zone ("2026-10-19").
+///
+/// TMDB publishes air dates as plain dates, so the calendar keeps them as
+/// plain dates too instead of turning them into instants in some time zone.
+struct CalendarDay: Hashable, Comparable, Codable, Sendable, CustomStringConvertible {
+    let year: Int
+    let month: Int
+    let day: Int
+
+    init(year: Int, month: Int, day: Int) {
+        self.year = year
+        self.month = month
+        self.day = day
+    }
+
+    /// Parses "yyyy-MM-dd", also accepting a longer ISO-8601 string
+    /// ("2026-10-30T00:00:00.000Z") by reading only its date part.
+    init?(iso: String?) {
+        guard let raw = iso?.trimmingCharacters(in: .whitespacesAndNewlines), raw.count >= 10 else { return nil }
+        let parts = raw.prefix(10).split(separator: "-")
+        guard parts.count == 3,
+              let y = Int(parts[0]), let m = Int(parts[1]), let d = Int(parts[2]),
+              (1...12).contains(m), (1...31).contains(d),
+              CalendarDay.isValid(year: y, month: m, day: d) else { return nil }
+        self.init(year: y, month: m, day: d)
+    }
+
+    /// The day `date` falls on in `timeZone` (the device's zone by default).
+    init(date: Date, timeZone: TimeZone = .current) {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        let c = calendar.dateComponents([.year, .month, .day], from: date)
+        self.init(year: c.year ?? 1970, month: c.month ?? 1, day: c.day ?? 1)
+    }
+
+    var iso: String { String(format: "%04d-%02d-%02d", year, month, day) }
+    var description: String { iso }
+
+    var firstOfMonth: CalendarDay { CalendarDay(year: year, month: month, day: 1) }
+
+    var lastOfMonth: CalendarDay { firstOfMonth.addingMonths(1).adding(days: -1) }
+
+    var daysInMonth: Int { lastOfMonth.day }
+
+    /// 1 = Sunday … 7 = Saturday, as in `Calendar.firstWeekday`.
+    var weekday: Int {
+        CalendarDay.utc.component(.weekday, from: utcDate)
+    }
+
+    func adding(days: Int) -> CalendarDay {
+        guard let moved = CalendarDay.utc.date(byAdding: .day, value: days, to: utcDate) else { return self }
+        return CalendarDay(date: moved, timeZone: CalendarDay.utc.timeZone)
+    }
+
+    /// Same day number clamped to the target month ("Jan 31 + 1 month" → Feb 28).
+    func addingMonths(_ months: Int) -> CalendarDay {
+        let total = (year * 12 + (month - 1)) + months
+        let y = total / 12
+        let m = total % 12 + 1
+        let first = CalendarDay(year: y, month: m, day: 1)
+        let last = CalendarDay.utc.range(of: .day, in: .month, for: first.utcDate)?.count ?? 28
+        return CalendarDay(year: y, month: m, day: min(day, last))
+    }
+
+    /// Whole days from `self` to `other` (positive when `other` is later).
+    func days(until other: CalendarDay) -> Int {
+        CalendarDay.utc.dateComponents([.day], from: utcDate, to: other.utcDate).day ?? 0
+    }
+
+    func isSameMonth(as other: CalendarDay) -> Bool {
+        year == other.year && month == other.month
+    }
+
+    /// Noon UTC of this day; safe to format in UTC without slipping to a
+    /// neighbouring day.
+    var noonDate: Date {
+        CalendarDay.utc.date(from: DateComponents(year: year, month: month, day: day, hour: 12)) ?? Date()
+    }
+
+    private var utcDate: Date {
+        CalendarDay.utc.date(from: DateComponents(year: year, month: month, day: day)) ?? Date()
+    }
+
+    static func < (lhs: CalendarDay, rhs: CalendarDay) -> Bool {
+        (lhs.year, lhs.month, lhs.day) < (rhs.year, rhs.month, rhs.day)
+    }
+
+    static let utc: Calendar = {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        return calendar
+    }()
+
+    private static func isValid(year: Int, month: Int, day: Int) -> Bool {
+        guard let date = utc.date(from: DateComponents(year: year, month: month, day: day)) else { return false }
+        let c = utc.dateComponents([.year, .month, .day], from: date)
+        return c.year == year && c.month == month && c.day == day
+    }
+}
+
+enum CalendarMediaKind: String, Codable, Hashable, Sendable {
+    case series
+    case movie
+}
+
+/// One library title the calendar looks at, identified the way Nuvio
+/// identifies it ("tt0903747", "tmdb:1396", ...).
+struct CalendarItem: Codable, Hashable, Identifiable, Sendable {
+    let id: String
+    let kind: CalendarMediaKind
+    /// The library item's own type ("series", "anime", ...), used to reopen it.
+    var type: String
+    var name: String?
+    var posterURL: String?
+    /// Release year, used to skip movies that are long out.
+    var year: Int?
+
+    init(id: String, kind: CalendarMediaKind, type: String = "", name: String? = nil,
+         posterURL: String? = nil, year: Int? = nil) {
+        self.id = id
+        self.kind = kind
+        self.type = type
+        self.name = name
+        self.posterURL = posterURL
+        self.year = year
+    }
+}
+
+enum CalendarReleaseKind: String, Codable, Hashable, Sendable {
+    case episode
+    case seasonPremiere
+    case seriesPremiere
+    case seasonFinale
+    case theatrical
+    case digital
+    case physical
+    case release
+}
+
+struct CalendarEntry: Hashable, Identifiable, Sendable {
+    let id: String
+    let itemId: String
+    let itemType: String
+    let kind: CalendarMediaKind
+    let tmdbId: Int
+    let title: String
+    let date: CalendarDay
+    let releaseKind: CalendarReleaseKind
+    let seasonNumber: Int?
+    let episodeNumber: Int?
+    let episodeName: String?
+    let overview: String?
+    let posterURL: URL?
+    let stillURL: URL?
+
+    init(
+        itemId: String,
+        itemType: String = "",
+        kind: CalendarMediaKind,
+        tmdbId: Int,
+        title: String,
+        date: CalendarDay,
+        releaseKind: CalendarReleaseKind,
+        seasonNumber: Int? = nil,
+        episodeNumber: Int? = nil,
+        episodeName: String? = nil,
+        overview: String? = nil,
+        posterURL: URL? = nil,
+        stillURL: URL? = nil
+    ) {
+        switch kind {
+        case .series:
+            self.id = "tv:\(tmdbId):\(seasonNumber ?? -1):\(episodeNumber ?? -1)"
+        case .movie:
+            self.id = "movie:\(tmdbId):\(releaseKind.rawValue):\(date.iso)"
+        }
+        self.itemId = itemId
+        self.itemType = itemType
+        self.kind = kind
+        self.tmdbId = tmdbId
+        self.title = title
+        self.date = date
+        self.releaseKind = releaseKind
+        self.seasonNumber = seasonNumber
+        self.episodeNumber = episodeNumber
+        self.episodeName = episodeName
+        self.overview = overview
+        self.posterURL = posterURL
+        self.stillURL = stillURL
+    }
+}
+
+struct CalendarDaySection: Hashable, Identifiable, Sendable {
+    var id: String { date.iso }
+    let date: CalendarDay
+    let entries: [CalendarEntry]
+}
+
+enum CalendarSkipReason: Hashable, Sendable {
+    /// The id has a format the calendar cannot turn into a TMDB id.
+    case unsupportedId
+    case failed(String)
+}
+
+struct CalendarSkippedItem: Hashable, Identifiable, Sendable {
+    var id: String { "\(item.kind.rawValue):\(item.id)" }
+    let item: CalendarItem
+    let reason: CalendarSkipReason
+}
+
+struct CalendarResult: Sendable {
+    let firstDay: CalendarDay
+    let lastDay: CalendarDay
+    let days: [CalendarDaySection]
+    let skipped: [CalendarSkippedItem]
+
+    var entryCount: Int { days.reduce(0) { $0 + $1.entries.count } }
+
+    func entries(on day: CalendarDay) -> [CalendarEntry] {
+        days.first { $0.date == day }?.entries ?? []
+    }
+}
+
+/// Asks Details to open a series with this episode selected.
+struct DetailsEpisodeFocus: Hashable, Sendable {
+    let metaID: String
+    let season: Int
+    let episode: Int
+}

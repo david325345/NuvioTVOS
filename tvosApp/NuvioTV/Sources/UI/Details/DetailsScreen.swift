@@ -47,6 +47,8 @@ struct DetailsScreen: View {
     var onOpenPerson: ((TmdbPersonMetadata) -> Void)? = nil
     let initiallyPresentStreamPicker: Bool
     let initialStreamPickerEpisode: NuvioVideo?
+    /// Episode to select in the episode list on open (from the calendar).
+    let initialFocusEpisode: DetailsEpisodeFocus?
     let onInitialStreamPickerPresented: (() -> Void)?
 
     @StateObject private var viewModel: DetailsViewModel
@@ -109,6 +111,7 @@ struct DetailsScreen: View {
         onInitialPlaybackRequestConsumed: ((UInt) -> Void)? = nil,
         initiallyPresentStreamPicker: Bool = false,
         initialStreamPickerEpisode: NuvioVideo? = nil,
+        initialFocusEpisode: DetailsEpisodeFocus? = nil,
         onInitialStreamPickerPresented: (() -> Void)? = nil,
         onPlayClick: @escaping (
             _ streamUrl: String,
@@ -142,6 +145,7 @@ struct DetailsScreen: View {
         self.onOpenPerson = onOpenPerson
         self.initiallyPresentStreamPicker = initiallyPresentStreamPicker
         self.initialStreamPickerEpisode = initialStreamPickerEpisode
+        self.initialFocusEpisode = initialFocusEpisode
         self.onInitialStreamPickerPresented = onInitialStreamPickerPresented
         _isPreparingInitialPlayback = State(initialValue: initialPlaybackRequestID != nil)
         _viewModel = StateObject(wrappedValue: DetailsViewModel(repository: repository))
@@ -178,6 +182,7 @@ struct DetailsScreen: View {
                 TvDetailsContent(
                     uiState: viewModel.uiState,
                     initialPlayRequestID: readyInitialPlaybackRequestID,
+                    initialFocusEpisode: initialFocusEpisode,
                     onInitialPlayRequestConsumed: { requestID in
                         finishInitialPlaybackRequest(requestID)
                     },
@@ -2740,6 +2745,7 @@ private enum TvDetailsFocusSection: Hashable {
 struct TvDetailsContent: View {
     let uiState: DetailsUiState
     var initialPlayRequestID: UInt? = nil
+    var initialFocusEpisode: DetailsEpisodeFocus? = nil
     var onInitialPlayRequestConsumed: ((UInt) -> Void)? = nil
     let onPlayClick: () -> Void
     var onPlayManually: (() -> Void)? = nil
@@ -3091,6 +3097,7 @@ struct TvDetailsContent: View {
             let episodePresentation = episodeCache.resolve(
                 meta: meta,
                 progressRevision: progressRevision,
+                focusEpisode: initialFocusEpisode,
                 continueItemProvider: { currentContinueWatchingItem(for: meta) },
                 playTargetBuilder: { episodes, continueItem, watchedKeys in
                     TvDetailsPlayTargetBuilder.makePlayTarget(
@@ -6194,11 +6201,13 @@ private final class TvDetailsEpisodeCache: ObservableObject {
     private var input: TvEpisodeGuideInput?
     private var lookupIdentity: TvEpisodeLookupIdentity?
     private var progressRevision: Int?
+    private var focusEpisode: DetailsEpisodeFocus?
     private var presentation: TvDetailsEpisodePresentation?
 
     func resolve(
         meta: NuvioMeta,
         progressRevision: Int,
+        focusEpisode: DetailsEpisodeFocus? = nil,
         continueItemProvider: () -> ContinueWatchingItem?,
         playTargetBuilder: ([NuvioVideo], ContinueWatchingItem?, Set<String>) -> TvDetailsPlayTarget
     ) -> TvDetailsEpisodePresentation {
@@ -6212,8 +6221,9 @@ private final class TvDetailsEpisodeCache: ObservableObject {
         let guideChanged = self.input != input
         let lookupIdentityChanged = self.lookupIdentity != lookupIdentity
         let progressChanged = self.progressRevision != progressRevision
+        let focusChanged = self.focusEpisode != focusEpisode
 
-        if guideChanged || lookupIdentityChanged || progressChanged {
+        if guideChanged || lookupIdentityChanged || progressChanged || focusChanged {
             let guideRevision = guideChanged
                 ? (presentation.map { $0.guide.revision &+ 1 } ?? 0)
                 : presentation!.guide.revision
@@ -6224,7 +6234,12 @@ private final class TvDetailsEpisodeCache: ObservableObject {
             let watchedSnapshot = WatchedStore.currentSnapshot()
             let watchedKeys = watchedSnapshot.watchedEpisodeKeys(meta: meta)
             let episodeWatchCounts = watchedSnapshot.catalogEpisodeWatchCounts(meta: meta)
-            let initialEpisode = guide.initialEpisode(
+            // A calendar entry asks for a specific episode; otherwise follow
+            // progress as before.
+            let focusedEpisode = focusEpisode.flatMap { focus in
+                guide.episodes.first { $0.season == focus.season && $0.episode == focus.episode }
+            }
+            let initialEpisode = focusedEpisode ?? guide.initialEpisode(
                 continueItem: continueItem,
                 watchedKeys: watchedKeys
             )
@@ -6254,7 +6269,7 @@ private final class TvDetailsEpisodeCache: ObservableObject {
             )
             let nextRevision = TvDetailsEpisodePresentationRevision(
                 watched: (presentation?.revision.watched ?? -1) &+ 1,
-                selection: guideChanged || lookupIdentityChanged
+                selection: guideChanged || lookupIdentityChanged || focusChanged
                     ? (presentation?.revision.selection ?? -1) &+ 1
                     : (presentation?.revision.selection ?? 0)
             )
@@ -6268,6 +6283,7 @@ private final class TvDetailsEpisodeCache: ObservableObject {
             self.input = input
             self.lookupIdentity = lookupIdentity
             self.progressRevision = progressRevision
+            self.focusEpisode = focusEpisode
         }
 
         return presentation!
