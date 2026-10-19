@@ -382,8 +382,14 @@ private struct CalendarDayCell: View {
 
 private struct CalendarDayCellBody: View {
     static let focusedScale: CGFloat = 1.7
+    /// Posters shown side by side in a cell that isn't expanded.
+    static let rowCapacity = 3
+    /// How long the cursor has to rest on a day before it opens.
+    static let expandDelay: Duration = .seconds(3)
 
     @Environment(\.isFocused) private var isFocused
+    @State private var isExpanded = false
+    @State private var expandTask: Task<Void, Never>?
     let day: CalendarDay
     let entries: [CalendarEntry]
     let isToday: Bool
@@ -398,11 +404,13 @@ private struct CalendarDayCellBody: View {
         return entries.filter { seen.insert("\($0.kind.rawValue):\($0.tmdbId)").inserted }
     }
 
+    private var hiddenCount: Int { max(0, posters.count - Self.rowCapacity) }
+
     var body: some View {
         // The cell keeps its grid slot; the visible card is drawn on top of
-        // it and grows past it while focused.
+        // it and grows past it once expanded.
         GeometryReader { proxy in
-            let scale = isFocused ? Self.focusedScale : 1
+            let scale = isExpanded ? Self.focusedScale : 1
             ZStack(alignment: growth.alignment) {
                 Color.clear
                 card
@@ -411,50 +419,78 @@ private struct CalendarDayCellBody: View {
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: growth.alignment)
         }
         .frame(height: height)
-        .animation(.easeOut(duration: 0.18), value: isFocused)
+        .animation(.easeOut(duration: 0.18), value: isExpanded)
+        .onChange(of: isFocused) { _, focused in
+            expandTask?.cancel()
+            expandTask = nil
+            guard focused else {
+                isExpanded = false
+                return
+            }
+            // Only days with hidden titles open, and only when the cursor
+            // stays, so moving across the grid doesn't make cells jump.
+            guard hiddenCount > 0 else { return }
+            expandTask = Task { @MainActor in
+                try? await Task.sleep(for: Self.expandDelay)
+                // Losing focus cancels this task (onChange above).
+                guard !Task.isCancelled else { return }
+                isExpanded = true
+            }
+        }
+        .onDisappear {
+            expandTask?.cancel()
+            isExpanded = false
+        }
     }
 
     private var card: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
                 Text("\(day.day)")
-                    .font(.system(size: 20, weight: .heavy))
+                    .font(.system(size: 17, weight: .heavy))
                     .foregroundColor(isToday ? CalendarFormat.textColor(on: accent) : .white)
-                    .frame(width: 36, height: 36)
+                    .frame(width: 28, height: 28)
                     .background(Circle().fill(isToday ? accent : Color.clear))
                 if isToday {
                     Text(L10n.string("calendar_today", fallback: "Today").uppercased())
-                        .font(.system(size: 15, weight: .heavy))
+                        .font(.system(size: 13, weight: .heavy))
                         .foregroundColor(accent)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 0)
-                if isFocused, entries.count > 0 {
+                if isExpanded, entries.count > 0 {
                     Text(CalendarFormat.entryCount(entries.count))
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(.white.opacity(0.75))
                         .lineLimit(1)
                 }
             }
-            if !posters.isEmpty {
-                CalendarPosterMosaic(
-                    entries: posters,
-                    columns: isFocused ? 4 : 3,
-                    rows: isFocused ? 3 : 2
-                )
+            if isExpanded {
+                CalendarPosterMosaic(entries: posters, columns: 4, rows: 3)
+                Spacer(minLength: 0)
+            } else if !posters.isEmpty {
+                CalendarPosterRow(entries: Array(posters.prefix(Self.rowCapacity)), slots: Self.rowCapacity)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                if hiddenCount > 0 {
+                    Text("+\(hiddenCount)")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundColor(.white.opacity(0.85))
+                        .frame(maxWidth: .infinity, alignment: .center)
+                }
+            } else {
+                Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
         }
-        .padding(8)
+        .padding(6)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         // Opaque fills, so a grown card hides the cells under it and posters
         // can't spill out of their own cell.
         .background(
             RoundedRectangle(cornerRadius: 10)
-                .fill(Color(white: isFocused ? 0.2 : (isToday ? 0.15 : (isSelected ? 0.12 : 0.09))))
+                .fill(Color(white: isExpanded ? 0.2 : (isToday ? 0.15 : (isSelected ? 0.12 : 0.09))))
         )
         .clipShape(RoundedRectangle(cornerRadius: 10))
-        .shadow(color: .black.opacity(isFocused ? 0.7 : 0), radius: 24)
+        .shadow(color: .black.opacity(isExpanded ? 0.7 : 0), radius: 24)
         .overlay(
             RoundedRectangle(cornerRadius: 10)
                 .strokeBorder(
@@ -462,6 +498,28 @@ private struct CalendarDayCellBody: View {
                     lineWidth: isFocused ? 4 : 3
                 )
         )
+    }
+}
+
+/// Whole posters (2:3) side by side, sized to fit the space they're given.
+private struct CalendarPosterRow: View {
+    let entries: [CalendarEntry]
+    let slots: Int
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 4) {
+            ForEach(0..<slots, id: \.self) { index in
+                Color.clear
+                    .aspectRatio(2.0 / 3.0, contentMode: .fit)
+                    .overlay {
+                        if index < entries.count {
+                            let entry = entries[index]
+                            CalendarImage(url: entry.posterURL, symbol: entry.kind == .movie ? "film" : "tv")
+                        }
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+            }
+        }
     }
 }
 
