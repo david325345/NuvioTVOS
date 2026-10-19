@@ -98,6 +98,7 @@ struct CalendarView: View {
     @State private var selectedDay = CalendarDay(date: Date())
     @State private var showingSkipped = false
     @State private var showingSuggestions = false
+    @State private var didFocusToday = false
     @FocusState private var focus: CalendarFocus?
 
     private var today: CalendarDay { CalendarDay(date: Date()) }
@@ -176,7 +177,19 @@ struct CalendarView: View {
             }
             .padding(.horizontal, 60)
             .padding(.top, 30)
+            .defaultFocus($focus, .day(today))
+            .onAppear(perform: focusTodayOnFirstOpen)
         }
+    }
+
+    /// The first time the calendar shows, start on today's cell.
+    private func focusTodayOnFirstOpen() {
+        guard !didFocusToday else { return }
+        didFocusToday = true
+        displayedMonth = today.firstOfMonth
+        selectedDay = today
+        // After the focus engine's own first pass, as Details does for Play.
+        DispatchQueue.main.async { focus = .day(today) }
     }
 
     // MARK: Header
