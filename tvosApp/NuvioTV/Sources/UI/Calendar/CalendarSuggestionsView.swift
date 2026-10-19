@@ -7,7 +7,7 @@ struct CalendarSuggestionsView: View {
     let onClose: (_ added: Int) -> Void
 
     @State private var list: CalendarSuggestionList = .animeToday
-    @State private var results: [CalendarTmdb.ListResult] = []
+    @State private var results: [CalendarSuggestionItem] = []
     @State private var isLoading = false
     @State private var errorText: String?
     @State private var selected = Set<String>()
@@ -50,7 +50,7 @@ struct CalendarSuggestionsView: View {
                 .disabled(selected.isEmpty || isAdding)
 
                 Button(L10n.string("calendar_suggest_select_all", fallback: "Select all")) {
-                    selected = Set(results.map(key(for:)).filter { !libraryKeys.contains($0) })
+                    selected = Set(results.filter { $0.isAddable && !libraryKeys.contains($0.key) }.map(\.key))
                 }
                 .disabled(results.isEmpty || isAdding)
 
@@ -80,7 +80,7 @@ struct CalendarSuggestionsView: View {
             ScrollView(.vertical) {
                 LazyVGrid(columns: columns, spacing: 34) {
                     ForEach(results) { result in
-                        let itemKey = key(for: result)
+                        let itemKey = result.key
                         let inLibrary = libraryKeys.contains(itemKey)
                         Button {
                             if selected.contains(itemKey) {
@@ -98,7 +98,7 @@ struct CalendarSuggestionsView: View {
                         }
                         .buttonStyle(PosterCardButtonStyle())
                         .focusEffectDisabledIfAvailable()
-                        .disabled(inLibrary || isAdding)
+                        .disabled(inLibrary || !result.isAddable || isAdding)
                     }
                 }
                 .padding(20)
@@ -107,22 +107,26 @@ struct CalendarSuggestionsView: View {
         }
     }
 
-    private func key(for result: CalendarTmdb.ListResult) -> String {
-        CalendarSuggestions.key(kind: list.kind, tmdbId: result.id)
-    }
-
     private func load() {
         loadTask?.cancel()
         selected = []
         errorText = nil
         isLoading = true
+        let list = list
         let request = CalendarSuggestions.request(
             for: list, today: CalendarDay(date: Date()), region: CalendarLibrarySource.region
         )
         let client = CalendarLibrarySource.makeClient()
         loadTask = Task {
             do {
-                let found = try await client.list(request.path, query: request.query, pages: CalendarSuggestions.pages)
+                let found: [CalendarSuggestionItem]
+                if list == .animeToday && CalendarAnimeToday.isAvailable {
+                    // Exact broadcast times from AniList, ids from Simkl.
+                    found = try await CalendarAnimeToday.load()
+                } else {
+                    found = try await client.list(request.path, query: request.query, pages: CalendarSuggestions.pages)
+                        .map { CalendarSuggestionItem(tmdb: $0, kind: list.kind) }
+                }
                 guard !Task.isCancelled else { return }
                 results = found
                 isLoading = false
@@ -138,13 +142,12 @@ struct CalendarSuggestionsView: View {
     }
 
     private func addSelected() {
-        let picked = results.filter { selected.contains(key(for: $0)) }
+        let picked = results.filter { selected.contains($0.key) }
         guard !picked.isEmpty else { return }
         isAdding = true
-        let kind = list.kind
         let client = CalendarLibrarySource.makeClient()
         Task {
-            let added = await CalendarLibraryWriter.add(picked, kind: kind, client: client)
+            let added = await CalendarLibraryWriter.add(picked, client: client)
             isAdding = false
             onClose(added)
         }
@@ -153,7 +156,7 @@ struct CalendarSuggestionsView: View {
 
 private struct CalendarSuggestionCard: View {
     @Environment(\.isFocused) private var isFocused
-    let result: CalendarTmdb.ListResult
+    let result: CalendarSuggestionItem
     let isSelected: Bool
     let inLibrary: Bool
     let accent: Color
@@ -161,7 +164,7 @@ private struct CalendarSuggestionCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ZStack(alignment: .topTrailing) {
-                AsyncImage(url: CalendarTmdb.imageURL(result.posterPath, size: "w342")) { phase in
+                AsyncImage(url: result.posterURL) { phase in
                     if case .success(let image) = phase {
                         image.resizable().aspectRatio(contentMode: .fill)
                     } else {
@@ -173,7 +176,7 @@ private struct CalendarSuggestionCard: View {
                 }
                 .frame(width: 190, height: 285)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
-                .opacity(inLibrary ? 0.45 : 1)
+                .opacity(inLibrary || !result.isAddable ? 0.45 : 1)
 
                 if isSelected || inLibrary {
                     Image(systemName: inLibrary ? "checkmark.circle" : "checkmark.circle.fill")
@@ -190,16 +193,22 @@ private struct CalendarSuggestionCard: View {
                         lineWidth: isFocused || isSelected ? 4 : 0
                     )
             )
-            Text(result.displayTitle)
+            Text(result.title)
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundColor(.white)
                 .lineLimit(2)
                 .frame(width: 190, alignment: .leading)
-            Text(inLibrary ? L10n.string("calendar_suggest_in_library", fallback: "In library") : (result.year.map(String.init) ?? ""))
+            Text(subtitle)
                 .font(.system(size: 16))
                 .foregroundColor(.white.opacity(0.6))
         }
         .scaleEffect(isFocused ? 1.05 : 1)
         .animation(.easeOut(duration: 0.15), value: isFocused)
+    }
+
+    private var subtitle: String {
+        if inLibrary { return L10n.string("calendar_suggest_in_library", fallback: "In library") }
+        if !result.isAddable { return L10n.string("calendar_suggest_no_ids", fallback: "Not found on Simkl") }
+        return result.detail ?? result.year.map(String.init) ?? ""
     }
 }

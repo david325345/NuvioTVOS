@@ -350,3 +350,106 @@ final class CalendarSuggestionTests: XCTestCase {
         XCTAssertEqual(http.count(containing: "/discover/tv"), 2)
     }
 }
+
+// MARK: - Anime today (AniList + Simkl)
+
+private final class CalendarAnimeMockHTTP: CalendarAnimeHTTPClient, @unchecked Sendable {
+    let anilist: String
+    /// AniList id → Location header of the Simkl redirect.
+    let redirects: [Int: String]
+    /// Simkl path ("/anime/1") → details JSON.
+    let details: [String: String]
+
+    init(anilist: String, redirects: [Int: String], details: [String: String]) {
+        self.anilist = anilist
+        self.redirects = redirects
+        self.details = details
+    }
+
+    func post(_ url: URL, json: Data) async throws -> (Data, Int) {
+        (Data(anilist.utf8), 200)
+    }
+
+    func getWithoutRedirect(_ url: URL, headers: [String: String]) async throws -> (Data, Int, String?) {
+        if url.path == "/redirect" {
+            let id = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                .queryItems?.first { $0.name == "anilist" }?.value.flatMap(Int.init)
+            if let id, let location = redirects[id] { return (Data(), 301, location) }
+            return (Data(), 404, nil)
+        }
+        if let body = details[url.path] { return (Data(body.utf8), 200, nil) }
+        return (Data(), 404, nil)
+    }
+}
+
+final class CalendarAnimeTodayTests: XCTestCase {
+    private let prague = TimeZone(identifier: "Europe/Prague")!
+
+    func testSimklTargetFromLocation() {
+        XCTAssertEqual(CalendarAnimeToday.Simkl.simklTarget(fromLocation: "https://simkl.com/anime/3012710/hello-i-am-a-witch")?.id, "3012710")
+        XCTAssertEqual(CalendarAnimeToday.Simkl.simklTarget(fromLocation: "/anime/42?x=1")?.type, "anime")
+        XCTAssertEqual(CalendarAnimeToday.Simkl.simklTarget(fromLocation: "https://simkl.com/tv/7/slug")?.type, "tv")
+        XCTAssertNil(CalendarAnimeToday.Simkl.simklTarget(fromLocation: "https://simkl.com/search/"))
+    }
+
+    func testDayBoundsFollowLocalTime() {
+        // 2026-10-19 23:30 in Prague = 21:30 UTC.
+        let late = Date(timeIntervalSince1970: 1_792_445_400)
+        let bounds = CalendarAnimeToday.dayBounds(of: late, timeZone: prague)
+        XCTAssertEqual(bounds.end.timeIntervalSince(bounds.start), 86_400)
+        XCTAssertLessThanOrEqual(bounds.start, late)
+        XCTAssertGreaterThan(bounds.end, late)
+    }
+
+    func testLoadResolvesIdsAndKeepsUnknownTitles() async throws {
+        let anilist = #"""
+        {"data":{"Page":{"pageInfo":{"hasNextPage":false},"airingSchedules":[
+          {"airingAt":1792413000,"episode":3,"media":{"id":10,"format":"TV","countryOfOrigin":"JP","isAdult":false,
+            "title":{"romaji":"Majo","english":"Hello, I am a Witch"},"coverImage":{"large":"https://img/a.jpg"},"startDate":{"year":2026}}},
+          {"airingAt":1792400000,"episode":1,"media":{"id":20,"format":"TV_SHORT","countryOfOrigin":"JP","isAdult":false,
+            "title":{"romaji":"Yuusanchi","english":null},"coverImage":null,"startDate":{"year":2026}}},
+          {"airingAt":1792401000,"episode":5,"media":{"id":30,"format":"ONA","countryOfOrigin":"CN","isAdult":false,
+            "title":{"romaji":"Donghua","english":null}}},
+          {"airingAt":1792402000,"episode":2,"media":{"id":40,"format":"TV","countryOfOrigin":"JP","isAdult":true,
+            "title":{"romaji":"Adult","english":null}}},
+          {"airingAt":1792420000,"episode":4,"media":{"id":10,"format":"TV","countryOfOrigin":"JP","isAdult":false,
+            "title":{"romaji":"Majo","english":"Hello, I am a Witch"}}}
+        ]}}}
+        """#
+        let http = CalendarAnimeMockHTTP(
+            anilist: anilist,
+            redirects: [10: "https://simkl.com/anime/3012710/hello"],
+            details: ["/anime/3012710": #"{"ids":{"simkl":3012710,"imdb":"tt43650300","tmdb":"313068"}}"#]
+        )
+        let items = try await CalendarAnimeToday.load(
+            now: Date(timeIntervalSince1970: 1_792_410_000),
+            timeZone: prague,
+            http: http,
+            clientID: "test-\(UUID().uuidString)"
+        )
+        XCTAssertEqual(items.map(\.title), ["Yuusanchi", "Hello, I am a Witch"])
+        XCTAssertFalse(items[0].isAddable)
+        XCTAssertEqual(items[1].key, "series:313068")
+        XCTAssertEqual(items[1].imdbId, "tt43650300")
+        XCTAssertEqual(items[1].tmdbId, 313068)
+        XCTAssertEqual(items[1].posterURL?.absoluteString, "https://img/a.jpg")
+        XCTAssertNotNil(items[1].detail)
+    }
+
+    func testItemsMergeTitlesWithTheSameTmdbId() {
+        let at = Date(timeIntervalSince1970: 1_792_410_000)
+        let airings = [
+            CalendarAnimeToday.Airing(anilistId: 1, title: "A", posterURL: nil, airingAt: at, episode: 1, year: 2026, isMovie: false),
+            CalendarAnimeToday.Airing(anilistId: 2, title: "A mini", posterURL: nil, airingAt: at.addingTimeInterval(60), episode: 1, year: 2026, isMovie: false),
+            CalendarAnimeToday.Airing(anilistId: 3, title: "Film", posterURL: nil, airingAt: at.addingTimeInterval(120), episode: nil, year: 2026, isMovie: true),
+        ]
+        let ids: [Int: CalendarAnimeToday.Ids] = [
+            1: .init(tmdb: 5, imdb: "tt1"),
+            2: .init(tmdb: 5, imdb: "tt1"),
+            3: .init(tmdb: 9, imdb: nil),
+        ]
+        let items = CalendarAnimeToday.items(airings, ids: ids, timeZone: prague)
+        XCTAssertEqual(items.map(\.key), ["series:5", "movie:9"])
+        XCTAssertEqual(items[1].kind, .movie)
+    }
+}

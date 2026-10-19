@@ -91,30 +91,72 @@ enum CalendarSuggestions {
     }
 }
 
+/// One title in the "Add shows" picker, from a TMDB list or from the
+/// AniList + Simkl "Anime today" list.
+struct CalendarSuggestionItem: Identifiable, Hashable, Sendable {
+    /// Matches `CalendarResult.libraryKeys` ("series:123") when the TMDB id is known.
+    let key: String
+    let kind: CalendarMediaKind
+    let tmdbId: Int?
+    let imdbId: String?
+    let title: String
+    let posterURL: URL?
+    let year: Int?
+    /// Shown under the title instead of the year (e.g. the broadcast time).
+    let detail: String?
+
+    var id: String { key }
+    var isAddable: Bool { tmdbId != nil || imdbId != nil }
+
+    init(key: String, kind: CalendarMediaKind, tmdbId: Int?, imdbId: String?, title: String,
+         posterURL: URL?, year: Int?, detail: String? = nil) {
+        self.key = key
+        self.kind = kind
+        self.tmdbId = tmdbId
+        self.imdbId = imdbId
+        self.title = title
+        self.posterURL = posterURL
+        self.year = year
+        self.detail = detail
+    }
+
+    init(tmdb result: CalendarTmdb.ListResult, kind: CalendarMediaKind) {
+        self.init(
+            key: CalendarSuggestions.key(kind: kind, tmdbId: result.id),
+            kind: kind,
+            tmdbId: result.id,
+            imdbId: nil,
+            title: result.displayTitle,
+            posterURL: CalendarTmdb.imageURL(result.posterPath, size: "w342"),
+            year: result.year
+        )
+    }
+}
+
 /// Adds titles picked from a suggestion list to the active library, the same
 /// way "Add to Library" in Details does: the remote watchlist when a Trakt,
 /// Simkl, MDBList or WeTrakr library is selected, otherwise the local one.
 enum CalendarLibraryWriter {
     @MainActor
-    static func add(
-        _ results: [CalendarTmdb.ListResult],
-        kind: CalendarMediaKind,
-        client: CalendarTmdb.Client
-    ) async -> Int {
+    static func add(_ items: [CalendarSuggestionItem], client: CalendarTmdb.Client) async -> Int {
         var added = 0
         let useRemote = TraktSettingsStore.librarySourceMode != .local
             && SelectedLibraryService.isSelectedAndAuthenticated
-        for result in results {
+        for item in items where item.isAddable {
             // Addons look titles up by IMDb id, so prefer it over tmdb:.
-            let imdb = try? await client.imdbId(tmdbId: result.id, kind: kind)
+            var imdb = item.imdbId
+            if imdb == nil, let tmdb = item.tmdbId {
+                imdb = try? await client.imdbId(tmdbId: tmdb, kind: item.kind)
+            }
+            guard let id = imdb ?? item.tmdbId.map({ "tmdb:\($0)" }) else { continue }
             let meta = NuvioMeta(
-                id: imdb ?? "tmdb:\(result.id)",
-                name: result.displayTitle,
-                posterUrl: CalendarTmdb.imageURL(result.posterPath, size: "w500")?.absoluteString,
+                id: id,
+                name: item.title,
+                posterUrl: item.posterURL?.absoluteString,
                 imdbId: imdb,
-                tmdbId: result.id,
-                type: kind == .series ? "series" : "movie",
-                year: result.year
+                tmdbId: item.tmdbId,
+                type: item.kind == .series ? "series" : "movie",
+                year: item.year
             )
             if useRemote {
                 if await SelectedLibraryService.setWatchlist(meta, isInWatchlist: true) {
