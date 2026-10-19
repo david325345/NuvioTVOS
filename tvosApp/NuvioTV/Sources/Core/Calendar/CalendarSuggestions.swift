@@ -138,10 +138,15 @@ struct CalendarSuggestionItem: Identifiable, Hashable, Sendable {
 /// Simkl, MDBList or WeTrakr library is selected, otherwise the local one.
 enum CalendarLibraryWriter {
     @MainActor
-    static func add(_ items: [CalendarSuggestionItem], client: CalendarTmdb.Client) async -> Int {
-        var added = 0
-        let useRemote = TraktSettingsStore.librarySourceMode != .local
-            && SelectedLibraryService.isSelectedAndAuthenticated
+    private static var useRemote: Bool {
+        TraktSettingsStore.librarySourceMode != .local && SelectedLibraryService.isSelectedAndAuthenticated
+    }
+
+    /// Adds the titles and returns the library item stored for each key.
+    @MainActor
+    static func add(_ items: [CalendarSuggestionItem], client: CalendarTmdb.Client) async -> [String: CalendarItem] {
+        var added: [String: CalendarItem] = [:]
+        let remote = useRemote
         for item in items where item.isAddable {
             // Addons look titles up by IMDb id, so prefer it over tmdb:.
             var imdb = item.imdbId
@@ -149,24 +154,56 @@ enum CalendarLibraryWriter {
                 imdb = try? await client.imdbId(tmdbId: tmdb, kind: item.kind)
             }
             guard let id = imdb ?? item.tmdbId.map({ "tmdb:\($0)" }) else { continue }
+            let type = item.kind == .series ? "series" : "movie"
             let meta = NuvioMeta(
                 id: id,
                 name: item.title,
                 posterUrl: item.posterURL?.absoluteString,
                 imdbId: imdb,
                 tmdbId: item.tmdbId,
-                type: item.kind == .series ? "series" : "movie",
+                type: type,
                 year: item.year
             )
-            if useRemote {
-                if await SelectedLibraryService.setWatchlist(meta, isInWatchlist: true) {
-                    added += 1
-                }
+            let ok: Bool
+            if remote {
+                ok = await SelectedLibraryService.setWatchlist(meta, isInWatchlist: true)
             } else {
                 LibraryStore.add(meta)
-                added += 1
+                ok = true
+            }
+            if ok {
+                added[item.key] = CalendarItem(id: id, kind: item.kind, type: type, name: item.title,
+                                               posterURL: meta.posterUrl, year: item.year)
             }
         }
         return added
+    }
+
+    /// Removes library titles; returns the keys that were removed.
+    @MainActor
+    static func remove(_ keys: [String], items: [String: CalendarItem]) async -> Set<String> {
+        var removed = Set<String>()
+        let remote = useRemote
+        for key in keys {
+            guard let item = items[key] else { continue }
+            let type = item.type.isEmpty ? (item.kind == .series ? "series" : "movie") : item.type
+            let tmdb = key.split(separator: ":").last.flatMap { Int($0) }
+            let meta = NuvioMeta(
+                id: item.id,
+                name: item.name ?? item.id,
+                posterUrl: item.posterURL,
+                imdbId: item.id.hasPrefix("tt") ? item.id : nil,
+                tmdbId: tmdb,
+                type: type,
+                year: item.year
+            )
+            if remote {
+                if await SelectedLibraryService.setWatchlist(meta, isInWatchlist: false) { removed.insert(key) }
+            } else if LibraryStore.contains(metaId: item.id, type: type) {
+                // toggle returns the new state: false = no longer in the library.
+                if !LibraryStore.toggle(meta: meta) { removed.insert(key) }
+            }
+        }
+        return removed
     }
 }

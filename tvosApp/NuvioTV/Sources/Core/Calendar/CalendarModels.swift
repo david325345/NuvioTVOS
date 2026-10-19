@@ -229,6 +229,8 @@ struct CalendarResult: Sendable {
     let skipped: [CalendarSkippedItem]
     /// "series:1396" / "movie:9" for every library title matched on TMDB.
     var libraryKeys: Set<String> = []
+    /// The library item behind each of `libraryKeys`, to remove it again.
+    var libraryItems: [String: CalendarItem] = [:]
 
     var entryCount: Int { days.reduce(0) { $0 + $1.entries.count } }
 

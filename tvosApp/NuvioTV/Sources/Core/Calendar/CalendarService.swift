@@ -55,13 +55,16 @@ struct CalendarService: Sendable {
         var skipped: [CalendarSkippedItem] = []
         var targets: [(CalendarItem, Int)] = []
         var seenTargets = Set<String>()
+        var libraryItems: [String: CalendarItem] = [:]
         for (item, tmdbId) in resolutions {
             guard let tmdbId else {
                 skipped.append(CalendarSkippedItem(item: item, reason: .unsupportedId))
                 continue
             }
-            if seenTargets.insert("\(item.kind.rawValue):\(tmdbId)").inserted {
+            let key = "\(item.kind.rawValue):\(tmdbId)"
+            if seenTargets.insert(key).inserted {
                 targets.append((item, tmdbId))
+                libraryItems[key] = item
             }
         }
 
@@ -95,7 +98,8 @@ struct CalendarService: Sendable {
             lastDay: last,
             days: CalendarBuilder.groupByDay(entries),
             skipped: skipped,
-            libraryKeys: seenTargets
+            libraryKeys: seenTargets,
+            libraryItems: libraryItems
         )
     }
 

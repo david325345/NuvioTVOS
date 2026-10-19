@@ -1,20 +1,39 @@
 import SwiftUI
 
-/// Pick several titles from a TMDB list and add them to the library at once.
+/// Pick titles from a list and add them to the library, or take them out.
+/// Select = mark for a bulk add/remove; hold = add or remove that one now.
 struct CalendarSuggestionsView: View {
-    let libraryKeys: Set<String>
+    let libraryItems: [String: CalendarItem]
     let accent: Color
-    let onClose: (_ added: Int) -> Void
+    let onClose: (_ changed: Int) -> Void
 
     @State private var list: CalendarSuggestionList = .animeToday
     @State private var results: [CalendarSuggestionItem] = []
     @State private var isLoading = false
     @State private var errorText: String?
     @State private var selected = Set<String>()
-    @State private var isAdding = false
+    @State private var isBusy = false
     @State private var loadTask: Task<Void, Never>?
+    /// Library state as changed in this sheet (starts as the calendar's).
+    @State private var library: [String: CalendarItem]
+    @State private var changed = 0
+
+    init(libraryItems: [String: CalendarItem], accent: Color, onClose: @escaping (_ changed: Int) -> Void) {
+        self.libraryItems = libraryItems
+        self.accent = accent
+        self.onClose = onClose
+        _library = State(initialValue: libraryItems)
+    }
 
     private let columns = Array(repeating: GridItem(.fixed(190), spacing: 28), count: 7)
+
+    private var toAdd: [CalendarSuggestionItem] {
+        results.filter { selected.contains($0.key) && $0.isAddable && library[$0.key] == nil }
+    }
+
+    private var toRemove: [String] {
+        results.map(\.key).filter { selected.contains($0) && library[$0] != nil }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
@@ -23,7 +42,7 @@ struct CalendarSuggestionsView: View {
                     .font(.system(size: 40, weight: .bold))
                     .foregroundColor(.white)
                 Spacer()
-                Text(L10n.string("calendar_suggest_play_hint", fallback: "Play/Pause adds the selected titles"))
+                Text(L10n.string("calendar_suggest_hint", fallback: "Hold: add or remove one · Play/Pause: add selected"))
                     .font(.system(size: 18))
                     .foregroundColor(.white.opacity(0.5))
             }
@@ -46,21 +65,31 @@ struct CalendarSuggestionsView: View {
                         addSelected()
                     } label: {
                         Label(
-                            isAdding
-                                ? L10n.string("calendar_suggest_adding", fallback: "Adding…")
-                                : L10n.format("calendar_suggest_add", fallback: "Add %d to library", selected.count),
+                            isBusy
+                                ? L10n.string("calendar_suggest_working", fallback: "Saving…")
+                                : L10n.format("calendar_suggest_add", fallback: "Add %d", toAdd.count),
                             systemImage: "plus"
                         )
                     }
-                    .disabled(selected.isEmpty || isAdding)
+                    .disabled(toAdd.isEmpty || isBusy)
+
+                    if !toRemove.isEmpty {
+                        Button {
+                            removeSelected()
+                        } label: {
+                            Label(L10n.format("calendar_suggest_remove", fallback: "Remove %d", toRemove.count),
+                                  systemImage: "minus")
+                        }
+                        .disabled(isBusy)
+                    }
 
                     Button(L10n.string("calendar_suggest_select_all", fallback: "Select all")) {
-                        selected = Set(results.filter { $0.isAddable && !libraryKeys.contains($0.key) }.map(\.key))
+                        selected = Set(results.filter { $0.isAddable && library[$0.key] == nil }.map(\.key))
                     }
-                    .disabled(results.isEmpty || isAdding)
+                    .disabled(results.isEmpty || isBusy)
 
-                    Button(L10n.string("action_close", fallback: "Close")) { onClose(0) }
-                        .disabled(isAdding)
+                    Button(L10n.string("action_close", fallback: "Close")) { onClose(changed) }
+                        .disabled(isBusy)
                 }
                 .font(.system(size: 22, weight: .semibold))
             }
@@ -73,8 +102,9 @@ struct CalendarSuggestionsView: View {
         .onAppear { load() }
         // Play/Pause on the remote adds the selection from anywhere in the grid.
         .onPlayPauseCommand {
-            if !selected.isEmpty && !isAdding { addSelected() }
+            if !toAdd.isEmpty && !isBusy { addSelected() }
         }
+        .onExitCommand { if !isBusy { onClose(changed) } }
         .onDisappear { loadTask?.cancel() }
     }
 
@@ -90,30 +120,40 @@ struct CalendarSuggestionsView: View {
             ScrollView(.vertical) {
                 LazyVGrid(columns: columns, spacing: 34) {
                     ForEach(results) { result in
-                        let itemKey = result.key
-                        let inLibrary = libraryKeys.contains(itemKey)
-                        Button {
-                            if selected.contains(itemKey) {
-                                selected.remove(itemKey)
-                            } else {
-                                selected.insert(itemKey)
-                            }
-                        } label: {
-                            CalendarSuggestionCard(
-                                result: result,
-                                isSelected: selected.contains(itemKey),
-                                inLibrary: inLibrary,
-                                accent: accent
-                            )
-                        }
-                        .buttonStyle(PosterCardButtonStyle())
-                        .focusEffectDisabledIfAvailable()
-                        .disabled(inLibrary || !result.isAddable || isAdding)
+                        CalendarSuggestionCell(
+                            result: result,
+                            isSelected: selected.contains(result.key),
+                            inLibrary: library[result.key] != nil,
+                            accent: accent,
+                            onSelect: { toggleSelection(result) },
+                            onHold: { holdAction(result) }
+                        )
+                        // Every title stays focusable, also ones already in the
+                        // library (to remove them) or without ids (to see why).
+                        .disabled(isBusy)
                     }
                 }
                 .padding(20)
             }
             .scrollClipDisabledIfAvailable()
+        }
+    }
+
+    private func toggleSelection(_ result: CalendarSuggestionItem) {
+        guard result.isAddable || library[result.key] != nil else { return }
+        if selected.contains(result.key) {
+            selected.remove(result.key)
+        } else {
+            selected.insert(result.key)
+        }
+    }
+
+    private func holdAction(_ result: CalendarSuggestionItem) {
+        guard !isBusy else { return }
+        if library[result.key] != nil {
+            remove([result.key])
+        } else if result.isAddable {
+            add([result])
         }
     }
 
@@ -151,16 +191,87 @@ struct CalendarSuggestionsView: View {
         }
     }
 
-    private func addSelected() {
-        let picked = results.filter { selected.contains($0.key) }
-        guard !picked.isEmpty else { return }
-        isAdding = true
+    private func addSelected() { add(toAdd) }
+
+    private func removeSelected() { remove(toRemove) }
+
+    private func add(_ items: [CalendarSuggestionItem]) {
+        guard !items.isEmpty else { return }
+        isBusy = true
         let client = CalendarLibrarySource.makeClient()
         Task {
-            let added = await CalendarLibraryWriter.add(picked, client: client)
-            isAdding = false
-            onClose(added)
+            let added = await CalendarLibraryWriter.add(items, client: client)
+            for (key, item) in added { library[key] = item }
+            selected.subtract(added.keys)
+            changed += added.count
+            isBusy = false
         }
+    }
+
+    private func remove(_ keys: [String]) {
+        guard !keys.isEmpty else { return }
+        isBusy = true
+        let current = library
+        Task {
+            let removed = await CalendarLibraryWriter.remove(keys, items: current)
+            for key in removed { library[key] = nil }
+            selected.subtract(removed)
+            changed += removed.count
+            isBusy = false
+        }
+    }
+}
+
+/// A poster that selects on click and runs `onHold` after a half-second hold.
+private struct CalendarSuggestionCell: View {
+    let result: CalendarSuggestionItem
+    let isSelected: Bool
+    let inLibrary: Bool
+    let accent: Color
+    let onSelect: () -> Void
+    let onHold: () -> Void
+
+    @State private var didTriggerHold = false
+
+    var body: some View {
+        Button {
+            // The click that ends a hold must not also toggle the selection.
+            if didTriggerHold {
+                didTriggerHold = false
+                return
+            }
+            onSelect()
+        } label: {
+            CalendarSuggestionCard(result: result, isSelected: isSelected, inLibrary: inLibrary, accent: accent)
+        }
+        .buttonStyle(CalendarHoldButtonStyle(onHold: onHold, didTriggerHold: $didTriggerHold))
+        .focusEffectDisabledIfAvailable()
+    }
+}
+
+private struct CalendarHoldButtonStyle: ButtonStyle {
+    let onHold: () -> Void
+    @Binding var didTriggerHold: Bool
+    @State private var holdTask: Task<Void, Never>?
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .animation(.easeInOut(duration: 0.2), value: configuration.isPressed)
+            .onChange(of: configuration.isPressed) { _, isPressed in
+                holdTask?.cancel()
+                holdTask = nil
+                guard isPressed else { return }
+                holdTask = Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    guard !Task.isCancelled else { return }
+                    didTriggerHold = true
+                    onHold()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                        didTriggerHold = false
+                    }
+                }
+            }
     }
 }
 
@@ -189,9 +300,11 @@ private struct CalendarSuggestionCard: View {
                 .opacity(inLibrary || !result.isAddable ? 0.45 : 1)
 
                 if isSelected || inLibrary {
-                    Image(systemName: inLibrary ? "checkmark.circle" : "checkmark.circle.fill")
+                    // Selected library title = marked for removal.
+                    Image(systemName: isSelected && inLibrary ? "minus.circle.fill"
+                          : (inLibrary ? "checkmark.circle" : "checkmark.circle.fill"))
                         .font(.system(size: 40, weight: .bold))
-                        .foregroundColor(inLibrary ? .white.opacity(0.8) : accent)
+                        .foregroundColor(isSelected && inLibrary ? .red : (inLibrary ? .white.opacity(0.8) : accent))
                         .background(Circle().fill(Color.black.opacity(0.6)))
                         .padding(10)
                 }
@@ -199,7 +312,7 @@ private struct CalendarSuggestionCard: View {
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
                     .strokeBorder(
-                        isFocused ? Color.white : (isSelected ? accent : Color.clear),
+                        isFocused ? Color.white : (isSelected ? (inLibrary ? Color.red : accent) : Color.clear),
                         lineWidth: isFocused || isSelected ? 4 : 0
                     )
             )

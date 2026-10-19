@@ -32,6 +32,20 @@ enum CalendarTmdbError: Error, Equatable, Sendable {
     case decoding
 }
 
+enum CalendarText {
+    /// True when the text is written in Japanese, Chinese or Korean script.
+    static func isCJK(_ text: String) -> Bool {
+        text.unicodeScalars.contains { scalar in
+            switch scalar.value {
+            case 0x3040...0x30FF, 0x3400...0x4DBF, 0x4E00...0x9FFF, 0xAC00...0xD7AF, 0xF900...0xFAFF, 0xFF66...0xFF9F:
+                return true
+            default:
+                return false
+            }
+        }
+    }
+}
+
 /// The few TMDB endpoints the calendar needs, decoded into minimal shapes.
 enum CalendarTmdb {
     static let imageBase = "https://image.tmdb.org/t/p/"
@@ -96,20 +110,45 @@ enum CalendarTmdb {
         let seasons: [SeasonSummary]?
         let genres: [Genre]?
         let originCountry: [String]?
+        let translations: Translations?
 
         struct Genre: Decodable, Hashable, Sendable { let id: Int }
 
+        struct Translations: Decodable, Hashable, Sendable {
+            struct Item: Decodable, Hashable, Sendable {
+                struct Payload: Decodable, Hashable, Sendable { let name: String? }
+                let language: String?
+                let data: Payload?
+                enum CodingKeys: String, CodingKey {
+                    case language = "iso_639_1"
+                    case data
+                }
+            }
+            let translations: [Item]?
+        }
+
         enum CodingKeys: String, CodingKey {
-            case id, name, seasons, genres
+            case id, name, seasons, genres, translations
             case posterPath = "poster_path"
             case nextEpisodeToAir = "next_episode_to_air"
             case lastEpisodeToAir = "last_episode_to_air"
             case originCountry = "origin_country"
         }
 
+        /// A name the viewer can read: the localized one, or English when
+        /// TMDB fell back to Japanese, Chinese or Korean script.
+        var readableName: String? {
+            if let name, !name.isEmpty, !CalendarText.isCJK(name) { return name }
+            let english = translations?.translations?
+                .first { $0.language == "en" }?.data?.name?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if let english, !english.isEmpty, !CalendarText.isCJK(english) { return english }
+            return nil
+        }
+
         init(id: Int, name: String?, posterPath: String? = nil, nextEpisodeToAir: Episode? = nil,
              lastEpisodeToAir: Episode? = nil, seasons: [SeasonSummary]? = nil,
-             genres: [Genre]? = nil, originCountry: [String]? = nil) {
+             genres: [Genre]? = nil, originCountry: [String]? = nil, translations: Translations? = nil) {
             self.id = id
             self.name = name
             self.posterPath = posterPath
@@ -118,6 +157,7 @@ enum CalendarTmdb {
             self.seasons = seasons
             self.genres = genres
             self.originCountry = originCountry
+            self.translations = translations
         }
 
         /// Japanese animation: TMDB dates these by the Japanese broadcast day.
@@ -244,7 +284,8 @@ enum CalendarTmdb {
         }
 
         func tvDetails(_ id: Int) async throws -> TvDetails {
-            try await get("tv/\(id)")
+            // Translations ride along so CJK fallback names can be swapped for English.
+            try await get("tv/\(id)", query: ["append_to_response": "translations"])
         }
 
         func season(_ tvId: Int, number: Int) async throws -> SeasonDetails {
@@ -262,7 +303,20 @@ enum CalendarTmdb {
                 var q = query
                 q["page"] = String(page)
                 let response: ListPage = try await get(path, query: q)
-                for result in response.results ?? [] where seen.insert(result.id).inserted {
+                var results = response.results ?? []
+                // TMDB falls back to the original Japanese/Chinese/Korean title
+                // when there's no translation; fetch the page in English then.
+                if !Self.readsCJK(language), results.contains(where: { CalendarText.isCJK($0.displayTitle) }),
+                   let english: ListPage = try? await get(path, query: q, language: "en-US") {
+                    let names = Dictionary((english.results ?? []).map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+                    results = results.map { result in
+                        guard CalendarText.isCJK(result.displayTitle), let en = names[result.id],
+                              !CalendarText.isCJK(en.displayTitle) else { return result }
+                        return ListResult(id: result.id, name: en.name, title: en.title, posterPath: result.posterPath,
+                                          firstAirDate: result.firstAirDate, releaseDate: result.releaseDate)
+                    }
+                }
+                for result in results where seen.insert(result.id).inserted {
                     all.append(result)
                 }
                 if let total = response.totalPages, page >= total { break }
@@ -279,14 +333,20 @@ enum CalendarTmdb {
             return imdb
         }
 
-        func get<T: Decodable>(_ path: String, query: [String: String] = [:]) async throws -> T {
+        /// The viewer reads these scripts, so native titles are fine.
+        static func readsCJK(_ language: String) -> Bool {
+            let code = language.lowercased()
+            return code.hasPrefix("ja") || code.hasPrefix("zh") || code.hasPrefix("ko")
+        }
+
+        func get<T: Decodable>(_ path: String, query: [String: String] = [:], language: String? = nil) async throws -> T {
             guard !apiKey.isEmpty else { throw CalendarTmdbError.missingApiKey }
             guard var components = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false) else {
                 throw CalendarTmdbError.http(0)
             }
             var items = [
                 URLQueryItem(name: "api_key", value: apiKey),
-                URLQueryItem(name: "language", value: language),
+                URLQueryItem(name: "language", value: language ?? self.language),
             ]
             for key in query.keys.sorted() {
                 items.append(URLQueryItem(name: key, value: query[key]))

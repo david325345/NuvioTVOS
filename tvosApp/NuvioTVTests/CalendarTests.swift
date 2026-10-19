@@ -602,3 +602,39 @@ final class CalendarAnimeTimesTests: XCTestCase {
         XCTAssertEqual(http.postCount, 1)
     }
 }
+
+// MARK: - Readable titles
+
+final class CalendarReadableTitleTests: XCTestCase {
+    func testDetectsCJKScript() {
+        XCTAssertTrue(CalendarText.isCJK("薬屋のひとりごと"))
+        XCTAssertTrue(CalendarText.isCJK("나 혼자만 레벨업"))
+        XCTAssertFalse(CalendarText.isCJK("The Apothecary Diaries"))
+        XCTAssertFalse(CalendarText.isCJK("Šílenství"))
+    }
+
+    func testTvDetailsFallsBackToEnglish() throws {
+        let json = #"""
+        {"id":1,"name":"薬屋のひとりごと","translations":{"translations":[
+          {"iso_639_1":"ja","data":{"name":""}},
+          {"iso_639_1":"en","data":{"name":"The Apothecary Diaries"}}]}}
+        """#
+        let details = try JSONDecoder().decode(CalendarTmdb.TvDetails.self, from: Data(json.utf8))
+        XCTAssertEqual(details.readableName, "The Apothecary Diaries")
+        XCTAssertEqual(CalendarTmdb.TvDetails(id: 2, name: "Ordinace").readableName, "Ordinace")
+    }
+
+    func testCalendarUsesReadableNameAndDropsCJKEpisodeTitles() {
+        let item = CalendarItem(id: "tt1", kind: .series, name: "薬屋のひとりごと")
+        let details = CalendarTmdb.TvDetails(id: 1, name: "薬屋のひとりごと", translations: .init(translations: [
+            .init(language: "en", data: .init(name: "The Apothecary Diaries")),
+        ]))
+        let episodes = [CalendarTmdb.Episode(airDate: "2026-10-20", episodeNumber: 1, seasonNumber: 3, name: "第1話")]
+        let entries = CalendarBuilder.episodeEntries(
+            item: item, details: details, episodes: episodes,
+            first: CalendarDay(year: 2026, month: 10, day: 1), last: CalendarDay(year: 2026, month: 10, day: 31)
+        )
+        XCTAssertEqual(entries.first?.title, "The Apothecary Diaries")
+        XCTAssertNil(entries.first?.episodeName)
+    }
+}

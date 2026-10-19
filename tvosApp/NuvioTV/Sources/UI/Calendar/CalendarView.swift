@@ -103,9 +103,9 @@ struct CalendarView: View {
 
     private var today: CalendarDay { CalendarDay(date: Date()) }
 
-    private var libraryKeys: Set<String> {
-        if case .loaded(let result, _) = model.state { return result.libraryKeys }
-        return []
+    private var libraryItems: [String: CalendarItem] {
+        if case .loaded(let result, _) = model.state { return result.libraryItems }
+        return [:]
     }
 
     var body: some View {
@@ -120,9 +120,9 @@ struct CalendarView: View {
             }
         }
         .fullScreenCover(isPresented: $showingSuggestions) {
-            CalendarSuggestionsView(libraryKeys: libraryKeys, accent: accent) { added in
+            CalendarSuggestionsView(libraryItems: libraryItems, accent: accent) { changed in
                 showingSuggestions = false
-                if added > 0 { model.load() }
+                if changed > 0 { model.load() }
             }
         }
     }
