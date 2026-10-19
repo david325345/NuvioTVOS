@@ -90,6 +90,9 @@ struct CalendarView: View {
     @StateObject private var model = CalendarViewModel()
     @AppStorage(SettingsKey.amoled) private var amoled = false
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
+    @AppStorage(SettingsKey.theme) private var theme = SettingsAccent.white.rawValue
+
+    private var accent: Color { SettingsAccent.color(for: theme) }
 
     @State private var displayedMonth = CalendarDay(date: Date()).firstOfMonth
     @State private var selectedDay = CalendarDay(date: Date())
@@ -153,6 +156,7 @@ struct CalendarView: View {
                     month: displayedMonth,
                     selectedDay: selectedDay,
                     today: today,
+                    accent: accent,
                     focus: $focus,
                     onOpen: onOpenEntry
                 )
@@ -247,6 +251,7 @@ struct CalendarView: View {
                             entries: result.entries(on: day),
                             isToday: day == today,
                             isSelected: day == selectedDay,
+                            accent: accent,
                             height: cellHeight
                         ) {
                             if let first = result.entries(on: day).first {
@@ -285,14 +290,19 @@ private struct CalendarDayCell: View {
     let entries: [CalendarEntry]
     let isToday: Bool
     let isSelected: Bool
+    let accent: Color
     let height: CGFloat
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            CalendarDayCellBody(day: day, entries: entries, isToday: isToday, isSelected: isSelected, height: height)
+            CalendarDayCellBody(
+                day: day, entries: entries, isToday: isToday, isSelected: isSelected,
+                accent: accent, height: height
+            )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PosterCardButtonStyle())
+        .focusEffectDisabledIfAvailable()
     }
 }
 
@@ -302,6 +312,7 @@ private struct CalendarDayCellBody: View {
     let entries: [CalendarEntry]
     let isToday: Bool
     let isSelected: Bool
+    let accent: Color
     let height: CGFloat
 
     private var posters: [CalendarEntry] {
@@ -312,11 +323,19 @@ private struct CalendarDayCellBody: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("\(day.day)")
-                .font(.system(size: 20, weight: .bold))
-                .foregroundColor(.white)
-                .frame(width: 34, height: 34)
-                .background(Circle().fill(isToday ? Color.accentColor : Color.clear))
+            HStack(spacing: 8) {
+                Text("\(day.day)")
+                    .font(.system(size: 20, weight: .heavy))
+                    .foregroundColor(isToday ? CalendarFormat.textColor(on: accent) : .white)
+                    .frame(width: 36, height: 36)
+                    .background(Circle().fill(isToday ? accent : Color.clear))
+                if isToday {
+                    Text(L10n.string("calendar_today", fallback: "Today").uppercased())
+                        .font(.system(size: 15, weight: .heavy))
+                        .foregroundColor(accent)
+                        .lineLimit(1)
+                }
+            }
             HStack(spacing: 6) {
                 ForEach(posters.prefix(2)) { entry in
                     CalendarImage(url: entry.posterURL, symbol: entry.kind == .movie ? "film" : "tv")
@@ -336,11 +355,14 @@ private struct CalendarDayCellBody: View {
         .frame(maxWidth: .infinity, minHeight: height, maxHeight: height, alignment: .topLeading)
         .background(
             RoundedRectangle(cornerRadius: 10)
-                .fill(Color.white.opacity(isFocused ? 0.18 : (isSelected ? 0.1 : 0.05)))
+                .fill(Color.white.opacity(isFocused ? 0.2 : (isToday ? 0.14 : (isSelected ? 0.1 : 0.05))))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 10)
-                .stroke(Color.white.opacity(isFocused ? 0.9 : 0), lineWidth: 3)
+                .strokeBorder(
+                    isFocused ? Color.white : (isToday ? accent : Color.clear),
+                    lineWidth: isFocused ? 4 : 3
+                )
         )
         .scaleEffect(isFocused ? 1.04 : 1)
         .animation(.easeOut(duration: 0.15), value: isFocused)
@@ -354,6 +376,7 @@ private struct CalendarDayPanel: View {
     let month: CalendarDay
     let selectedDay: CalendarDay
     let today: CalendarDay
+    let accent: Color
     var focus: FocusState<CalendarFocus?>.Binding
     let onOpen: (CalendarEntry) -> Void
 
@@ -379,13 +402,14 @@ private struct CalendarDayPanel: View {
                     ForEach(sections) { section in
                         VStack(alignment: .leading, spacing: 10) {
                             Text(CalendarFormat.dayHeader(section.date, today: today))
-                                .font(.system(size: 22, weight: .semibold))
-                                .foregroundColor(.white.opacity(section.date == selectedDay ? 1 : 0.7))
+                                .font(.system(size: 22, weight: section.date == today ? .heavy : .semibold))
+                                .foregroundColor(section.date == today ? accent : .white.opacity(section.date == selectedDay ? 1 : 0.7))
                             ForEach(section.entries) { entry in
                                 Button { onOpen(entry) } label: {
-                                    CalendarEntryCard(entry: entry)
+                                    CalendarEntryCard(entry: entry, accent: accent)
                                 }
-                                .buttonStyle(.plain)
+                                .buttonStyle(PosterCardButtonStyle())
+                                .focusEffectDisabledIfAvailable()
                                 .focused(focus, equals: .entry(entry.id))
                             }
                         }
@@ -394,11 +418,17 @@ private struct CalendarDayPanel: View {
                             RoundedRectangle(cornerRadius: 14)
                                 .fill(Color.white.opacity(section.date == selectedDay ? 0.1 : 0.04))
                         )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14)
+                                .strokeBorder(section.date == today ? accent.opacity(0.8) : Color.clear, lineWidth: 2)
+                        )
                         .id(section.id)
                     }
                 }
                 .padding(.vertical, 20)
+                .padding(.horizontal, 12)
             }
+            .scrollClipDisabledIfAvailable()
             .onAppear { scroll(proxy) }
             .onChange(of: selectedDay) { _, _ in scroll(proxy) }
             .onChange(of: month) { _, _ in scroll(proxy) }
@@ -416,6 +446,7 @@ private struct CalendarDayPanel: View {
 private struct CalendarEntryCard: View {
     @Environment(\.isFocused) private var isFocused
     let entry: CalendarEntry
+    let accent: Color
 
     var body: some View {
         HStack(spacing: 16) {
@@ -426,7 +457,7 @@ private struct CalendarEntryCard: View {
                 if let tag = CalendarFormat.tag(entry) {
                     Text(tag)
                         .font(.system(size: 18, weight: .bold))
-                        .foregroundColor(.accentColor)
+                        .foregroundColor(accent)
                 }
                 Text(entry.title)
                     .font(.system(size: 22, weight: .bold))
@@ -448,9 +479,9 @@ private struct CalendarEntryCard: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.white.opacity(isFocused ? 0.9 : 0), lineWidth: 3)
+                .strokeBorder(Color.white.opacity(isFocused ? 0.9 : 0), lineWidth: 3)
         )
-        .scaleEffect(isFocused ? 1.03 : 1)
+        .scaleEffect(isFocused ? 1.02 : 1)
         .animation(.easeOut(duration: 0.15), value: isFocused)
     }
 }
@@ -523,6 +554,11 @@ private struct CalendarSkippedList: View {
 }
 
 enum CalendarFormat {
+    /// Black on the white accent, white on the coloured ones.
+    static func textColor(on accent: Color) -> Color {
+        accent == .white ? .black : .white
+    }
+
     private static var locale: Locale { AppLocaleManager.shared.locale }
 
     private static func formatter(_ template: String) -> DateFormatter {
