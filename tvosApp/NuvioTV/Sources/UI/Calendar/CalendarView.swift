@@ -97,9 +97,15 @@ struct CalendarView: View {
     @State private var displayedMonth = CalendarDay(date: Date()).firstOfMonth
     @State private var selectedDay = CalendarDay(date: Date())
     @State private var showingSkipped = false
+    @State private var showingSuggestions = false
     @FocusState private var focus: CalendarFocus?
 
     private var today: CalendarDay { CalendarDay(date: Date()) }
+
+    private var libraryKeys: Set<String> {
+        if case .loaded(let result, _) = model.state { return result.libraryKeys }
+        return []
+    }
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -110,6 +116,12 @@ struct CalendarView: View {
         .sheet(isPresented: $showingSkipped) {
             if case .loaded(let result, _) = model.state {
                 CalendarSkippedList(skipped: result.skipped)
+            }
+        }
+        .fullScreenCover(isPresented: $showingSuggestions) {
+            CalendarSuggestionsView(libraryKeys: libraryKeys, accent: accent) { added in
+                showingSuggestions = false
+                if added > 0 { model.load() }
             }
         }
     }
@@ -200,6 +212,15 @@ struct CalendarView: View {
             .focused($focus, equals: .nextMonth)
 
             Spacer()
+
+            Button {
+                showingSuggestions = true
+            } label: {
+                Label(
+                    L10n.string("calendar_add_shows", fallback: "Add shows"),
+                    systemImage: "plus.rectangle.on.rectangle"
+                )
+            }
 
             if !result.skipped.isEmpty {
                 Button {

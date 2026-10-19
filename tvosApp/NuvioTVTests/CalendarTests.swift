@@ -281,3 +281,45 @@ final class CalendarServiceTests: XCTestCase {
         XCTAssertEqual(out, (0..<20).map { $0 * 2 })
     }
 }
+
+// MARK: - Suggestions
+
+final class CalendarSuggestionTests: XCTestCase {
+    func testAnimeSeasons() {
+        XCTAssertEqual(CalendarSuggestions.animeSeason(containing: today).first.iso, "2026-10-01")
+        XCTAssertEqual(CalendarSuggestions.animeSeason(containing: today).last.iso, "2026-12-31")
+        let feb = CalendarSuggestions.animeSeason(containing: CalendarDay(year: 2027, month: 2, day: 14))
+        XCTAssertEqual(feb.first.iso, "2027-01-01")
+        XCTAssertEqual(feb.last.iso, "2027-03-31")
+        let jun = CalendarSuggestions.animeSeason(containing: CalendarDay(year: 2027, month: 6, day: 30))
+        XCTAssertEqual(jun.first.iso, "2027-04-01")
+        XCTAssertEqual(jun.last.iso, "2027-06-30")
+    }
+
+    func testRequests() {
+        let anime = CalendarSuggestions.request(for: .animeThisSeason, today: today, region: "CZ")
+        XCTAssertEqual(anime.path, "discover/tv")
+        XCTAssertEqual(anime.query["with_genres"], "16")
+        XCTAssertEqual(anime.query["with_origin_country"], "JP")
+        XCTAssertEqual(anime.query["air_date.gte"], "2026-10-01")
+        XCTAssertEqual(anime.query["air_date.lte"], "2026-12-31")
+
+        let airing = CalendarSuggestions.request(for: .airingNow, today: today, region: "CZ")
+        XCTAssertEqual(airing.query["air_date.lte"], "2026-11-02")
+
+        let movies = CalendarSuggestions.request(for: .upcomingMovies, today: today, region: "CZ")
+        XCTAssertEqual(movies, CalendarSuggestionRequest(path: "movie/upcoming", query: ["region": "CZ"]))
+        XCTAssertEqual(CalendarSuggestionList.upcomingMovies.kind, .movie)
+    }
+
+    func testListPagesAreMergedWithoutDuplicates() async throws {
+        let http = CalendarMockHTTP([
+            "/discover/tv": (200, #"{"results":[{"id":1,"name":"A","first_air_date":"2026-10-03"},{"id":2,"name":"B"}]}"#),
+        ])
+        let client = CalendarTmdb.Client(apiKey: "k", http: http)
+        let results = try await client.list("discover/tv", pages: 2)
+        XCTAssertEqual(results.map(\.id), [1, 2])
+        XCTAssertEqual(results.first?.year, 2026)
+        XCTAssertEqual(http.count(containing: "/discover/tv"), 2)
+    }
+}

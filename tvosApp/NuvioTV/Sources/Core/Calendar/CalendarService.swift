@@ -82,7 +82,8 @@ struct CalendarService: Sendable {
             firstDay: first,
             lastDay: last,
             days: CalendarBuilder.groupByDay(entries),
-            skipped: skipped
+            skipped: skipped,
+            libraryKeys: seenTargets
         )
     }
 

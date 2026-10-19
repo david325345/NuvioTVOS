@@ -181,6 +181,35 @@ enum CalendarTmdb {
         }
     }
 
+    /// One title from a TMDB list or discover query.
+    struct ListResult: Decodable, Hashable, Identifiable, Sendable {
+        let id: Int
+        let name: String?
+        let title: String?
+        let posterPath: String?
+        let firstAirDate: String?
+        let releaseDate: String?
+
+        enum CodingKeys: String, CodingKey {
+            case id, name, title
+            case posterPath = "poster_path"
+            case firstAirDate = "first_air_date"
+            case releaseDate = "release_date"
+        }
+
+        var displayTitle: String { title ?? name ?? "#\(id)" }
+        var year: Int? { (releaseDate ?? firstAirDate).flatMap { Int($0.prefix(4)) } }
+    }
+
+    struct ListPage: Decodable, Sendable {
+        let results: [ListResult]?
+    }
+
+    struct ExternalIds: Decodable, Sendable {
+        let imdbId: String?
+        enum CodingKeys: String, CodingKey { case imdbId = "imdb_id" }
+    }
+
     struct Client: Sendable {
         let apiKey: String
         let language: String
@@ -205,6 +234,29 @@ enum CalendarTmdb {
 
         func movieDetails(_ id: Int) async throws -> MovieDetails {
             try await get("movie/\(id)", query: ["append_to_response": "release_dates"])
+        }
+
+        func list(_ path: String, query: [String: String] = [:], pages: Int = 2) async throws -> [ListResult] {
+            var all: [ListResult] = []
+            var seen = Set<Int>()
+            for page in 1...max(1, pages) {
+                var q = query
+                q["page"] = String(page)
+                let response: ListPage = try await get(path, query: q)
+                for result in response.results ?? [] where seen.insert(result.id).inserted {
+                    all.append(result)
+                }
+            }
+            return all
+        }
+
+        func imdbId(tmdbId: Int, kind: CalendarMediaKind) async throws -> String? {
+            let media = kind == .series ? "tv" : "movie"
+            let ids: ExternalIds = try await get("\(media)/\(tmdbId)/external_ids")
+            guard let imdb = ids.imdbId?.trimmingCharacters(in: .whitespacesAndNewlines), imdb.hasPrefix("tt") else {
+                return nil
+            }
+            return imdb
         }
 
         func get<T: Decodable>(_ path: String, query: [String: String] = [:]) async throws -> T {
