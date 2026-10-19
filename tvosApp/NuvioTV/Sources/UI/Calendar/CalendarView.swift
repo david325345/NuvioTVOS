@@ -108,9 +108,32 @@ struct CalendarView: View {
         return false
     }
 
+    /// Library titles for Add shows: the placed ones by "series:123", the
+    /// ones the calendar couldn't place by "skipped:…".
     private var libraryItems: [String: CalendarItem] {
-        if case .loaded(let result, _) = model.state { return result.libraryItems }
-        return [:]
+        guard case .loaded(let result, _) = model.state else { return [:] }
+        var items = result.libraryItems
+        for skip in result.skipped { items[CalendarSuggestions.skippedKey(skip)] = skip.item }
+        return items
+    }
+
+    private var skippedByKey: [String: CalendarSkippedItem] {
+        guard case .loaded(let result, _) = model.state else { return [:] }
+        return Dictionary(result.skipped.map { (CalendarSuggestions.skippedKey($0), $0) },
+                          uniquingKeysWith: { first, _ in first })
+    }
+
+    /// The next day (today or later) each placed title has something on.
+    private var nextDates: [String: CalendarDay] {
+        guard case .loaded(let result, _) = model.state else { return [:] }
+        var dates: [String: CalendarDay] = [:]
+        for section in result.days where section.date >= today {
+            for entry in section.entries {
+                let key = "\(entry.kind.rawValue):\(entry.tmdbId)"
+                if dates[key] == nil || section.date < dates[key]! { dates[key] = section.date }
+            }
+        }
+        return dates
     }
 
     var body: some View {
@@ -125,7 +148,12 @@ struct CalendarView: View {
             }
         }
         .fullScreenCover(isPresented: $showingSuggestions) {
-            CalendarSuggestionsView(libraryItems: libraryItems, accent: accent) { changed in
+            CalendarSuggestionsView(
+                libraryItems: libraryItems,
+                nextDates: nextDates,
+                skipped: skippedByKey,
+                accent: accent
+            ) { changed in
                 showingSuggestions = false
                 if changed > 0 { model.load() }
             }
@@ -866,6 +894,17 @@ enum CalendarFormat {
         case .physical: return L10n.string("calendar_physical", fallback: "Blu-ray / DVD")
         case .release: return L10n.string("calendar_release", fallback: "Release")
         }
+    }
+
+    /// "Today", "Tomorrow" or "Next: 21 Oct".
+    static func nextDate(_ day: CalendarDay, today: CalendarDay) -> String {
+        if day == today { return L10n.string("calendar_today", fallback: "Today") }
+        if day == today.adding(days: 1) { return L10n.string("calendar_tomorrow", fallback: "Tomorrow") }
+        let formatter = DateFormatter()
+        formatter.locale = AppLocaleManager.shared.locale
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.setLocalizedDateFormatFromTemplate("dMMM")
+        return L10n.format("calendar_suggest_next", fallback: "Next: %@", formatter.string(from: day.noonDate))
     }
 
     static func skipReason(_ reason: CalendarSkipReason) -> String {

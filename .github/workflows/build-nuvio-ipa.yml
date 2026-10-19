@@ -72,4 +72,5 @@ jobs:
             -only-testing:NuvioTVTests/CalendarAnimeTodayTests \
             -only-testing:NuvioTVTests/CalendarAnimeTimesTests \
             -only-testing:NuvioTVTests/CalendarReadableTitleTests \
-            -only-testing:NuvioTVTests/DetailsEpisodeFocusTests
+            -only-testing:NuvioTVTests/DetailsEpisodeFocusTests \
+            -only-testing:NuvioTVTests/CalendarLibraryListTests

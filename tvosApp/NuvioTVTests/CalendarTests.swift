@@ -671,3 +671,31 @@ final class DetailsEpisodeFocusTests: XCTestCase {
         XCTAssertEqual(noDate.pick(from: videos)?.id, "tt1:2:3")
     }
 }
+
+// MARK: - "In calendar" list
+
+final class CalendarLibraryListTests: XCTestCase {
+    func testListsPlacedTitlesByNameThenUnplaced() {
+        let today = CalendarDay(year: 2026, month: 10, day: 19)
+        let skip = CalendarSkippedItem(item: CalendarItem(id: "kitsu:1", kind: .series, name: "Aaa"), reason: .unsupportedId)
+        let skipKey = CalendarSuggestions.skippedKey(skip)
+        let library: [String: CalendarItem] = [
+            "series:2": CalendarItem(id: "tt2", kind: .series, name: "Zeta"),
+            "series:1": CalendarItem(id: "tt1", kind: .series, name: "Beta"),
+            "movie:3": CalendarItem(id: "tt3", kind: .movie, name: "Gamma"),
+            skipKey: skip.item,
+        ]
+        let items = CalendarSuggestions.libraryItems(
+            library: library,
+            nextDates: ["series:1": today, "series:2": today.adding(days: 1)],
+            skipped: [skipKey: skip],
+            today: today
+        )
+        XCTAssertEqual(items.map(\.title), ["Beta", "Gamma", "Zeta", "Aaa"])
+        XCTAssertEqual(items.first?.tmdbId, 1)
+        XCTAssertEqual(items.first?.imdbId, "tt1")
+        XCTAssertEqual(items.last?.key, skipKey)
+        XCTAssertNil(items.last?.tmdbId)
+        XCTAssertEqual(CalendarSuggestionList.inCalendar.group, .library)
+    }
+}

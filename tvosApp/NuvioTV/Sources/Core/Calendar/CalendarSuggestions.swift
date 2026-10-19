@@ -8,8 +8,13 @@ enum CalendarSuggestionList: String, CaseIterable, Identifiable, Sendable {
     case seriesToday
     case airingNow
     case upcomingMovies
+    /// What the calendar already follows from the library, to remove titles.
+    case inCalendar
 
     var id: String { rawValue }
+
+    /// Lists built from TMDB/AniList; `inCalendar` comes from the library.
+    var isLibraryList: Bool { self == .inCalendar }
 
     var kind: CalendarMediaKind {
         self == .upcomingMovies ? .movie : .series
@@ -17,7 +22,7 @@ enum CalendarSuggestionList: String, CaseIterable, Identifiable, Sendable {
 
     /// Top-level button the list sits under in Add shows.
     enum Group: String, CaseIterable, Identifiable, Sendable {
-        case anime, series, movies
+        case anime, series, movies, library
         var id: String { rawValue }
 
         var title: String {
@@ -25,6 +30,7 @@ enum CalendarSuggestionList: String, CaseIterable, Identifiable, Sendable {
             case .anime: return L10n.string("calendar_suggest_group_anime", fallback: "Anime")
             case .series: return L10n.string("calendar_suggest_group_series", fallback: "Series")
             case .movies: return L10n.string("calendar_suggest_group_movies", fallback: "Movies")
+            case .library: return L10n.string("calendar_suggest_group_library", fallback: "In calendar")
             }
         }
 
@@ -38,6 +44,7 @@ enum CalendarSuggestionList: String, CaseIterable, Identifiable, Sendable {
         case .animeToday, .animeThisSeason: return .anime
         case .seriesToday, .airingNow: return .series
         case .upcomingMovies: return .movies
+        case .inCalendar: return .library
         }
     }
 
@@ -48,6 +55,7 @@ enum CalendarSuggestionList: String, CaseIterable, Identifiable, Sendable {
         case .animeThisSeason: return L10n.string("calendar_suggest_this_season", fallback: "This season")
         case .airingNow: return L10n.string("calendar_suggest_airing_now", fallback: "Airing now")
         case .upcomingMovies: return L10n.string("calendar_suggest_upcoming", fallback: "Upcoming")
+        case .inCalendar: return L10n.string("calendar_suggest_group_library", fallback: "In calendar")
         }
     }
 
@@ -58,6 +66,7 @@ enum CalendarSuggestionList: String, CaseIterable, Identifiable, Sendable {
         case .seriesToday: return L10n.string("calendar_suggest_series_today", fallback: "Series today")
         case .airingNow: return L10n.string("calendar_suggest_airing", fallback: "Series airing now")
         case .upcomingMovies: return L10n.string("calendar_suggest_movies", fallback: "Upcoming movies")
+        case .inCalendar: return L10n.string("calendar_suggest_group_library", fallback: "In calendar")
         }
     }
 }
@@ -119,6 +128,9 @@ enum CalendarSuggestions {
             ])
         case .upcomingMovies:
             return CalendarSuggestionRequest(path: "movie/upcoming", query: ["region": region])
+        case .inCalendar:
+            // Built from the library, no request.
+            return CalendarSuggestionRequest(path: "", query: [:])
         }
     }
 
@@ -167,6 +179,47 @@ struct CalendarSuggestionItem: Identifiable, Hashable, Sendable {
             year: result.year
         )
     }
+}
+
+extension CalendarSuggestions {
+    /// The "In calendar" list: every library title the calendar follows,
+    /// with its next date, then the titles it couldn't place.
+    static func libraryItems(
+        library: [String: CalendarItem],
+        nextDates: [String: CalendarDay],
+        skipped: [String: CalendarSkippedItem],
+        today: CalendarDay
+    ) -> [CalendarSuggestionItem] {
+        func item(_ key: String, _ entry: CalendarItem, detail: String) -> CalendarSuggestionItem {
+            let tmdb = key.hasPrefix("skipped:") ? nil : key.split(separator: ":").last.flatMap { Int($0) }
+            return CalendarSuggestionItem(
+                key: key,
+                kind: entry.kind,
+                tmdbId: tmdb,
+                imdbId: entry.id.hasPrefix("tt") ? entry.id : nil,
+                title: entry.name ?? entry.id,
+                posterURL: entry.posterURL.flatMap(URL.init(string:)),
+                year: entry.year,
+                detail: detail
+            )
+        }
+        let placed = library
+            .filter { skipped[$0.key] == nil }
+            .map { key, entry in
+                item(key, entry, detail: nextDates[key].map { CalendarFormat.nextDate($0, today: today) }
+                    ?? L10n.string("calendar_suggest_nothing_upcoming", fallback: "Nothing upcoming"))
+            }
+            .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        let unplaced = skipped
+            .filter { library[$0.key] != nil }
+            .map { key, skip in item(key, skip.item, detail: CalendarFormat.skipReason(skip.reason)) }
+            .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        return placed + unplaced
+    }
+
+    /// Library keys of skipped titles ("skipped:series:tt…"), so they can be
+    /// listed and removed next to the placed ones.
+    static func skippedKey(_ skip: CalendarSkippedItem) -> String { "skipped:\(skip.id)" }
 }
 
 /// Adds titles picked from a suggestion list to the active library, the same

@@ -4,6 +4,10 @@ import SwiftUI
 /// Select = mark for a bulk add/remove; hold = add or remove that one now.
 struct CalendarSuggestionsView: View {
     let libraryItems: [String: CalendarItem]
+    /// Next day each library title has something on (for "In calendar").
+    let nextDates: [String: CalendarDay]
+    /// Library titles the calendar couldn't place, by their "skipped:" key.
+    let skipped: [String: CalendarSkippedItem]
     let accent: Color
     let onClose: (_ changed: Int) -> Void
 
@@ -17,9 +21,14 @@ struct CalendarSuggestionsView: View {
     /// Library state as changed in this sheet (starts as the calendar's).
     @State private var library: [String: CalendarItem]
     @State private var changed = 0
+    @State private var confirmingRemove = false
 
-    init(libraryItems: [String: CalendarItem], accent: Color, onClose: @escaping (_ changed: Int) -> Void) {
+    init(libraryItems: [String: CalendarItem], nextDates: [String: CalendarDay] = [:],
+         skipped: [String: CalendarSkippedItem] = [:], accent: Color,
+         onClose: @escaping (_ changed: Int) -> Void) {
         self.libraryItems = libraryItems
+        self.nextDates = nextDates
+        self.skipped = skipped
         self.accent = accent
         self.onClose = onClose
         _library = State(initialValue: libraryItems)
@@ -98,7 +107,12 @@ struct CalendarSuggestionsView: View {
 
                     if !toRemove.isEmpty {
                         Button {
-                            removeSelected()
+                            // Several at once (or everything) asks first.
+                            if toRemove.count > 1 {
+                                confirmingRemove = true
+                            } else {
+                                removeSelected()
+                            }
                         } label: {
                             Label(L10n.format("calendar_suggest_remove", fallback: "Remove %d", toRemove.count),
                                   systemImage: "minus")
@@ -107,7 +121,11 @@ struct CalendarSuggestionsView: View {
                     }
 
                     Button(L10n.string("calendar_suggest_select_all", fallback: "Select all")) {
-                        selected = Set(results.filter { $0.isAddable && library[$0.key] == nil }.map(\.key))
+                        if list.isLibraryList {
+                            selected = Set(results.map(\.key).filter { library[$0] != nil })
+                        } else {
+                            selected = Set(results.filter { $0.isAddable && library[$0.key] == nil }.map(\.key))
+                        }
                     }
                     .disabled(results.isEmpty || isBusy)
 
@@ -129,6 +147,15 @@ struct CalendarSuggestionsView: View {
             if !toAdd.isEmpty && !isBusy { addSelected() }
         }
         .onExitCommand { if !isBusy { onClose(changed) } }
+        .alert(
+            L10n.format("calendar_suggest_remove_confirm", fallback: "Remove %d titles from your library?", toRemove.count),
+            isPresented: $confirmingRemove
+        ) {
+            Button(L10n.string("calendar_suggest_remove_action", fallback: "Remove"), role: .destructive) {
+                removeSelected()
+            }
+            Button(L10n.string("action_cancel", fallback: "Cancel"), role: .cancel) {}
+        }
         .onDisappear { loadTask?.cancel() }
     }
 
@@ -148,6 +175,7 @@ struct CalendarSuggestionsView: View {
                             result: result,
                             isSelected: selected.contains(result.key),
                             inLibrary: library[result.key] != nil,
+                            showsDetailInLibrary: list.isLibraryList,
                             accent: accent,
                             onSelect: { toggleSelection(result) },
                             onHold: { holdAction(result) }
@@ -200,7 +228,11 @@ struct CalendarSuggestionsView: View {
         loadTask = Task {
             do {
                 let found: [CalendarSuggestionItem]
-                if list == .animeToday {
+                if list == .inCalendar {
+                    found = CalendarSuggestions.libraryItems(
+                        library: library, nextDates: nextDates, skipped: skipped, today: CalendarDay(date: Date())
+                    )
+                } else if list == .animeToday {
                     // Exact broadcast times from AniList, ids from arm / Simkl.
                     found = try await CalendarAnimeToday.load()
                 } else {
@@ -211,7 +243,9 @@ struct CalendarSuggestionsView: View {
                 results = found
                 isLoading = false
                 if found.isEmpty {
-                    errorText = L10n.string("calendar_suggest_empty", fallback: "TMDB has nothing in this list right now.")
+                    errorText = list.isLibraryList
+                        ? L10n.string("calendar_suggest_library_empty", fallback: "Your library has nothing the calendar follows.")
+                        : L10n.string("calendar_suggest_empty", fallback: "TMDB has nothing in this list right now.")
                 }
             } catch {
                 guard !Task.isCancelled else { return }
@@ -245,6 +279,8 @@ struct CalendarSuggestionsView: View {
         Task {
             let removed = await CalendarLibraryWriter.remove(keys, items: current)
             for key in removed { library[key] = nil }
+            // "In calendar" only lists library titles: drop the removed ones.
+            if list.isLibraryList { results.removeAll { removed.contains($0.key) } }
             selected.subtract(removed)
             changed += removed.count
             isBusy = false
@@ -257,6 +293,7 @@ private struct CalendarSuggestionCell: View {
     let result: CalendarSuggestionItem
     let isSelected: Bool
     let inLibrary: Bool
+    var showsDetailInLibrary = false
     let accent: Color
     let onSelect: () -> Void
     let onHold: () -> Void
@@ -272,7 +309,8 @@ private struct CalendarSuggestionCell: View {
             }
             onSelect()
         } label: {
-            CalendarSuggestionCard(result: result, isSelected: isSelected, inLibrary: inLibrary, accent: accent)
+            CalendarSuggestionCard(result: result, isSelected: isSelected, inLibrary: inLibrary,
+                                   showsDetailInLibrary: showsDetailInLibrary, accent: accent)
         }
         .buttonStyle(CalendarHoldButtonStyle(onHold: onHold, didTriggerHold: $didTriggerHold))
         .focusEffectDisabledIfAvailable()
@@ -310,6 +348,7 @@ private struct CalendarSuggestionCard: View {
     let result: CalendarSuggestionItem
     let isSelected: Bool
     let inLibrary: Bool
+    var showsDetailInLibrary = false
     let accent: Color
 
     var body: some View {
@@ -327,9 +366,11 @@ private struct CalendarSuggestionCard: View {
                 }
                 .frame(width: 190, height: 285)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
-                .opacity(inLibrary || !result.isAddable ? 0.45 : 1)
+                // Dim what can't be added; in "In calendar" everything is in the
+                // library, so nothing is dimmed and only selection is marked.
+                .opacity(showsDetailInLibrary ? 1 : (inLibrary || !result.isAddable ? 0.45 : 1))
 
-                if isSelected || inLibrary {
+                if isSelected || (inLibrary && !showsDetailInLibrary) {
                     // Selected library title = marked for removal.
                     Image(systemName: isSelected && inLibrary ? "minus.circle.fill"
                           : (inLibrary ? "checkmark.circle" : "checkmark.circle.fill"))
@@ -360,7 +401,11 @@ private struct CalendarSuggestionCard: View {
     }
 
     private var subtitle: String {
-        if inLibrary { return L10n.string("calendar_suggest_in_library", fallback: "In library") }
+        if inLibrary {
+            // "In calendar" shows the next date instead.
+            if showsDetailInLibrary, let detail = result.detail { return detail }
+            return L10n.string("calendar_suggest_in_library", fallback: "In library")
+        }
         if !result.isAddable { return L10n.string("calendar_suggest_no_ids", fallback: "No TMDB or IMDb id") }
         return result.detail ?? result.year.map(String.init) ?? ""
     }
