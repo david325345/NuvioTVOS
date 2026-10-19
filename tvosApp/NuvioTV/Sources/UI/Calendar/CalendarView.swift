@@ -162,8 +162,9 @@ struct CalendarView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     header(result: result, loadedAt: loadedAt)
                     monthGrid(result: result)
+                        .frame(maxHeight: .infinity, alignment: .top)
                 }
-                .frame(maxWidth: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 CalendarDayPanel(
                     result: result,
                     month: displayedMonth,
@@ -173,10 +174,15 @@ struct CalendarView: View {
                     focus: $focus,
                     onOpen: onOpenEntry
                 )
-                .frame(width: 520)
+                .frame(width: 610)
             }
-            .padding(.horizontal, 60)
+            .frame(maxHeight: .infinity, alignment: .top)
+            // Use the screen's width: the system's side safe area (and the
+            // collapsed sidebar) left a wide empty band on the left.
+            .padding(.horizontal, 50)
             .padding(.top, 30)
+            .padding(.bottom, 30)
+            .ignoresSafeArea(.container, edges: [.leading, .trailing])
             .defaultFocus($focus, .day(today))
             .onAppear(perform: focusTodayOnFirstOpen)
         }
@@ -264,7 +270,8 @@ struct CalendarView: View {
         let firstWeekday = Calendar.current.firstWeekday
         let cells = CalendarBuilder.monthGrid(for: displayedMonth, firstWeekday: firstWeekday)
         let rows = max(1, cells.count / 7)
-        let cellHeight: CGFloat = rows > 5 ? 118 : 140
+        // Minimum height; cells grow to fill the screen's height.
+        let cellHeight: CGFloat = rows > 5 ? 110 : 130
 
         return VStack(spacing: 10) {
             HStack(spacing: 10) {
@@ -325,7 +332,7 @@ struct CalendarView: View {
             // The focused cell grows over its neighbours.
             .zIndex(focus == .day(day) ? 1 : 0)
         } else {
-            Color.clear.frame(maxWidth: .infinity).frame(height: height)
+            Color.clear.frame(maxWidth: .infinity).frame(minHeight: height, maxHeight: .infinity)
         }
     }
 
@@ -418,7 +425,7 @@ private struct CalendarDayCellBody: View {
             }
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: growth.alignment)
         }
-        .frame(height: height)
+        .frame(minHeight: height, maxHeight: .infinity)
         .animation(.easeOut(duration: 0.18), value: isExpanded)
         .onChange(of: isFocused) { _, focused in
             expandTask?.cancel()
@@ -645,7 +652,7 @@ private struct CalendarEntryCard: View {
     var body: some View {
         HStack(spacing: 16) {
             CalendarImage(url: entry.stillURL ?? entry.posterURL, symbol: entry.kind == .movie ? "film" : "tv")
-                .frame(width: 160, height: 90)
+                .frame(width: 200, height: 112)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
             VStack(alignment: .leading, spacing: 4) {
                 let time = entry.airTime.map(CalendarFormat.time)
@@ -653,23 +660,23 @@ private struct CalendarEntryCard: View {
                     HStack(spacing: 10) {
                         if let time {
                             Label(time, systemImage: "clock")
-                                .font(.system(size: 18, weight: .semibold))
+                                .font(.system(size: 20, weight: .semibold))
                                 .foregroundColor(.white.opacity(0.85))
                         }
                         if let tag = CalendarFormat.tag(entry) {
                             Text(tag)
-                                .font(.system(size: 18, weight: .bold))
+                                .font(.system(size: 20, weight: .bold))
                                 .foregroundColor(accent)
                         }
                     }
                 }
                 Text(entry.title)
-                    .font(.system(size: 22, weight: .bold))
+                    .font(.system(size: 26, weight: .bold))
                     .foregroundColor(.white)
                     .lineLimit(1)
                 if let subtitle = CalendarFormat.subtitle(entry) {
                     Text(subtitle)
-                        .font(.system(size: 18))
+                        .font(.system(size: 20))
                         .foregroundColor(.white.opacity(0.7))
                         .lineLimit(2)
                 }
