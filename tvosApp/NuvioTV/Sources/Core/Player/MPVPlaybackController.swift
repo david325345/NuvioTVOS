@@ -2857,12 +2857,16 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
         ))
     }
 
+#endif
+    // Used outside the memory watchdog too (playlist entry id), so it must
+    // exist in builds without NUVIO_MPV_MEMORY_WATCHDOG.
     private func readOptionalInt64Property(_ name: String) -> Int64? {
         guard mpv != nil else { return nil }
         var value = Int64()
         guard mpv_get_property(mpv, name, MPV_FORMAT_INT64, &value) >= 0 else { return nil }
         return value
     }
+#if NUVIO_MPV_MEMORY_WATCHDOG && os(tvOS)
 
     private func readOptionalFlagProperty(_ name: String) -> Bool? {
         guard mpv != nil else { return nil }
