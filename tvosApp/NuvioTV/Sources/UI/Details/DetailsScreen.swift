@@ -1150,6 +1150,56 @@ struct DetailsScreen: View {
             BingeGroupStore.save(seriesId: meta.id, stream: stream, profileId: activeProfileId)
         }
         PlaybackStartupTiming.markSourcePicked(stream: stream, token: startupToken)
+        // Usenet: start the on-device engine here so a failure (no server,
+        // incomplete release) lands back in the source picker with a reason.
+        if let raw = stream.directURL, let usenetURL = URL(string: raw), let spec = UsenetStreamSpec(url: usenetURL) {
+            isResolvingDebrid = true
+            isPreparingPlayback = true
+            isSmartPlaybackPending = false
+            Task { @MainActor in
+                do {
+                    let localURL = try await UsenetEngineManager.shared.startStream(spec)
+                    guard PlaybackStartupTiming.isActive(token: startupToken) else {
+                        await UsenetEngineManager.shared.stopActiveStream(for: localURL)
+                        return
+                    }
+                    isResolvingDebrid = false
+                    isStreamPickerPresented = false
+                    if !stream.isNotPlayable { armExternalPlayerTimeoutIfNeeded(player: player) }
+                    if self.startupBenchmarkToken == startupToken {
+                        self.startupBenchmarkToken = nil
+                    }
+                    onPlayClick(
+                        localURL.absoluteString,
+                        stream.httpHeaders ?? [:],
+                        meta,
+                        pendingEpisodeSubtitle,
+                        stream.subtitles,
+                        pendingEpisode,
+                        orderedEpisodes(for: meta),
+                        player,
+                        nil,
+                        stream.filename,
+                        stream.videoSize,
+                        stream.videoHash,
+                        nil,
+                        startupToken,
+                        stream.id,
+                        stream.isNotPlayable
+                    )
+                } catch {
+                    isResolvingDebrid = false
+                    cancelStartupRequest(token: startupToken)
+                    isPreparingPlayback = false
+                    isSmartPlaybackPending = false
+                    if !(error is CancellationError) {
+                        streamPickerAvailabilityMessage = error.localizedDescription
+                        isStreamPickerPresented = true
+                    }
+                }
+            }
+            return
+        }
         if let url = stream.directURL, !url.isEmpty {
             isStreamPickerPresented = false
             isPreparingPlayback = true

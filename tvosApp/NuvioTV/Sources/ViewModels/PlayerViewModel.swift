@@ -1328,7 +1328,8 @@ class PlayerViewModel: ObservableObject {
             }
             self.currentEpisodeVideo = currentEpisode
         }
-        if TorrentEngineManager.shared.activeStreamURL == url {
+        // Usenet streams use the same local-server lifecycle as torrents.
+        if TorrentEngineManager.shared.activeStreamURL == url || UsenetEngineManager.shared.activeStreamURL == url {
             sessionCoordinator.torrentStreamSourceURL = url
         }
         self.activeStreamURL = url.absoluteString
@@ -3690,7 +3691,10 @@ class PlayerViewModel: ObservableObject {
         shutdown(preservingPictureInPicture: false)
         if let sourceURL {
             // Server URLs carry unique session tokens; a delayed exit cannot stop a successor.
-            Task { await TorrentEngineManager.shared.stopActiveStream(for: sourceURL) }
+            Task {
+                await TorrentEngineManager.shared.stopActiveStream(for: sourceURL)
+                await UsenetEngineManager.shared.stopActiveStream(for: sourceURL)
+            }
         }
     }
 
