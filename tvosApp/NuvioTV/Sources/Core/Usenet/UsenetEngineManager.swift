@@ -14,6 +14,7 @@ struct UsenetStreamStats: Equatable, Sendable {
     var serverCount = 0
     var fileName = ""
     var kind = ""
+    var fileSize: Int64 = 0
 
     var downloadRateFormatted: String {
         ByteCountFormatter.string(fromByteCount: Int64(downloadRate), countStyle: .file) + "/s"
@@ -25,18 +26,22 @@ struct UsenetStreamStats: Equatable, Sendable {
 
     var connectionsText: String { "\(busyConnections)/\(totalConnections)" }
 
-    /// One line for the HUD.
-    var summary: String {
-        var parts = [server.isEmpty ? "Usenet" : server + (serverCount > 1 ? " +\(serverCount - 1)" : "")]
-        parts.append("\(connectionsText) conn")
-        parts.append(downloadRateFormatted)
-        parts.append("ahead \(bufferedFormatted)")
+    /// HUD line 1: where the articles come from and how fast.
+    var connectionLine: String {
+        let host = server.isEmpty ? "Usenet" : server + (serverCount > 1 ? " +\(serverCount - 1)" : "")
+        return [host, "\(connectionsText) conn", downloadRateFormatted].joined(separator: " · ")
+    }
+
+    /// HUD line 2: what the article cache holds and what went missing.
+    var cacheLine: String {
+        var parts = ["ahead \(bufferedFormatted)"]
         if let cacheHitRate { parts.append("hit \(Int((cacheHitRate * 100).rounded()))%") }
-        if missingArticles > 0 { parts.append("missing \(missingArticles)") }
+        parts.append("missing \(missingArticles)")
         if fallbackArticles > 0 { parts.append("backup \(fallbackArticles)") }
-        if kind == UsenetStreamSource.Kind.rar.rawValue { parts.append("RAR") }
         return parts.joined(separator: " · ")
     }
+
+    var summary: String { connectionLine + " · " + cacheLine }
 }
 
 /// Starts and stops the one active Usenet stream, the way
@@ -107,7 +112,8 @@ final class UsenetEngineManager: ObservableObject {
                 server: servers.first?.host ?? "",
                 serverCount: servers.count,
                 fileName: source.name,
-                kind: source.kind.rawValue
+                kind: source.kind.rawValue,
+                fileSize: source.totalSize
             )
             isStreaming = true
             Self.remember(source: spec.url.absoluteString, playback: url.absoluteString)

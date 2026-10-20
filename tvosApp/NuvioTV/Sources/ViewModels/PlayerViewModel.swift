@@ -2557,6 +2557,18 @@ class PlayerViewModel: ObservableObject {
                 info.diskBufferSeconds = diskLeadAhead
             }
             info.concurrency = diskCacheConcurrencyStr
+            let usenet = UsenetEngineManager.shared
+            if let usenetURL = usenet.activeStreamURL, usenetURL.absoluteString == activeStreamURL {
+                let stats = usenet.activeStats
+                info.provider = stats.kind == UsenetStreamSource.Kind.rar.rawValue ? "Usenet · RAR" : "Usenet"
+                if !stats.server.isEmpty { info.server = stats.server }
+                if !stats.fileName.isEmpty {
+                    info.fileName = (stats.fileName as NSString).lastPathComponent
+                    let ext = (stats.fileName as NSString).pathExtension
+                    if !ext.isEmpty { info.fileExtension = ext.uppercased() }
+                }
+                if stats.fileSize > 0 { info.size = Self.formatFileSize(stats.fileSize) }
+            }
         }
     }
 

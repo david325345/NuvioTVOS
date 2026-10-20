@@ -443,7 +443,7 @@ struct PlayerLoadingOverlay: View {
                     .shadow(color: .black.opacity(0.5), radius: 4, y: 1)
                 }
 
-                if usenetManager.isStreaming && !TorrentSettings.hideStats() {
+                if showLoadingStatus && usenetManager.isStreaming && !TorrentSettings.hideStats() {
                     let stats = usenetManager.activeStats
                     HStack(spacing: 12) {
                         HStack(spacing: 5) {

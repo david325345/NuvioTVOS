@@ -85,7 +85,9 @@ struct PlaybackDebugHUDView: View {
                     hudRow(label: "P2P Swarm", value: "\(stats.connectedSeeds) seeds · \(stats.connectedPeers) peers · \(stats.downloadRateFormatted)")
                 }
                 if !hideTorrentStats && UsenetEngineManager.shared.isStreaming {
-                    hudRow(label: "Usenet", value: UsenetEngineManager.shared.activeStats.summary)
+                    let usenet = UsenetEngineManager.shared.activeStats
+                    hudRow(label: "Usenet", value: usenet.connectionLine)
+                    hudRow(label: "NNTP cache", value: usenet.cacheLine)
                 }
                 hudRow(label: "Server", value: info.server.isEmpty ? "--" : info.server)
                 fileRow

@@ -6931,6 +6931,9 @@ private struct TvDetailsEpisodes: View {
     @State private var userDidSelectSeason = false
     @State private var episodeRatings: [String: [NuvioExternalRating]] = [:]
     @State private var ratingOrderRevision: UInt64 = 0
+    /// Episodes ("season:episode") with a reusable last link, read once per
+    /// season instead of from disk for every card on every focus move.
+    @State private var lastLinkEpisodeKeys: Set<String> = []
     @AppStorage(SettingsKey.smoothFocus) private var smoothFocus = true
     @AppStorage(SettingsKey.smartStreamSelection) private var smartStreamSelection = false
     @AppStorage(SettingsKey.reuseLastLink) private var reuseLastLink = false
@@ -7186,7 +7189,7 @@ private struct TvDetailsEpisodes: View {
                         onMenuClosed: { onEpisodeMenuPresented(false) },
                         action: { onSelect(video) },
                         onPlayManually: onPlayManually != nil ? { onPlayManually?(video) } : nil,
-                        smartStreamSelection: smartStreamSelection || (reuseLastLink && LastPlaybackStreamStore.load(metaId: meta.id, season: video.season, episode: video.episode, profileId: ProfileSettings.activeProfileID) != nil),
+                        smartStreamSelection: smartStreamSelection || (reuseLastLink && lastLinkEpisodeKeys.contains(watchKey)),
                         onBack: onBack,
                         focus: episodeFocus,
                         restrictFocusToKey: effectiveFocusRestriction,
@@ -7206,7 +7209,25 @@ private struct TvDetailsEpisodes: View {
             .animation(smoothFocus ? .spring(response: 0.3, dampingFraction: 1.0) : nil, value: episodeScrollIndex)
         }
         .frame(height: TvEpisodeCardLayout.stripHeight)
+        .task(id: "\(selectedSeason)-\(reuseLastLink)-\(seasonEpisodes.count)") {
+            guard reuseLastLink else {
+                lastLinkEpisodeKeys = []
+                return
+            }
+            let profileId = ProfileSettings.activeProfileID
+            var keys = Set<String>()
+            for video in seasonEpisodes where LastPlaybackStreamStore.load(
+                metaId: meta.id, season: video.season, episode: video.episode, profileId: profileId
+            ) != nil {
+                keys.insert("\(video.season):\(video.episode)")
+            }
+            lastLinkEpisodeKeys = keys
+        }
         .task(id: "\(selectedSeason)-\(materializedEpisodeIndices(visibleCardCount: 6).first ?? 0)-\(materializedEpisodeIndices(visibleCardCount: 6).last ?? 0)") {
+            // Let the scroll animation settle first, so the ratings landing
+            // don't redraw the strip mid-move (and fast scrolling fetches once).
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled else { return }
             let visibleCount = max(1, Int(ceil(1920 / TvEpisodeCardLayout.step)) + 1)
             let indices = materializedEpisodeIndices(visibleCardCount: visibleCount)
             let episodes = indices.compactMap { seasonEpisodes.indices.contains($0) ? seasonEpisodes[$0] : nil }
@@ -7421,9 +7442,11 @@ private struct TvEpisodeCard: View {
                         .padding(.vertical, 8)
                         .background {
                             if liquidGlassCards {
+                                // Glass only on the focused card: a strip of
+                                // glass layers re-sampled every frame stutters.
                                 Capsule()
                                     .fill(Color.white.opacity(0.14))
-                                    .modifier(LiquidGlassBadgeModifier(cornerRadius: 16))
+                                    .modifier(LiquidGlassBadgeModifier(cornerRadius: 16, isFocused: isFocused))
                             } else {
                                 Capsule()
                                     .fill(Color.black.opacity(0.52))
@@ -7497,9 +7520,9 @@ private struct TvEpisodeCard: View {
                 .background {
                     if liquidGlassCards {
                         #if os(tvOS)
-                        if #available(tvOS 26.0, *) {
+                        if #available(tvOS 26.0, *), isFocused {
                             shape
-                                .fill(isFocused ? Color.white.opacity(0.18) : Color.white.opacity(0.08))
+                                .fill(Color.white.opacity(0.18))
                                 .glassEffect(.regular, in: shape)
                         } else {
                             shape
