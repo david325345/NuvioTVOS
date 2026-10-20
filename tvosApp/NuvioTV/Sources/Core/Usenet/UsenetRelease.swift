@@ -427,9 +427,9 @@ struct UsenetReleaseResolver {
 
     private static func head(of file: UsenetFile, pool: UsenetConnectionPool) async throws -> UsenetYEncSegment? {
         guard let first = file.segments.first,
-              case .body(let lines) = try await pool.fetch(messageID: first.messageID) else { return nil }
+              case .body(let body) = try await pool.fetch(messageID: first.messageID) else { return nil }
         return try? await Task.detached(priority: .userInitiated) {
-            try UsenetYEnc.decode(bodyLines: lines)
+            try UsenetYEnc.decode(body: body)
         }.value
     }
 
@@ -447,8 +447,8 @@ struct UsenetReleaseResolver {
                 data.append(head.data)
                 continue
             }
-            guard case .body(let lines) = try await pool.fetch(messageID: segment.messageID),
-                  let decoded = try? UsenetYEnc.decode(bodyLines: lines) else { break }
+            guard case .body(let body) = try await pool.fetch(messageID: segment.messageID),
+                  let decoded = try? UsenetYEnc.decode(body: body) else { break }
             data.append(decoded.data)
         }
         var names: [Data: String] = [:]

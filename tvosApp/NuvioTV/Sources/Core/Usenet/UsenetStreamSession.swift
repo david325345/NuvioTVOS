@@ -300,8 +300,8 @@ actor UsenetStreamSession {
         return Task {
             let outcome = try await pool.fetch(messageID: segment.messageID)
             switch outcome {
-            case .body(let lines):
-                let decoded = try await Self.decode(lines)
+            case .body(let body):
+                let decoded = try await Self.decode(body)
                 self.accept(index, place, decoded)
                 return decoded.data
             case .missing:
@@ -353,9 +353,9 @@ actor UsenetStreamSession {
         return data
     }
 
-    private static func decode(_ lines: [Data]) async throws -> UsenetYEncSegment {
+    private static func decode(_ body: Data) async throws -> UsenetYEncSegment {
         try await Task.detached(priority: .userInitiated) {
-            try UsenetYEnc.decode(bodyLines: lines)
+            try UsenetYEnc.decode(body: body)
         }.value
     }
 

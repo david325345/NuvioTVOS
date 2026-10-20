@@ -34,12 +34,13 @@ struct UsenetCRC32: Sendable {
 
     mutating func update(_ data: Data) {
         data.withUnsafeBytes { raw in
-            var c = state
-            let table = Self.table
-            for b in raw {
-                c = table[Int((c ^ UInt32(b)) & 0xFF)] ^ (c >> 8)
+            Self.table.withUnsafeBufferPointer { table in
+                var c = state
+                for b in raw {
+                    c = table[Int((c ^ UInt32(b)) & 0xFF)] ^ (c >> 8)
+                }
+                state = c
             }
-            state = c
         }
     }
 
@@ -90,51 +91,84 @@ enum UsenetYEncError: Error, Equatable, Sendable {
 
 enum UsenetYEnc {
     private static let escape: UInt8 = 0x3D  // '='
-    private static let yByte: UInt8 = 0x79   // 'y'
 
-    /// Decode one article body (its content lines) into a positioned, CRC-checked segment.
+    /// Decode one article body given as content lines (already dot-unstuffed).
     static func decode(bodyLines: [Data]) throws -> UsenetYEncSegment {
+        var joined = Data()
+        joined.reserveCapacity(bodyLines.reduce(0) { $0 + $1.count + 2 })
+        for (index, line) in bodyLines.enumerated() {
+            if index > 0 { joined.append(contentsOf: [0x0D, 0x0A]) }
+            joined.append(line)
+        }
+        return try decode(body: joined, unstuffDots: false)
+    }
+
+    /// Decode one article body as it came off the wire (CRLF lines, dot-stuffed,
+    /// without the terminating "." line) in a single pass: no per-line objects.
+    static func decode(body: Data, unstuffDots: Bool = true) throws -> UsenetYEncSegment {
         var header = UsenetYEncHeader()
         var sawBegin = false
         var declaredPartSize: Int?
         var pcrc: UInt32?
         var fileCRC: UInt32?
 
-        // Decode into a plain byte array (per-byte Data.append pays a Foundation call on every
-        // downloaded byte); wrap it in Data once at the end.
-        var out = [UInt8]()
-        out.reserveCapacity(bodyLines.reduce(0) { $0 + $1.count })
-        var escapePending = false
+        let out: [UInt8] = body.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> [UInt8] in
+            guard let rawBase = raw.baseAddress, raw.count > 0 else { return [] }
+            let base = rawBase.assumingMemoryBound(to: UInt8.self)
+            let n = raw.count
+            return [UInt8](unsafeUninitializedCapacity: n) { dst, initialized in
+                var o = 0
+                var i = 0
+                var escapePending = false
+                lines: while i < n {
+                    var end = n
+                    if let newline = memchr(rawBase + i, 0x0A, n - i) {
+                        end = rawBase.distance(to: UnsafeRawPointer(newline))
+                    }
+                    var contentEnd = end
+                    if contentEnd > i, base[contentEnd - 1] == 0x0D { contentEnd -= 1 }
+                    var start = i
+                    i = end + 1
+                    // RFC 3977: a line starting with "." got one extra "." on the wire.
+                    if unstuffDots, start < contentEnd, base[start] == 0x2E { start += 1 }
 
-        for line in bodyLines {
-            if isKeyword(line, "=ybegin") {
-                parseBegin(line, into: &header)
-                sawBegin = true
-                continue
-            }
-            if isKeyword(line, "=ypart") {
-                parsePart(line, into: &header)
-                continue
-            }
-            if isKeyword(line, "=yend") {
-                let attrs = attributes(of: line, keyword: "=yend")
-                declaredPartSize = attrs["size"].flatMap { Int($0) }
-                pcrc = attrs["pcrc32"].flatMap { UInt32($0, radix: 16) }
-                fileCRC = attrs["crc32"].flatMap { UInt32($0, radix: 16) }
-                break
-            }
-            // Data line — decode bytes.
-            line.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-                for b in raw {
-                    if escapePending {
-                        out.append(b &- 106)
-                        escapePending = false
-                    } else if b == escape {
-                        escapePending = true
-                    } else {
-                        out.append(b &- 42)
+                    if contentEnd - start >= 2, base[start] == 0x3D, base[start + 1] == 0x79 {
+                        let line = Data(bytes: base + start, count: contentEnd - start)
+                        if isKeyword(line, "=ybegin") {
+                            parseBegin(line, into: &header)
+                            sawBegin = true
+                            continue lines
+                        }
+                        if isKeyword(line, "=ypart") {
+                            parsePart(line, into: &header)
+                            continue lines
+                        }
+                        if isKeyword(line, "=yend") {
+                            let attrs = attributes(of: line, keyword: "=yend")
+                            declaredPartSize = attrs["size"].flatMap { Int($0) }
+                            pcrc = attrs["pcrc32"].flatMap { UInt32($0, radix: 16) }
+                            fileCRC = attrs["crc32"].flatMap { UInt32($0, radix: 16) }
+                            break lines
+                        }
+                    }
+
+                    var j = start
+                    while j < contentEnd {
+                        let b = base[j]
+                        if escapePending {
+                            dst[o] = b &- 106
+                            o += 1
+                            escapePending = false
+                        } else if b == escape {
+                            escapePending = true
+                        } else {
+                            dst[o] = b &- 42
+                            o += 1
+                        }
+                        j += 1
                     }
                 }
+                initialized = o
             }
         }
 

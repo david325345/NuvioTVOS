@@ -106,6 +106,52 @@ final class UsenetCoreTests: XCTestCase {
         }
     }
 
+    func testRawBodyDecodesLikeLines() throws {
+        let payload = Data((0..<5000).map { UInt8(($0 * 31 + 7) % 256) })
+        let lines = UsenetFixture.yEncLines(payload, name: "movie.mkv", part: 2, total: 9, begin: 7001, fileSize: 90_000)
+        // On the wire: lines starting with "." get a second dot, joined by CRLF.
+        var wire = Data()
+        for (index, line) in lines.enumerated() {
+            if index > 0 { wire.append(contentsOf: [0x0D, 0x0A]) }
+            if line.first == 0x2E { wire.append(0x2E) }
+            wire.append(line)
+        }
+        let fromLines = try UsenetYEnc.decode(bodyLines: lines)
+        let fromWire = try UsenetYEnc.decode(body: wire)
+        XCTAssertEqual(fromWire.data, payload)
+        XCTAssertEqual(fromWire.data, fromLines.data)
+        XCTAssertEqual(fromWire.fileOffset, 7000)
+        XCTAssertEqual(fromWire.crcMatches, true)
+        XCTAssertEqual(fromWire.header, fromLines.header)
+    }
+
+    func testRawBodyUnstuffsLeadingDots() throws {
+        // Bytes 4, 46, 47 encode to ".XY"; the server sends that line as "..XY".
+        let payload = Data([4, 46, 47])
+        let crc = String(format: "%08x", UsenetCRC32.checksum(of: payload))
+        let wire = Data("=ybegin line=128 size=3 name=a.bin\r\n..XY\r\n=yend size=3 crc32=\(crc)".utf8)
+        let segment = try UsenetYEnc.decode(body: wire)
+        XCTAssertEqual(segment.data, payload)
+        XCTAssertEqual(segment.crcMatches, true)
+        XCTAssertThrowsError(try UsenetYEnc.decode(body: Data()))
+    }
+
+    func testBodyTerminator() {
+        let full = Data("line1\r\nline2\r\n.\r\n222 next".utf8)
+        let end = UsenetNNTP.bodyTerminator(in: full, from: 0)
+        XCTAssertEqual(end?.bodyEnd, 12)
+        XCTAssertEqual(end?.restStart, 17)
+        XCTAssertEqual(UsenetNNTP.bodyTerminator(in: Data(".\r\n".utf8), from: 0)?.restStart, 3)
+        XCTAssertNil(UsenetNNTP.bodyTerminator(in: Data("a\r\n..b\r\n".utf8), from: 0))
+        XCTAssertNil(UsenetNNTP.bodyTerminator(in: Data("a\r\n.".utf8), from: 0))
+        // Found again when the search resumes a few bytes back.
+        XCTAssertEqual(UsenetNNTP.bodyTerminator(in: full, from: 10)?.bodyEnd, 12)
+        var framer = UsenetLineFramer()
+        _ = framer.append(Data("partial".utf8))
+        XCTAssertEqual(framer.takePending(), Data("partial".utf8))
+        XCTAssertEqual(framer.pendingCount, 0)
+    }
+
     func testStatusParsing() {
         let status = UsenetNNTPStatus(string: "281 Authentication accepted")
         XCTAssertEqual(status?.code, 281)

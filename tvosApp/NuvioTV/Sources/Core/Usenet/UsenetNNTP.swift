@@ -81,6 +81,21 @@ enum UsenetNNTP {
         return .content(line)
     }
 
+    private static let terminatorBytes = Data([0x0D, 0x0A, 0x2E, 0x0D, 0x0A]) // CRLF "." CRLF
+
+    /// Where a multi-line body ends in `buffer`: the body is `0..<bodyEnd`
+    /// (without its last CRLF) and the next response starts at `restStart`.
+    /// `from` lets the caller skip what it already searched.
+    static func bodyTerminator(in buffer: Data, from: Int) -> (bodyEnd: Int, restStart: Int)? {
+        let base = buffer.startIndex
+        if buffer.count >= 3, buffer[base] == 0x2E, buffer[base + 1] == 0x0D, buffer[base + 2] == 0x0A {
+            return (0, 3)  // empty body
+        }
+        let lower = base + max(0, min(from, buffer.count))
+        guard let range = buffer.range(of: terminatorBytes, in: lower..<buffer.endIndex) else { return nil }
+        return (range.lowerBound - base, range.upperBound - base)
+    }
+
     /// Encode a command for sending (CRLF-terminated, ASCII/Latin-1).
     static func command(_ text: String) -> Data {
         Data((text + "\r\n").utf8)
@@ -99,6 +114,12 @@ struct UsenetLineFramer {
 
     /// Bytes buffered that haven't been terminated by a newline yet.
     var pending: Data { buffer }
+
+    /// Hands over the unterminated bytes and empties the buffer.
+    mutating func takePending() -> Data {
+        defer { buffer = Data() }
+        return buffer
+    }
     var pendingCount: Int { buffer.count }
 
     /// Scan the buffer once, emitting each complete line, then drop the whole consumed prefix in a
@@ -236,9 +257,10 @@ actor UsenetNNTPConnection {
 
     // MARK: - Commands
 
-    /// Fetch and decode-ready body lines for an article. Returns the dot-unstuffed content lines.
-    /// Throws `.articleUnavailable` only for the codes that mean the article is genuinely gone.
-    func fetchBody(messageID: String) async throws -> [Data] {
+    /// Fetch an article body as one raw block (CRLF lines, still dot-stuffed), ready for
+    /// `UsenetYEnc.decode(body:)`. Throws `.articleUnavailable` only for the codes that mean
+    /// the article is genuinely gone.
+    func fetchBody(messageID: String) async throws -> Data {
         // The message-ID comes from untrusted NZB XML. A CR/LF (or space/bracket) would let a
         // crafted ID inject a second command onto the wire or desync request/response pairing,
         // so reject anything that isn't a well-formed ID before sending.
@@ -249,7 +271,7 @@ actor UsenetNNTPConnection {
         let status = try await readStatus()
         switch status.code {
         case 222:
-            return try await readBodyLines()
+            return try await readBodyRaw()
         case 420, 423, 430:
             // No such article / no article with that number — genuinely, permanently missing.
             throw UsenetNNTPError.articleUnavailable(code: status.code)
@@ -332,14 +354,38 @@ actor UsenetNNTPConnection {
         return status
     }
 
-    private func readBodyLines() async throws -> [Data] {
-        var lines: [Data] = []
+    /// Hard cap on one article body (they are under 1 MB in practice).
+    private static let maxBodyBytes = 64 * 1024 * 1024
+
+    /// The body up to the terminating "." line, read in large chunks and
+    /// searched for the terminator instead of being split into lines.
+    private func readBodyRaw() async throws -> Data {
+        var buffer = Data()
+        // Lines the framer already split off after the status line, then its partial line.
+        while lineCursor < lineQueue.count {
+            buffer.append(lineQueue[lineCursor])
+            buffer.append(contentsOf: [0x0D, 0x0A])
+            lineCursor += 1
+        }
+        lineQueue.removeAll(keepingCapacity: true)
+        lineCursor = 0
+        buffer.append(framer.takePending())
+
+        var searchFrom = 0
         while true {
-            let raw = try await nextLine()
-            switch UsenetNNTP.processBodyLine(raw) {
-            case .terminator: return lines
-            case .content(let content): lines.append(content)
+            if let end = UsenetNNTP.bodyTerminator(in: buffer, from: searchFrom) {
+                if end.restStart < buffer.count {
+                    // Anything after the terminator belongs to the next response.
+                    lineQueue.append(contentsOf: framer.append(buffer.subdata(in: end.restStart..<buffer.count)))
+                }
+                buffer.removeSubrange(end.bodyEnd..<buffer.count)
+                return buffer
             }
+            guard buffer.count < Self.maxBodyBytes else {
+                throw UsenetNNTPError.protocolError("article body exceeded \(Self.maxBodyBytes) bytes")
+            }
+            searchFrom = max(0, buffer.count - 4)
+            buffer.append(try await receiveChunk())
         }
     }
 
@@ -365,7 +411,7 @@ actor UsenetNNTPConnection {
     private func rawReceive() async throws -> Data {
         guard let connection else { throw UsenetNNTPError.notConnected }
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
-            connection.receive(minimumIncompleteLength: 1, maximumLength: 1 << 16) { data, _, isComplete, error in
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 1 << 18) { data, _, isComplete, error in
                 if let error {
                     cont.resume(throwing: UsenetNNTPError.connectionFailed(String(describing: error)))
                 } else if let data, !data.isEmpty {

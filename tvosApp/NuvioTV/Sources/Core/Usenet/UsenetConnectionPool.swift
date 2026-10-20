@@ -28,7 +28,7 @@ actor UsenetConnectionPool {
     }
 
     enum FetchOutcome: Sendable {
-        case body([Data])
+        case body(Data)
         /// No server has the article (taken down or never fully posted).
         case missing
     }
@@ -36,7 +36,7 @@ actor UsenetConnectionPool {
     /// Fetches an article body, trying every server before giving up.
     func fetch(messageID: String) async throws -> FetchOutcome {
         switch try await run(messageID: messageID, statOnly: false) {
-        case .body(let lines): return .body(lines)
+        case .body(let body): return .body(body)
         case .exists, .missing: return .missing
         }
     }
@@ -73,7 +73,7 @@ actor UsenetConnectionPool {
     private var fallbackArticles = 0
 
     private enum Answer {
-        case body([Data])
+        case body(Data)
         case exists
         case missing
     }
@@ -100,10 +100,10 @@ actor UsenetConnectionPool {
                         if found { return .exists }
                         attempt = 3          // next server
                     } else {
-                        let lines = try await connection.fetchBody(messageID: messageID)
+                        let body = try await connection.fetchBody(messageID: messageID)
                         release(connection, to: index)
                         if index > 0 { fallbackArticles += 1 }
-                        return .body(lines)
+                        return .body(body)
                     }
                 } catch let error as UsenetNNTPError {
                     switch error {
