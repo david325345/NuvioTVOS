@@ -2643,7 +2643,8 @@ struct ContentView: View {
             // Direct URL already known-bad this session.
             if let urlString = candidate.directURL?.trimmingCharacters(in: .whitespacesAndNewlines),
                !urlString.isEmpty,
-               excludingURLs.contains(urlString) {
+               excludingURLs.contains(urlString)
+                || UsenetEngineManager.isExcluded(sourceURL: urlString, excludedPlaybackURLs: excludingURLs) {
                 continue
             }
 

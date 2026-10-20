@@ -48,6 +48,10 @@ final class UsenetEngineManager: ObservableObject {
     @Published private(set) var isStreaming = false
     @Published private(set) var lastError: String?
     @Published private(set) var activeStats = UsenetStreamStats()
+    /// Set when the playing release turns out too damaged; the player then
+    /// switches to another source at the current position.
+    @Published private(set) var damagedStreamURL: URL?
+    private var damagedGeneration: Int?
 
     private var session: UsenetStreamSession?
     private var server: UsenetStreamServer?
@@ -84,7 +88,9 @@ final class UsenetEngineManager: ObservableObject {
             usenetLog.notice("usenet: \(source.name, privacy: .public) [\(source.kind.rawValue, privacy: .public)] — \(source.volumes.count) file(s), \(health.missing)/\(health.checked) sampled articles missing")
             guard UsenetHealthCheck.isPlayable(health) else { throw UsenetError.releaseIncomplete }
 
-            let session = UsenetStreamSession(source: source, pool: pool, profile: UsenetSettings.profile())
+            let session = UsenetStreamSession(source: source, pool: pool, profile: UsenetSettings.profile()) { [weak self] in
+                Task { @MainActor in self?.reportDamage(generation: current) }
+            }
             try await session.prepare()
             guard current == generation, !Task.isCancelled else {
                 await session.stop()
@@ -104,6 +110,8 @@ final class UsenetEngineManager: ObservableObject {
                 kind: source.kind.rawValue
             )
             isStreaming = true
+            Self.remember(source: spec.url.absoluteString, playback: url.absoluteString)
+            if damagedGeneration == current { damagedStreamURL = url }
             startStatsLoop(session: session, pool: pool, generation: current)
             return url
         } catch is CancellationError {
@@ -152,8 +160,46 @@ final class UsenetEngineManager: ObservableObject {
         activeStreamURL = nil
         isStreaming = false
         activeStats = UsenetStreamStats()
+        damagedStreamURL = nil
+        damagedGeneration = nil
         await server?.stop()
         await session?.stop()
+    }
+
+    private func reportDamage(generation: Int) {
+        guard generation == self.generation else { return }
+        damagedGeneration = generation
+        if let activeStreamURL { damagedStreamURL = activeStreamURL }
+    }
+
+    // MARK: - Which add-on stream a playback URL came from
+
+    private nonisolated static let historyLock = NSLock()
+    private nonisolated(unsafe) static var sourceByPlaybackURL: [String: String] = [:]
+
+    /// The add-on stream URL in one canonical form (nil for non-Usenet URLs).
+    nonisolated static func canonicalSource(_ string: String) -> String? {
+        guard let url = URL(string: string.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let spec = UsenetStreamSpec(url: url) else { return nil }
+        return spec.url.absoluteString
+    }
+
+    nonisolated static func remember(source: String, playback: String) {
+        guard let canonical = canonicalSource(source) else { return }
+        historyLock.lock()
+        defer { historyLock.unlock() }
+        if sourceByPlaybackURL.count > 64 { sourceByPlaybackURL.removeAll() }
+        sourceByPlaybackURL[playback] = canonical
+    }
+
+    /// Failover excludes the local playback URLs that failed; each Usenet
+    /// start gets a new one, so match them back to the add-on stream.
+    nonisolated static func isExcluded(sourceURL: String, excludedPlaybackURLs: Set<String>) -> Bool {
+        guard let canonical = canonicalSource(sourceURL), !excludedPlaybackURLs.isEmpty else { return false }
+        if excludedPlaybackURLs.contains(where: { canonicalSource($0) == canonical }) { return true }
+        historyLock.lock()
+        defer { historyLock.unlock() }
+        return excludedPlaybackURLs.contains { sourceByPlaybackURL[$0] == canonical }
     }
 
     private func startStatsLoop(session: UsenetStreamSession, pool: UsenetConnectionPool, generation: Int) {

@@ -507,6 +507,27 @@ final class UsenetSourceTests: XCTestCase {
         XCTAssertFalse(UsenetEngineManager.isReleaseProblem(CancellationError()))
     }
 
+    func testDamageNeedsARunOrManyHoles() {
+        XCTAssertFalse(UsenetStreamSession.isDamaged(consecutiveMissing: 2, recent: [true, true]))
+        XCTAssertTrue(UsenetStreamSession.isDamaged(consecutiveMissing: 3, recent: [true, true, true]))
+        let scattered = (0..<50).map { $0 % 6 == 0 }   // 9 holes, never two in a row
+        XCTAssertTrue(UsenetStreamSession.isDamaged(consecutiveMissing: 0, recent: scattered))
+        let sparse = (0..<50).map { $0 % 10 == 0 }     // 5 holes
+        XCTAssertFalse(UsenetStreamSession.isDamaged(consecutiveMissing: 0, recent: sparse))
+    }
+
+    func testFailedPlaybackURLsExcludeTheirAddonStream() {
+        let spec = UsenetStreamSpec(nzbURL: URL(string: "https://i.example/get?id=\(UUID().uuidString)")!)
+        let source = spec.url.absoluteString
+        let playback = "http://127.0.0.1:50123/usenet/\(UUID().uuidString)/video.mkv"
+        XCTAssertFalse(UsenetEngineManager.isExcluded(sourceURL: source, excludedPlaybackURLs: [playback]))
+        UsenetEngineManager.remember(source: source, playback: playback)
+        XCTAssertTrue(UsenetEngineManager.isExcluded(sourceURL: source, excludedPlaybackURLs: [playback]))
+        XCTAssertTrue(UsenetEngineManager.isExcluded(sourceURL: source, excludedPlaybackURLs: [source]))
+        XCTAssertFalse(UsenetEngineManager.isExcluded(sourceURL: "https://cdn.example/a.mkv", excludedPlaybackURLs: [playback]))
+        XCTAssertNil(UsenetEngineManager.canonicalSource("https://cdn.example/a.mkv"))
+    }
+
     func testStatsSummary() {
         var stats = UsenetStreamStats()
         stats.server = "news.example.com"

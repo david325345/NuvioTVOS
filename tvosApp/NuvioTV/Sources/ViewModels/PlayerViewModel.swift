@@ -613,6 +613,13 @@ class PlayerViewModel: ObservableObject {
                 }
             }
             .store(in: &cancellables)
+        UsenetEngineManager.shared.$damagedStreamURL
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] url in
+                guard let self, let url else { return }
+                self.handleUsenetDamage(url)
+            }
+            .store(in: &cancellables)
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleAudioRouteChange),
@@ -1334,6 +1341,9 @@ class PlayerViewModel: ObservableObject {
         }
         self.activeStreamURL = url.absoluteString
         self.activeHTTPHeaders = httpHeaders
+        if UsenetEngineManager.shared.damagedStreamURL == url {
+            Task { @MainActor [weak self] in self?.handleUsenetDamage(url) }
+        }
         if !isStandalonePlaybackSession && watchPartyPlayerBridge == nil {
             postPlayController.start(
                 contentId: meta.id,
@@ -2307,6 +2317,18 @@ class PlayerViewModel: ObservableObject {
         }
         guard !WatchedStore.contains(meta: meta) else { return nil }
         return ContinueWatchingStore.item(for: meta.id)?.resumePosition
+    }
+
+    /// The playing Usenet release turned out too damaged (long runs of
+    /// missing articles): switch to the next source at the current position,
+    /// the same way a failed stream does.
+    private func handleUsenetDamage(_ url: URL) {
+        guard activeStreamURL == url.absoluteString, !didShutdown, !isFailingOver else { return }
+        failedStreamURLs.insert(url.absoluteString)
+        attemptFailover(
+            reason: L10n.string("usenet_error_damaged", fallback: "This Usenet release is too damaged to play, and no other source worked."),
+            toast: L10n.string("usenet_switching_damaged", fallback: "Release damaged — switching source")
+        )
     }
 
     /// A stream died or never started. Remember the position, pick the next

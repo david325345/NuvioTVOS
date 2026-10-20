@@ -139,10 +139,19 @@ actor UsenetStreamSession {
 
     private var counters = UsenetSessionStats()
 
-    init(source: UsenetStreamSource, pool: UsenetConnectionPool, profile: UsenetMemoryProfile) {
+    /// Recent article outcomes (true = missing), for spotting a release that
+    /// is too damaged to keep playing.
+    private var recentOutcomes: [Bool] = []
+    private var consecutiveMissing = 0
+    private var reportedDamage = false
+    private let onDamaged: @Sendable () -> Void
+
+    init(source: UsenetStreamSource, pool: UsenetConnectionPool, profile: UsenetMemoryProfile,
+         onDamaged: @escaping @Sendable () -> Void = {}) {
         self.source = source
         self.pool = pool
         self.profile = profile
+        self.onDamaged = onDamaged
         var layouts: [UsenetFileLayout] = []
         var bases: [Int] = []
         var running = 0
@@ -300,6 +309,7 @@ actor UsenetStreamSession {
                 // the player usually skips a damaged frame.
                 let filler = self.filler(for: index, place)
                 self.counters.missingArticles += 1
+                self.recordOutcome(missing: true)
                 return filler
             }
         }
@@ -310,6 +320,30 @@ actor UsenetStreamSession {
         layouts[place.volume].learn(place.index, range: begin..<(begin + Int64(decoded.data.count)))
         store(index, decoded.data)
         counters.downloadedBytes += Int64(decoded.data.count)
+        recordOutcome(missing: false)
+    }
+
+    // MARK: - Damage
+
+    static let damageConsecutiveMissing = 3
+    static let damageWindow = 50
+    static let damageMissingInWindow = 8
+
+    /// A short hole (a damaged frame or two) is skipped; a run of missing
+    /// articles, or many in a short stretch, means the release is broken.
+    static func isDamaged(consecutiveMissing: Int, recent: [Bool]) -> Bool {
+        consecutiveMissing >= damageConsecutiveMissing
+            || recent.suffix(damageWindow).filter { $0 }.count >= damageMissingInWindow
+    }
+
+    private func recordOutcome(missing: Bool) {
+        recentOutcomes.append(missing)
+        if recentOutcomes.count > Self.damageWindow { recentOutcomes.removeFirst(recentOutcomes.count - Self.damageWindow) }
+        consecutiveMissing = missing ? consecutiveMissing + 1 : 0
+        guard !reportedDamage, Self.isDamaged(consecutiveMissing: consecutiveMissing, recent: recentOutcomes) else { return }
+        reportedDamage = true
+        usenetLog.error("usenet: release damaged (\(self.counters.missingArticles) missing articles), asking for another source")
+        onDamaged()
     }
 
     private func filler(for index: Int, _ place: (volume: Int, index: Int)) -> Data {
