@@ -117,6 +117,9 @@ enum UsenetError: LocalizedError, Equatable {
     case archiveNotSupported(String)
     case firstSegmentUnavailable
     case serverRejected(String)
+    case archiveCompressed(String)
+    case archiveEncrypted
+    case releaseIncomplete
 
     var errorDescription: String? {
         switch self {
@@ -129,11 +132,17 @@ enum UsenetError: LocalizedError, Equatable {
         case .noPlayableFile:
             return L10n.string("usenet_error_no_file", fallback: "The NZB has no video file to play.")
         case .archiveNotSupported(let name):
-            return L10n.format("usenet_error_archive", fallback: "%@ is packed in an archive, which isn't supported yet.", name)
+            return L10n.format("usenet_error_archive", fallback: "%@ is packed in a 7z/zip archive, which can't be streamed.", name)
         case .firstSegmentUnavailable:
             return L10n.string("usenet_error_first_segment", fallback: "The release is incomplete on your Usenet servers.")
         case .serverRejected(let message):
             return message
+        case .archiveCompressed(let name):
+            return L10n.format("usenet_error_archive_compressed", fallback: "%@ is compressed inside its archive and can't be streamed.", name)
+        case .archiveEncrypted:
+            return L10n.string("usenet_error_archive_encrypted", fallback: "The release is password protected.")
+        case .releaseIncomplete:
+            return L10n.string("usenet_error_incomplete", fallback: "Parts of this release are missing on your Usenet servers.")
         }
     }
 }

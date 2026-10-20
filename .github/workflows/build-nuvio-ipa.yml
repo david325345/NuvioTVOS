@@ -68,4 +68,4 @@ jobs:
             -only-testing:NuvioTVTests/UsenetCoreTests \
             -only-testing:NuvioTVTests/UsenetNZBTests \
             -only-testing:NuvioTVTests/UsenetLayoutTests \
-            -only-testing:NuvioTVTests/UsenetServerTests
+            -only-testing:NuvioTVTests/UsenetServerTests -only-testing:NuvioTVTests/UsenetFormatTests -only-testing:NuvioTVTests/UsenetSourceTests

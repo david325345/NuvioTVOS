@@ -266,6 +266,25 @@ actor UsenetNNTPConnection {
         }
     }
 
+    /// Whether the server still has an article, without downloading it (`STAT`).
+    func stat(messageID: String) async throws -> Bool {
+        guard Self.isValidMessageID(messageID) else { return false }
+        try await send("STAT <\(messageID)>")
+        let status = try await readStatus()
+        switch status.code {
+        case 223:
+            return true
+        case 420, 423, 430:
+            return false
+        case 480, 481, 482, 483, 502:
+            throw UsenetNNTPError.authenticationFailed(status.code)
+        case 400, 500:
+            throw UsenetNNTPError.connectionClosed
+        default:
+            throw UsenetNNTPError.protocolError("unexpected STAT response \(status.code)")
+        }
+    }
+
     /// A syntactically safe message-ID: no whitespace/control bytes and no angle brackets (we add
     /// our own), non-empty, and length-bounded.
     static func isValidMessageID(_ id: String) -> Bool {

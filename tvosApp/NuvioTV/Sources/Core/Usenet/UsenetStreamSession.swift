@@ -102,14 +102,34 @@ struct UsenetFileLayout: Sendable, Equatable {
     }
 }
 
-/// Serves byte ranges of one Usenet file to the local HTTP server, fetching
+/// Counters a session exposes to the stats overlay.
+struct UsenetSessionStats: Equatable, Sendable {
+    var downloadedBytes: Int64 = 0
+    var missingArticles = 0
+    var cacheHits = 0
+    var cacheMisses = 0
+    var bufferedAheadBytes: Int64 = 0
+    var cachedBytes = 0
+}
+
+/// Serves byte ranges of the played file to the local HTTP server, fetching
 /// and decoding articles on demand with read-ahead and an in-memory cache.
+///
+/// The played file can span several NZB files (RAR volumes, raw splits):
+/// `source.extents` say where its bytes sit. Articles are numbered globally
+/// across the volumes, in order, so read-ahead runs straight through them.
 actor UsenetStreamSession {
-    let file: UsenetFile
+    let source: UsenetStreamSource
     private let pool: UsenetConnectionPool
     private let profile: UsenetMemoryProfile
 
-    private(set) var layout: UsenetFileLayout?
+    private var layouts: [UsenetFileLayout]
+    /// Global number of each volume's first article.
+    private let bases: [Int]
+    private let extentStarts: [Int64]
+    private let articleCount: Int
+    let totalSize: Int64
+
     private var cache: [Int: Data] = [:]
     private var cacheOrder: [Int] = []
     private var cachedBytes = 0
@@ -117,64 +137,99 @@ actor UsenetStreamSession {
     private var prefetching: Set<Int> = []
     private var playhead = 0
 
-    private(set) var downloadedBytes: Int64 = 0
-    private(set) var missingArticles = 0
+    private var counters = UsenetSessionStats()
 
-    init(file: UsenetFile, pool: UsenetConnectionPool, profile: UsenetMemoryProfile) {
-        self.file = file
+    init(source: UsenetStreamSource, pool: UsenetConnectionPool, profile: UsenetMemoryProfile) {
+        self.source = source
         self.pool = pool
         self.profile = profile
-    }
-
-    var totalSize: Int64 { layout?.totalSize ?? 0 }
-
-    /// Decodes the first article to learn the file size and part layout, then
-    /// warms the head and the tail (MKV keeps its seek index at the end).
-    func prepare() async throws {
-        guard let first = file.segments.first else { throw UsenetError.noPlayableFile }
-        guard case .body(let lines) = try await pool.fetch(messageID: first.messageID) else {
-            throw UsenetError.firstSegmentUnavailable
+        var layouts: [UsenetFileLayout] = []
+        var bases: [Int] = []
+        var running = 0
+        for (volume, head) in zip(source.volumes, source.firstArticles) {
+            let size = Int64(head.header.size ?? head.data.count)
+            let begin = Int64(head.fileOffset)
+            layouts.append(UsenetFileLayout(
+                totalSize: size,
+                firstPart: begin..<(begin + Int64(head.data.count)),
+                segments: volume.segments
+            ))
+            bases.append(running)
+            running += volume.segments.count
         }
-        let decoded = try await Self.decode(lines)
-        let size = Int64(decoded.header.size ?? decoded.data.count)
-        let begin = Int64(decoded.fileOffset)
-        let firstRange = begin..<(begin + Int64(decoded.data.count))
-        layout = UsenetFileLayout(totalSize: size, firstPart: firstRange, segments: file.segments)
-        store(0, decoded.data)
-        downloadedBytes += Int64(decoded.data.count)
-
-        let count = file.segments.count
-        let warm = [1, count - 2, count - 1].filter { $0 > 0 && $0 < count }
-        for index in Set(warm) { startPrefetch(index) }
-        prefetch(after: 0)
+        self.layouts = layouts
+        self.bases = bases
+        self.articleCount = running
+        self.extentStarts = source.extentStarts
+        self.totalSize = source.totalSize
     }
 
-    /// Up to `maxLength` bytes starting at `offset`, never crossing an article boundary.
-    /// Side reads (the player's index lookups at the end of the file) pass
-    /// `updatesPlayhead: false` so they don't move the read-ahead window.
-    func read(offset: Int64, maxLength: Int, updatesPlayhead: Bool = true) async throws -> Data {
-        guard let current = layout else { throw UsenetError.noPlayableFile }
-        guard offset < current.totalSize else { return Data() }
+    /// Keeps the first articles that hold the start and the end of the file,
+    /// then warms the head and the tail (MKV keeps its seek index at the end).
+    func prepare() async throws {
+        guard articleCount > 0, totalSize > 0, let first = source.extents.first, let last = source.extents.last else {
+            throw UsenetError.noPlayableFile
+        }
+        for volume in Set([first.volume, last.volume]) {
+            store(bases[volume], source.firstArticles[volume].data)
+            counters.downloadedBytes += Int64(source.firstArticles[volume].data.count)
+        }
+        var warm: Set<Int> = []
+        if let start = globalIndex(at: 0) { warm.insert(start + 1) }
+        if let end = globalIndex(at: totalSize - 1) {
+            warm.insert(end)
+            warm.insert(end - 1)
+        }
+        for index in warm where index >= 0 && index < articleCount { startPrefetch(index) }
+        if let start = globalIndex(at: 0) { prefetch(after: start) }
+    }
 
-        var probe = current.index(for: offset)
+    /// Up to `maxLength` bytes starting at `offset`, never crossing an article
+    /// or extent boundary. Side reads (the player's index lookups at the end of
+    /// the file) pass `updatesPlayhead: false` so they don't move the read-ahead.
+    func read(offset: Int64, maxLength: Int, updatesPlayhead: Bool = true) async throws -> Data {
+        guard offset < totalSize,
+              let place = UsenetStreamSource.locate(offset, extents: source.extents, starts: extentStarts) else { return Data() }
+        let extent = source.extents[place.extent]
+        let volume = extent.volume
+        let extentEnd = extentStarts[place.extent] + extent.length
+        let limit = Int(min(Int64(maxLength), extentEnd - offset))
+        let target = place.volumeOffset
+        let segmentCount = source.volumes[volume].segments.count
+
+        var probe = layouts[volume].index(for: target)
         var hops = 0
         while true {
-            let data = try await article(probe.index)
-            guard let range = layout?.range(of: probe.index) else { throw UsenetError.noPlayableFile }
-            if range.contains(offset) {
-                if updatesPlayhead { noteRead(probe.index) }
-                let start = Int(offset - range.lowerBound)
-                let end = min(data.count, start + maxLength)
+            let global = bases[volume] + probe.index
+            let data = try await article(global)
+            guard let range = layouts[volume].range(of: probe.index) else { throw UsenetError.noPlayableFile }
+            if range.contains(target) {
+                if updatesPlayhead { noteRead(global) }
+                let start = Int(target - range.lowerBound)
+                let end = min(data.count, start + limit)
                 guard start < end else { return Data() }
                 return data.subdata(in: start..<end)
             }
             // Irregular layout: walk towards the article that holds the offset.
             hops += 1
             guard hops < 64 else { throw UsenetError.noPlayableFile }
-            let next = offset < range.lowerBound ? probe.index - 1 : probe.index + 1
-            guard next >= 0, next < file.segments.count else { return Data() }
+            let next = target < range.lowerBound ? probe.index - 1 : probe.index + 1
+            guard next >= 0, next < segmentCount else { return Data() }
             probe = (next, false)
         }
+    }
+
+    func stats() -> UsenetSessionStats {
+        var snapshot = counters
+        snapshot.cachedBytes = cachedBytes
+        var ahead: Int64 = 0
+        var index = playhead + 1
+        while let data = cache[index] {
+            ahead += Int64(data.count)
+            index += 1
+        }
+        snapshot.bufferedAheadBytes = ahead
+        return snapshot
     }
 
     func stop() async {
@@ -186,61 +241,83 @@ actor UsenetStreamSession {
         await pool.shutdown()
     }
 
+    // MARK: - Addressing
+
+    /// The global article holding byte `offset` of the played file (a guess
+    /// for irregular layouts, good enough for warming).
+    private func globalIndex(at offset: Int64) -> Int? {
+        guard let place = UsenetStreamSource.locate(offset, extents: source.extents, starts: extentStarts) else { return nil }
+        let volume = source.extents[place.extent].volume
+        return bases[volume] + layouts[volume].index(for: place.volumeOffset).index
+    }
+
+    /// Volume and local article number of a global article.
+    private func split(_ global: Int) -> (volume: Int, index: Int) {
+        var low = 0
+        var high = bases.count - 1
+        while low < high {
+            let mid = (low + high + 1) / 2
+            if bases[mid] <= global { low = mid } else { high = mid - 1 }
+        }
+        return (low, global - bases[low])
+    }
+
     // MARK: - Articles
 
     private func article(_ index: Int) async throws -> Data {
         if let data = cache[index] {
+            counters.cacheHits += 1
             touch(index)
             return data
         }
         if let task = inflight[index] {
             // A read-ahead fetch is already on its way: wait for it instead
             // of fetching twice, and take over its bookkeeping.
-            prefetching.remove(index)
+            if prefetching.remove(index) != nil { counters.cacheHits += 1 }
             defer { if inflight[index] == task { inflight[index] = nil } }
             return try await task.value
         }
+        counters.cacheMisses += 1
         let task = makeTask(index)
         inflight[index] = task
-        defer { inflight[index] = nil }
+        defer { if inflight[index] == task { inflight[index] = nil } }
         return try await task.value
     }
 
     private func makeTask(_ index: Int) -> Task<Data, Error> {
-        let segment = file.segments[index]
+        let place = split(index)
+        let segment = source.volumes[place.volume].segments[place.index]
         let pool = self.pool
         return Task {
             let outcome = try await pool.fetch(messageID: segment.messageID)
             switch outcome {
             case .body(let lines):
                 let decoded = try await Self.decode(lines)
-                await self.accept(index, decoded)
+                self.accept(index, place, decoded)
                 return decoded.data
             case .missing:
                 // Keep playing past a hole rather than failing the whole stream:
                 // the player usually skips a damaged frame.
-                let filler = await self.filler(for: index)
-                await self.noteMissing()
+                let filler = self.filler(for: index, place)
+                self.counters.missingArticles += 1
                 return filler
             }
         }
     }
 
-    private func accept(_ index: Int, _ decoded: UsenetYEncSegment) {
+    private func accept(_ index: Int, _ place: (volume: Int, index: Int), _ decoded: UsenetYEncSegment) {
         let begin = Int64(decoded.fileOffset)
-        layout?.learn(index, range: begin..<(begin + Int64(decoded.data.count)))
+        layouts[place.volume].learn(place.index, range: begin..<(begin + Int64(decoded.data.count)))
         store(index, decoded.data)
-        downloadedBytes += Int64(decoded.data.count)
+        counters.downloadedBytes += Int64(decoded.data.count)
     }
 
-    private func filler(for index: Int) -> Data {
-        let length = layout?.range(of: index).map { Int($0.upperBound - $0.lowerBound) } ?? 0
+    private func filler(for index: Int, _ place: (volume: Int, index: Int)) -> Data {
+        let length = layouts[place.volume].range(of: place.index).map { Int($0.upperBound - $0.lowerBound) } ?? 0
         let data = Data(count: length)
         store(index, data)
         return data
     }
-
-    private func noteMissing() { missingArticles += 1 }
 
     private static func decode(_ lines: [Data]) async throws -> UsenetYEncSegment {
         try await Task.detached(priority: .userInitiated) {
@@ -251,7 +328,7 @@ actor UsenetStreamSession {
     // MARK: - Read-ahead
 
     private var readAheadSegments: Int {
-        let part = Int(layout?.partSize ?? 716_800)
+        let part = Int(layouts.first?.partSize ?? 716_800)
         return max(4, profile.readAheadBytes / max(1, part))
     }
 
@@ -275,7 +352,7 @@ actor UsenetStreamSession {
     }
 
     private func prefetch(after index: Int) {
-        let last = min(file.segments.count - 1, index + readAheadSegments)
+        let last = min(articleCount - 1, index + readAheadSegments)
         guard index + 1 <= last else { return }
         for next in (index + 1)...last {
             guard prefetching.count < prefetchSlots else { return }

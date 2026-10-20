@@ -47,7 +47,10 @@ private enum UsenetFixture {
                 .replacingOccurrences(of: "\"", with: "&quot;")
             xml += #"<file poster="a@b" date="0" subject="\#(subject)"><groups><group>alt.binaries.test</group></groups><segments>"#
             for segment in file.segments {
-                xml += #"<segment bytes="\#(segment.bytes)" number="\#(segment.number)">\#(segment.id)</segment>"#
+                let id = segment.id
+                    .replacingOccurrences(of: "<", with: "&lt;")
+                    .replacingOccurrences(of: ">", with: "&gt;")
+                xml += #"<segment bytes="\#(segment.bytes)" number="\#(segment.number)">\#(id)</segment>"#
             }
             xml += "</segments></file>"
         }
@@ -160,30 +163,62 @@ final class UsenetNZBTests: XCTestCase {
         XCTAssertEqual(main.encodedBytes, 900)
     }
 
+    private func entries(_ nzb: UsenetNZB) -> [UsenetPlayableEntry] {
+        let names = nzb.files.map(\.name)
+        let roles = names.map(UsenetReleaseResolver.role(ofName:))
+        return UsenetReleaseResolver.plainAndSplitEntries(files: nzb.files, names: names, roles: roles)
+            .sorted { $0.order < $1.order }
+    }
+
     func testPicksLargestVideoByDefault() throws {
-        XCTAssertEqual(try sampleNZB().playableFile(mustInclude: nil, fileIdx: nil).name, "Show.S01E01.1080p.mkv")
+        let chosen = UsenetReleaseResolver.choose(entries(try sampleNZB()), mustInclude: nil, fileIdx: nil)
+        XCTAssertEqual(chosen?.name, "Show.S01E01.1080p.mkv")
     }
 
     func testFileMustIncludeRegexWins() throws {
-        let file = try sampleNZB().playableFile(mustInclude: "(?:sample)|(?:trailer)", fileIdx: nil)
-        XCTAssertEqual(file.name, "Show.S01E01.sample.mkv")
+        let chosen = UsenetReleaseResolver.choose(entries(try sampleNZB()), mustInclude: "(?:sample)|(?:trailer)", fileIdx: nil)
+        XCTAssertEqual(chosen?.name, "Show.S01E01.sample.mkv")
     }
 
     func testFileIdxAmongVideos() throws {
-        XCTAssertEqual(try sampleNZB().playableFile(mustInclude: nil, fileIdx: 1).name, "Show.S01E01.sample.mkv")
-        XCTAssertEqual(try sampleNZB().playableFile(mustInclude: nil, fileIdx: 9).name, "Show.S01E01.1080p.mkv")
+        let list = entries(try sampleNZB())
+        XCTAssertEqual(UsenetReleaseResolver.choose(list, mustInclude: nil, fileIdx: 1)?.name, "Show.S01E01.sample.mkv")
+        XCTAssertEqual(UsenetReleaseResolver.choose(list, mustInclude: nil, fileIdx: 9)?.name, "Show.S01E01.1080p.mkv")
     }
 
-    func testArchiveReleaseIsReported() throws {
+    func testRolesFromNames() {
+        let role = UsenetReleaseResolver.role(ofName:)
+        XCTAssertEqual(role("Show.S01E01.mkv"), .video)
+        XCTAssertEqual(role("Movie.part01.rar"), .rar)
+        XCTAssertEqual(role("Movie.r07"), .rar)
+        XCTAssertEqual(role("Movie.vol03+04.par2"), .par2)
+        XCTAssertEqual(role("Movie.nfo"), .sidecar)
+        XCTAssertEqual(role("Movie.7z"), .unsupportedArchive)
+        XCTAssertEqual(role("Movie.mkv.001"), .split)
+        XCTAssertEqual(role("a8f3e1c9b2d47e6f"), .unknown)
+        XCTAssertEqual(role("Show.S01E01.1080p"), .unknown)
+    }
+
+    func testRarVolumesGroupIntoOrderedSets() {
+        let names = ["Movie.part02.rar", "Movie.part01.rar", "Movie.par2", "Other.rar", "Other.r01", "Other.r00"]
+        let roles = names.map(UsenetReleaseResolver.role(ofName:))
+        let sets = UsenetReleaseResolver.rarSets(names: names, roles: roles, obfuscated: [])
+        XCTAssertEqual(sets, [[1, 0], [3, 5, 4]])
+        XCTAssertEqual(UsenetReleaseResolver.rarVolumeKey("Movie.part10.rar")?.number, 10)
+        XCTAssertEqual(UsenetReleaseResolver.rarVolumeKey("Other.r00")?.number, 1)
+        XCTAssertEqual(UsenetReleaseResolver.rarVolumeKey("Other.rar")?.number, 0)
+    }
+
+    func testSplitPartsBecomeOneEntry() throws {
         let nzb = try UsenetNZB.parse(UsenetFixture.nzb([
-            (#""Movie.part01.rar" yEnc (1/2)"#, [("r1@x", 500, 1), ("r2@x", 500, 2)]),
-            (#""Movie.r00" yEnc (1/1)"#, [("r3@x", 400, 1)]),
-            (#""Movie.par2" yEnc (1/1)"#, [("p@x", 10, 1)]),
+            (#""Movie.mkv.002" yEnc (1/1)"#, [("b@x", 400, 1)]),
+            (#""Movie.mkv.001" yEnc (1/1)"#, [("a@x", 500, 1)]),
         ]))
-        XCTAssertTrue(nzb.files[1].isArchive)
-        XCTAssertThrowsError(try nzb.playableFile(mustInclude: nil, fileIdx: nil)) { error in
-            XCTAssertEqual(error as? UsenetError, .archiveNotSupported("Movie.part01.rar"))
-        }
+        let list = entries(nzb)
+        XCTAssertEqual(list.count, 1)
+        XCTAssertEqual(list.first?.name, "Movie.mkv")
+        XCTAssertEqual(list.first?.source, .split([1, 0]))
+        XCTAssertEqual(list.first?.size, 900)
     }
 
     func testGzipNZB() throws {
@@ -196,6 +231,305 @@ final class UsenetNZBTests: XCTestCase {
 
     func testGarbageIsUnreadable() {
         XCTAssertThrowsError(try UsenetNZB.parse(Data("<html><body>login</body".utf8)))
+    }
+}
+
+// MARK: - RAR, PAR2, sniffing
+
+private enum FormatFixture {
+    static func le16(_ v: Int) -> [UInt8] { [UInt8(v & 0xFF), UInt8((v >> 8) & 0xFF)] }
+    static func le32(_ v: Int) -> [UInt8] {
+        let low: [UInt8] = le16(v & 0xFFFF)
+        return low + le16((v >> 16) & 0xFFFF)
+    }
+    static func le64(_ v: Int) -> [UInt8] {
+        let low: [UInt8] = le32(v & 0xFFFF_FFFF)
+        return low + le32(v >> 32)
+    }
+
+    static func vint(_ value: Int) -> [UInt8] {
+        var v = value
+        var out: [UInt8] = []
+        repeat {
+            var byte = UInt8(v & 0x7F)
+            v >>= 7
+            if v > 0 { byte |= 0x80 }
+            out.append(byte)
+        } while v > 0
+        return out
+    }
+
+    /// A RAR 4 volume holding `dataBytes` bytes of one entry.
+    static func rar4(name: String, packed: Int, unpacked: Int, method: UInt8 = 0x30, fileFlags: Int = 0,
+                     firstVolume: Bool, dataBytes: Int) -> (data: Data, dataOffset: Int) {
+        let nameBytes = Array(name.utf8)
+        var b: [UInt8] = UsenetRar.rar4Signature
+        // Main header: CRC, type, flags, size, 6 reserved bytes.
+        b.append(contentsOf: [0, 0, 0x73])
+        b.append(contentsOf: le16(0x0001 | (firstVolume ? 0x0100 : 0)))
+        b.append(contentsOf: le16(13))
+        b.append(contentsOf: [UInt8](repeating: 0, count: 6))
+        // File header.
+        b.append(contentsOf: [0, 0, 0x74])
+        b.append(contentsOf: le16(0x8000 | fileFlags))
+        b.append(contentsOf: le16(32 + nameBytes.count))
+        b.append(contentsOf: le32(packed))
+        b.append(contentsOf: le32(unpacked))
+        b.append(2)                          // host OS
+        b.append(contentsOf: le32(0))        // CRC
+        b.append(contentsOf: le32(0))        // time
+        b.append(29)                         // version
+        b.append(method)
+        b.append(contentsOf: le16(nameBytes.count))
+        b.append(contentsOf: le32(0x20))     // attributes
+        b.append(contentsOf: nameBytes)
+        let offset = b.count
+        b.append(contentsOf: [UInt8](repeating: 0xAB, count: dataBytes))
+        return (Data(b), offset)
+    }
+
+    /// A RAR 5 volume (number `volume`) holding `dataBytes` bytes of one entry.
+    static func rar5(name: String, unpacked: Int, volume: Int, continuesFromPrevious: Bool, continuesInNext: Bool,
+                     method: Int = 0, encrypted: Bool = false, dataBytes: Int) -> (data: Data, dataOffset: Int) {
+        var b: [UInt8] = UsenetRar.rar5Signature
+
+        var main: [UInt8] = vint(1)
+        main.append(contentsOf: vint(0))
+        main.append(contentsOf: vint(0x0001 | (volume > 0 ? 0x0002 : 0)))
+        if volume > 0 { main.append(contentsOf: vint(volume)) }
+        b.append(contentsOf: [0, 0, 0, 0])
+        b.append(contentsOf: vint(main.count))
+        b.append(contentsOf: main)
+
+        var flags = 0x0002
+        if continuesFromPrevious { flags |= 0x0008 }
+        if continuesInNext { flags |= 0x0010 }
+        var extra: [UInt8] = []
+        if encrypted {
+            extra.append(contentsOf: vint(1))
+            extra.append(contentsOf: vint(0x01))
+            flags |= 0x0001
+        }
+        let nameBytes = Array(name.utf8)
+        var file: [UInt8] = vint(2)
+        file.append(contentsOf: vint(flags))
+        if !extra.isEmpty { file.append(contentsOf: vint(extra.count)) }
+        file.append(contentsOf: vint(dataBytes))
+        file.append(contentsOf: vint(0))           // file flags
+        file.append(contentsOf: vint(unpacked))
+        file.append(contentsOf: vint(0))           // attributes
+        file.append(contentsOf: vint(method << 7)) // compression
+        file.append(contentsOf: vint(0))           // host OS
+        file.append(contentsOf: vint(nameBytes.count))
+        file.append(contentsOf: nameBytes)
+        file.append(contentsOf: extra)
+        b.append(contentsOf: [0, 0, 0, 0])
+        b.append(contentsOf: vint(file.count))
+        b.append(contentsOf: file)
+        let offset = b.count
+        b.append(contentsOf: [UInt8](repeating: 0xCD, count: dataBytes))
+        return (Data(b), offset)
+    }
+
+    static func par2FileDescription(name: String, head: Data) -> Data {
+        var body: [UInt8] = [UInt8](repeating: 1, count: 16)    // file ID
+        body.append(contentsOf: [UInt8](repeating: 2, count: 16)) // full MD5
+        body.append(contentsOf: [UInt8](UsenetPar2.hash16k(head)))
+        body.append(contentsOf: le64(head.count))
+        var nameBytes = Array(name.utf8)
+        while nameBytes.count % 4 != 0 { nameBytes.append(0) }
+        body.append(contentsOf: nameBytes)
+        var packet: [UInt8] = UsenetPar2.magic
+        packet.append(contentsOf: le64(64 + body.count))
+        packet.append(contentsOf: [UInt8](repeating: 0, count: 32)) // packet MD5 + set ID
+        packet.append(contentsOf: UsenetPar2.fileDescriptionType)
+        packet.append(contentsOf: body)
+        return Data(packet)
+    }
+}
+
+final class UsenetFormatTests: XCTestCase {
+    func testRar4StoredVolumesMapToExtents() throws {
+        let first = FormatFixture.rar4(name: "Movie.mkv", packed: 100, unpacked: 180, fileFlags: 0x02, firstVolume: true, dataBytes: 100)
+        let second = FormatFixture.rar4(name: "Movie.mkv", packed: 80, unpacked: 180, fileFlags: 0x01, firstVolume: false, dataBytes: 80)
+        let v1 = try XCTUnwrap(UsenetRar.parseVolume(first.data))
+        let v2 = try XCTUnwrap(UsenetRar.parseVolume(second.data))
+        XCTAssertEqual(v1.format, .rar4)
+        XCTAssertEqual(v1.isFirstVolume, true)
+        XCTAssertEqual(v1.entries.first?.name, "Movie.mkv")
+        XCTAssertEqual(v1.entries.first?.dataOffset, Int64(first.dataOffset))
+        XCTAssertEqual(v1.entries.first?.isStored, true)
+        XCTAssertEqual(v2.entries.first?.continuesFromPrevious, true)
+
+        let extents = try UsenetReleaseResolver.rarExtents([v1, v2], innerName: "Movie.mkv")
+        XCTAssertEqual(extents, [
+            UsenetExtent(volume: 0, offset: Int64(first.dataOffset), length: 100),
+            UsenetExtent(volume: 1, offset: Int64(second.dataOffset), length: 80),
+        ])
+    }
+
+    func testRar4CompressedEncryptedAndIncomplete() throws {
+        let compressed = try XCTUnwrap(UsenetRar.parseVolume(
+            FormatFixture.rar4(name: "Movie.mkv", packed: 50, unpacked: 90, method: 0x33, firstVolume: true, dataBytes: 50).data))
+        XCTAssertThrowsError(try UsenetReleaseResolver.rarExtents([compressed], innerName: "Movie.mkv")) {
+            XCTAssertEqual($0 as? UsenetError, .archiveCompressed("Movie.mkv"))
+        }
+        let locked = try XCTUnwrap(UsenetRar.parseVolume(
+            FormatFixture.rar4(name: "Movie.mkv", packed: 50, unpacked: 50, fileFlags: 0x04, firstVolume: true, dataBytes: 50).data))
+        XCTAssertThrowsError(try UsenetReleaseResolver.rarExtents([locked], innerName: "Movie.mkv")) {
+            XCTAssertEqual($0 as? UsenetError, .archiveEncrypted)
+        }
+        let partial = try XCTUnwrap(UsenetRar.parseVolume(
+            FormatFixture.rar4(name: "Movie.mkv", packed: 100, unpacked: 180, fileFlags: 0x02, firstVolume: true, dataBytes: 100).data))
+        XCTAssertThrowsError(try UsenetReleaseResolver.rarExtents([partial], innerName: "Movie.mkv")) {
+            XCTAssertEqual($0 as? UsenetError, .releaseIncomplete)
+        }
+    }
+
+    func testRar5VolumesNumbersAndExtents() throws {
+        let first = FormatFixture.rar5(name: "Show/E01.mkv", unpacked: 300, volume: 0, continuesFromPrevious: false, continuesInNext: true, dataBytes: 200)
+        let second = FormatFixture.rar5(name: "Show/E01.mkv", unpacked: 300, volume: 1, continuesFromPrevious: true, continuesInNext: false, dataBytes: 100)
+        let v1 = try XCTUnwrap(UsenetRar.parseVolume(first.data))
+        let v2 = try XCTUnwrap(UsenetRar.parseVolume(second.data))
+        XCTAssertEqual(v1.format, .rar5)
+        XCTAssertEqual(v1.volumeNumber, 0)
+        XCTAssertEqual(v2.volumeNumber, 1)
+        XCTAssertEqual(v1.entries.first?.packedSize, 200)
+        XCTAssertEqual(v1.entries.first?.unpackedSize, 300)
+        XCTAssertEqual(v1.entries.first?.dataOffset, Int64(first.dataOffset))
+
+        // Obfuscated volumes arrive in any order; RAR 5 numbers put them right.
+        let ordered = UsenetReleaseResolver.orderObfuscated([(index: 7, head: "b", volume: v2), (index: 3, head: "a", volume: v1)])
+        XCTAssertEqual(ordered.map { $0.index }, [3, 7])
+
+        let extents = try UsenetReleaseResolver.rarExtents([v1, v2], innerName: "Show/E01.mkv")
+        XCTAssertEqual(extents.map(\.length), [200, 100])
+        XCTAssertEqual(extents.map(\.offset), [Int64(first.dataOffset), Int64(second.dataOffset)])
+    }
+
+    func testRar5CompressedAndEncrypted() throws {
+        let compressed = try XCTUnwrap(UsenetRar.parseVolume(FormatFixture.rar5(
+            name: "a.mkv", unpacked: 10, volume: 0, continuesFromPrevious: false, continuesInNext: false, method: 3, dataBytes: 10).data))
+        XCTAssertEqual(compressed.entries.first?.isStored, false)
+        let locked = try XCTUnwrap(UsenetRar.parseVolume(FormatFixture.rar5(
+            name: "a.mkv", unpacked: 10, volume: 0, continuesFromPrevious: false, continuesInNext: false, encrypted: true, dataBytes: 10).data))
+        XCTAssertEqual(locked.entries.first?.isEncrypted, true)
+        XCTAssertEqual(locked.entries.first?.name, "a.mkv")
+    }
+
+    func testPar2RestoresNames() {
+        let head = Data((0..<40_000).map { UInt8($0 % 251) })
+        var data = Data("junk before the first packet".utf8)
+        data.append(FormatFixture.par2FileDescription(name: "Movie.2024.1080p.mkv", head: head))
+        data.append(FormatFixture.par2FileDescription(name: "Movie.2024.1080p.nfo", head: Data("nfo".utf8)))
+        let descriptions = UsenetPar2.fileDescriptions(in: data)
+        XCTAssertEqual(descriptions.count, 2)
+        XCTAssertEqual(descriptions.first?.name, "Movie.2024.1080p.mkv")
+        XCTAssertEqual(descriptions.first?.length, 40_000)
+        // Only the first 16 KiB count.
+        XCTAssertEqual(descriptions.first?.hash16k, UsenetPar2.hash16k(head.prefix(20_000)))
+        XCTAssertTrue(UsenetPar2.isPar2(FormatFixture.par2FileDescription(name: "x", head: head)))
+    }
+
+    func testSniffing() {
+        XCTAssertEqual(UsenetSniff.kind(of: Data([0x1A, 0x45, 0xDF, 0xA3, 0x01])), .video("mkv"))
+        var mp4 = Data([0, 0, 0, 0x20])
+        mp4.append(Data("ftypisom".utf8))
+        XCTAssertEqual(UsenetSniff.kind(of: mp4), .video("mp4"))
+        XCTAssertEqual(UsenetSniff.kind(of: Data(UsenetRar.rar5Signature) + Data([1, 2, 3])), .rar)
+        XCTAssertEqual(UsenetSniff.kind(of: Data(UsenetRar.rar4Signature) + Data([1, 2, 3])), .rar)
+        XCTAssertEqual(UsenetSniff.kind(of: Data(UsenetPar2.magic) + Data([0, 0])), .par2)
+        XCTAssertEqual(UsenetSniff.kind(of: Data([0x50, 0x4B, 0x03, 0x04, 0])), .zip)
+        var ts = Data(count: 600)
+        ts[0] = 0x47; ts[188] = 0x47; ts[376] = 0x47
+        XCTAssertEqual(UsenetSniff.kind(of: ts), .video("ts"))
+        XCTAssertEqual(UsenetSniff.kind(of: Data("hello world".utf8)), .unknown)
+    }
+}
+
+// MARK: - Sources, health check, stats
+
+final class UsenetSourceTests: XCTestCase {
+    func testLocateAcrossExtents() {
+        let extents = [UsenetExtent(volume: 0, offset: 10, length: 100), UsenetExtent(volume: 1, offset: 5, length: 50)]
+        let starts: [Int64] = [0, 100]
+        XCTAssertEqual(UsenetStreamSource.locate(0, extents: extents, starts: starts)?.volumeOffset, 10)
+        XCTAssertEqual(UsenetStreamSource.locate(99, extents: extents, starts: starts)?.volumeOffset, 109)
+        XCTAssertEqual(UsenetStreamSource.locate(100, extents: extents, starts: starts)?.extent, 1)
+        XCTAssertEqual(UsenetStreamSource.locate(100, extents: extents, starts: starts)?.volumeOffset, 5)
+        XCTAssertEqual(UsenetStreamSource.locate(149, extents: extents, starts: starts)?.volumeOffset, 54)
+        XCTAssertNil(UsenetStreamSource.locate(150, extents: extents, starts: starts))
+        XCTAssertNil(UsenetStreamSource.locate(-1, extents: extents, starts: starts))
+    }
+
+    private func source(segmentCounts: [Int]) throws -> UsenetStreamSource {
+        let head = try UsenetYEnc.decode(bodyLines: UsenetFixture.yEncLines(Data(count: 10), name: "a.mkv"))
+        let volumes = segmentCounts.enumerated().map { volume, count in
+            UsenetFile(subject: "v\(volume)", name: "v\(volume)", segments: (0..<count).map {
+                UsenetSegment(messageID: "v\(volume)-\($0)@x", bytes: 100, number: $0 + 1)
+            })
+        }
+        return UsenetStreamSource(
+            name: "a.mkv", kind: .rar, volumes: volumes,
+            extents: volumes.indices.map { UsenetExtent(volume: $0, offset: 0, length: 10) },
+            firstArticles: volumes.map { _ in head }
+        )
+    }
+
+    func testHealthSamplesSkipFirstArticlesAndIncludeTail() throws {
+        let small = UsenetHealthCheck.samples(for: try source(segmentCounts: [5, 5]))
+        XCTAssertEqual(small.count, 8)
+        XCTAssertFalse(small.contains("v0-0@x"))
+        XCTAssertFalse(small.contains("v1-0@x"))
+        XCTAssertEqual(small.last, "v1-4@x")
+
+        let large = UsenetHealthCheck.samples(for: try source(segmentCounts: [30]))
+        XCTAssertEqual(large.count, UsenetHealthCheck.sampleCount)
+        XCTAssertEqual(large.first, "v0-1@x")
+        XCTAssertEqual(large.last, "v0-29@x")
+        XCTAssertEqual(Set(large).count, large.count)
+        XCTAssertEqual(try source(segmentCounts: [5, 5]).totalSize, 20)
+    }
+
+    func testHealthVerdict() {
+        XCTAssertTrue(UsenetHealthCheck.isPlayable(.init(checked: 12, missing: 0, tailMissing: false)))
+        XCTAssertTrue(UsenetHealthCheck.isPlayable(.init(checked: 12, missing: 1, tailMissing: false)))
+        XCTAssertFalse(UsenetHealthCheck.isPlayable(.init(checked: 12, missing: 2, tailMissing: false)))
+        XCTAssertFalse(UsenetHealthCheck.isPlayable(.init(checked: 12, missing: 1, tailMissing: true)))
+    }
+
+    func testReleaseProblemsAllowFallback() {
+        XCTAssertTrue(UsenetEngineManager.isReleaseProblem(UsenetError.releaseIncomplete))
+        XCTAssertTrue(UsenetEngineManager.isReleaseProblem(UsenetError.archiveCompressed("a.mkv")))
+        XCTAssertTrue(UsenetEngineManager.isReleaseProblem(URLError(.timedOut)))
+        XCTAssertFalse(UsenetEngineManager.isReleaseProblem(UsenetError.noServers))
+        XCTAssertFalse(UsenetEngineManager.isReleaseProblem(UsenetError.serverRejected("no")))
+        XCTAssertFalse(UsenetEngineManager.isReleaseProblem(CancellationError()))
+    }
+
+    func testStatsSummary() {
+        var stats = UsenetStreamStats()
+        stats.server = "news.example.com"
+        stats.serverCount = 2
+        stats.busyConnections = 3
+        stats.totalConnections = 10
+        stats.missingArticles = 2
+        stats.cacheHitRate = 0.9
+        let summary = stats.summary
+        XCTAssertTrue(summary.contains("news.example.com +1"))
+        XCTAssertTrue(summary.contains("3/10 conn"))
+        XCTAssertTrue(summary.contains("hit 90%"))
+        XCTAssertTrue(summary.contains("missing 2"))
+        XCTAssertFalse(summary.contains("backup"))
+    }
+
+    func testNZBCacheRoundTrip() throws {
+        let url = URL(string: "https://indexer.example/get/\(UUID().uuidString).nzb")!
+        XCTAssertNil(UsenetNZBCache.cached(url))
+        UsenetNZBCache.store(Data("nzb".utf8), for: url)
+        XCTAssertEqual(UsenetNZBCache.cached(url), Data("nzb".utf8))
+        UsenetNZBCache.remove(url)
+        XCTAssertNil(UsenetNZBCache.cached(url))
     }
 }
 
@@ -302,15 +636,15 @@ final class UsenetServerTests: XCTestCase {
         }
         // No header: a valid whole-file request.
         let whole = parse(nil)
-        XCTAssertNotNil(whole)
-        XCTAssertNil(whole ?? nil)
+        XCTAssertTrue(whole != nil)
+        XCTAssertTrue((whole ?? nil) == nil)
         XCTAssertEqual(range("bytes=0-"), 0...999)
         XCTAssertEqual(range("bytes=100-199"), 100...199)
         XCTAssertEqual(range(" bytes=900-5000"), 900...999)
         XCTAssertEqual(range("bytes=-100"), 900...999)
         // Unsatisfiable or malformed: the outer optional is nil (→ 416).
-        XCTAssertNil(parse("bytes=1000-"))
-        XCTAssertNil(parse("bytes=abc"))
+        XCTAssertTrue(parse("bytes=1000-") == nil)
+        XCTAssertTrue(parse("bytes=abc") == nil)
     }
 
     func testSafeNameAndMime() {

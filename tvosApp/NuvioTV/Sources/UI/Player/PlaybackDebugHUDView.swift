@@ -84,6 +84,9 @@ struct PlaybackDebugHUDView: View {
                     let stats = TorrentEngineManager.shared.activeStats
                     hudRow(label: "P2P Swarm", value: "\(stats.connectedSeeds) seeds · \(stats.connectedPeers) peers · \(stats.downloadRateFormatted)")
                 }
+                if !hideTorrentStats && UsenetEngineManager.shared.isStreaming {
+                    hudRow(label: "Usenet", value: UsenetEngineManager.shared.activeStats.summary)
+                }
                 hudRow(label: "Server", value: info.server.isEmpty ? "--" : info.server)
                 fileRow
                 hudRow(label: "Size", value: info.size.isEmpty ? "--" : info.size)

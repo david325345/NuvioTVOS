@@ -35,6 +35,50 @@ actor UsenetConnectionPool {
 
     /// Fetches an article body, trying every server before giving up.
     func fetch(messageID: String) async throws -> FetchOutcome {
+        switch try await run(messageID: messageID, statOnly: false) {
+        case .body(let lines): return .body(lines)
+        case .exists, .missing: return .missing
+        }
+    }
+
+    /// Whether any server still has the article (`STAT`, nothing downloaded).
+    func exists(messageID: String) async throws -> Bool {
+        switch try await run(messageID: messageID, statOnly: true) {
+        case .exists, .body: return true
+        case .missing: return false
+        }
+    }
+
+    struct Stats: Equatable, Sendable {
+        var busyConnections = 0
+        var openConnections = 0
+        var totalConnections = 0
+        /// Articles a later server had after the first one didn't.
+        var fallbackArticles = 0
+        var primaryHost = ""
+        var serverCount = 0
+    }
+
+    func stats() -> Stats {
+        Stats(
+            busyConnections: servers.reduce(0) { $0 + max(0, $1.open - $1.idle.count) },
+            openConnections: servers.reduce(0) { $0 + $1.open },
+            totalConnections: totalConnections,
+            fallbackArticles: fallbackArticles,
+            primaryHost: servers.first?.config.host ?? "",
+            serverCount: servers.count
+        )
+    }
+
+    private var fallbackArticles = 0
+
+    private enum Answer {
+        case body([Data])
+        case exists
+        case missing
+    }
+
+    private func run(messageID: String, statOnly: Bool) async throws -> Answer {
         var authError: UsenetNNTPError?
         for index in servers.indices {
             var attempt = 0
@@ -50,9 +94,17 @@ actor UsenetConnectionPool {
                     break
                 }
                 do {
-                    let lines = try await connection.fetchBody(messageID: messageID)
-                    release(connection, to: index)
-                    return .body(lines)
+                    if statOnly {
+                        let found = try await connection.stat(messageID: messageID)
+                        release(connection, to: index)
+                        if found { return .exists }
+                        attempt = 3          // next server
+                    } else {
+                        let lines = try await connection.fetchBody(messageID: messageID)
+                        release(connection, to: index)
+                        if index > 0 { fallbackArticles += 1 }
+                        return .body(lines)
+                    }
                 } catch let error as UsenetNNTPError {
                     switch error {
                     case .articleUnavailable:

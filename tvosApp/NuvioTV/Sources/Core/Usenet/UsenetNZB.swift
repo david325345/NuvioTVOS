@@ -53,43 +53,6 @@ struct UsenetNZB: Sendable, Equatable {
         }
         return UsenetNZB(title: parser.title, password: parser.password, files: parser.files)
     }
-
-    /// The file to stream:
-    /// 1. the first file whose name matches `fileMustInclude` (a regex, case-insensitive),
-    /// 2. else `fileIdx` among the playable files,
-    /// 3. else the largest video file,
-    /// 4. else the largest non-sidecar file (an archive here is reported as unsupported).
-    func playableFile(mustInclude: String?, fileIdx: Int?) throws -> UsenetFile {
-        let candidates = files.filter { !$0.isSidecar }
-        if let mustInclude, !mustInclude.isEmpty {
-            let regex = try? NSRegularExpression(pattern: mustInclude, options: [.caseInsensitive])
-            if let match = candidates.first(where: { file in
-                if let regex {
-                    let range = NSRange(file.name.startIndex..., in: file.name)
-                    return regex.firstMatch(in: file.name, range: range) != nil
-                }
-                return file.name.localizedCaseInsensitiveContains(mustInclude)
-            }) {
-                return try checked(match)
-            }
-        }
-        let videos = candidates.filter(\.isVideo)
-        if let fileIdx, videos.indices.contains(fileIdx) {
-            return videos[fileIdx]
-        }
-        if let largest = videos.max(by: { $0.encodedBytes < $1.encodedBytes }) {
-            return largest
-        }
-        guard let largest = candidates.max(by: { $0.encodedBytes < $1.encodedBytes }) else {
-            throw UsenetError.noPlayableFile
-        }
-        return try checked(largest)
-    }
-
-    private func checked(_ file: UsenetFile) throws -> UsenetFile {
-        if file.isArchive { throw UsenetError.archiveNotSupported(file.name) }
-        return file
-    }
 }
 
 private final class UsenetNZBParser: NSObject, XMLParserDelegate {

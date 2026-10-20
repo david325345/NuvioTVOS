@@ -1121,6 +1121,23 @@ struct DetailsScreen: View {
         }
     }
 
+    /// Up to two more Usenet streams (other NZBs) listed after `stream`.
+    private func usenetAlternates(after stream: NuvioStream) -> [NuvioStream] {
+        let all = viewModel.uiState.streams
+        let chosenNZB = stream.directURL.flatMap(URL.init(string:)).flatMap(UsenetStreamSpec.init(url:))?.nzbURL
+        let start = all.firstIndex { $0.id == stream.id }.map { $0 + 1 } ?? 0
+        var seen = Set(chosenNZB.map { [$0] } ?? [])
+        var result: [NuvioStream] = []
+        for candidate in all[start...] where result.count < 2 {
+            guard candidate.unavailabilityReason == nil,
+                  let raw = candidate.directURL, let url = URL(string: raw),
+                  let spec = UsenetStreamSpec(url: url),
+                  seen.insert(spec.nzbURL).inserted else { continue }
+            result.append(candidate)
+        }
+        return result
+    }
+
     /// Plays a chosen stream. Direct URLs go straight to the player; torrent-only
     /// streams are resolved through the configured debrid provider first, keeping
     /// the picker's spinner up until a link comes back (or the attempt fails).
@@ -1152,50 +1169,63 @@ struct DetailsScreen: View {
         PlaybackStartupTiming.markSourcePicked(stream: stream, token: startupToken)
         // Usenet: start the on-device engine here so a failure (no server,
         // incomplete release) lands back in the source picker with a reason.
-        if let raw = stream.directURL, let usenetURL = URL(string: raw), let spec = UsenetStreamSpec(url: usenetURL) {
+        if let raw = stream.directURL, let usenetURL = URL(string: raw), UsenetStreamSpec(url: usenetURL) != nil {
             isResolvingDebrid = true
             isPreparingPlayback = true
             isSmartPlaybackPending = false
+            // A broken release falls through to the next Usenet streams of the
+            // same title, so one bad upload doesn't end in an error.
+            let candidates = [stream] + usenetAlternates(after: stream)
             Task { @MainActor in
-                do {
-                    let localURL = try await UsenetEngineManager.shared.startStream(spec)
-                    guard PlaybackStartupTiming.isActive(token: startupToken) else {
-                        await UsenetEngineManager.shared.stopActiveStream(for: localURL)
+                var lastError: Error = UsenetError.noPlayableFile
+                for candidate in candidates {
+                    guard let raw = candidate.directURL, let url = URL(string: raw),
+                          let spec = UsenetStreamSpec(url: url) else { continue }
+                    do {
+                        let localURL = try await UsenetEngineManager.shared.startStream(spec)
+                        guard PlaybackStartupTiming.isActive(token: startupToken) else {
+                            await UsenetEngineManager.shared.stopActiveStream(for: localURL)
+                            return
+                        }
+                        isResolvingDebrid = false
+                        isStreamPickerPresented = false
+                        if !candidate.isNotPlayable { armExternalPlayerTimeoutIfNeeded(player: player) }
+                        if self.startupBenchmarkToken == startupToken {
+                            self.startupBenchmarkToken = nil
+                        }
+                        onPlayClick(
+                            localURL.absoluteString,
+                            candidate.httpHeaders ?? [:],
+                            meta,
+                            pendingEpisodeSubtitle,
+                            candidate.subtitles,
+                            pendingEpisode,
+                            orderedEpisodes(for: meta),
+                            player,
+                            nil,
+                            candidate.filename,
+                            candidate.videoSize,
+                            candidate.videoHash,
+                            nil,
+                            startupToken,
+                            candidate.id,
+                            candidate.isNotPlayable
+                        )
                         return
+                    } catch {
+                        lastError = error
+                        guard UsenetEngineManager.isReleaseProblem(error),
+                              PlaybackStartupTiming.isActive(token: startupToken) else { break }
+                        usenetLog.notice("usenet: trying the next source after: \(error.localizedDescription, privacy: .public)")
                     }
-                    isResolvingDebrid = false
-                    isStreamPickerPresented = false
-                    if !stream.isNotPlayable { armExternalPlayerTimeoutIfNeeded(player: player) }
-                    if self.startupBenchmarkToken == startupToken {
-                        self.startupBenchmarkToken = nil
-                    }
-                    onPlayClick(
-                        localURL.absoluteString,
-                        stream.httpHeaders ?? [:],
-                        meta,
-                        pendingEpisodeSubtitle,
-                        stream.subtitles,
-                        pendingEpisode,
-                        orderedEpisodes(for: meta),
-                        player,
-                        nil,
-                        stream.filename,
-                        stream.videoSize,
-                        stream.videoHash,
-                        nil,
-                        startupToken,
-                        stream.id,
-                        stream.isNotPlayable
-                    )
-                } catch {
-                    isResolvingDebrid = false
-                    cancelStartupRequest(token: startupToken)
-                    isPreparingPlayback = false
-                    isSmartPlaybackPending = false
-                    if !(error is CancellationError) {
-                        streamPickerAvailabilityMessage = error.localizedDescription
-                        isStreamPickerPresented = true
-                    }
+                }
+                isResolvingDebrid = false
+                cancelStartupRequest(token: startupToken)
+                isPreparingPlayback = false
+                isSmartPlaybackPending = false
+                if !(lastError is CancellationError) {
+                    streamPickerAvailabilityMessage = lastError.localizedDescription
+                    isStreamPickerPresented = true
                 }
             }
             return
