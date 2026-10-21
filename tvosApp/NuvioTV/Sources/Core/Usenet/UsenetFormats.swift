@@ -30,6 +30,11 @@ struct UsenetRarVolume: Equatable, Sendable {
     var isFirstVolume: Bool?
     var headersEncrypted = false
     var entries: [UsenetRarEntry] = []
+    /// Where the next header starts (from the start of the volume) when it lies
+    /// beyond the bytes read so far; nil once the headers are exhausted.
+    var pendingHeaderOffset: Int64?
+    /// The end-of-archive block was reached.
+    var reachedEnd = false
 }
 
 /// Header-only RAR 4 / RAR 5 reader: finds where a stored (uncompressed)
@@ -45,19 +50,45 @@ enum UsenetRar {
     /// Reads the headers in the first bytes of a volume (its first article is plenty).
     static func parseVolume(_ data: Data) -> UsenetRarVolume? {
         let bytes = [UInt8](data.prefix(4 << 20))
-        if bytes.starts(with: rar5Signature) { return parseRar5(bytes) }
-        if bytes.starts(with: rar4Signature) { return parseRar4(bytes) }
+        if bytes.starts(with: rar5Signature) {
+            var volume = UsenetRarVolume(format: .rar5)
+            parseRar5(bytes, from: rar5Signature.count, base: 0, into: &volume)
+            return volume
+        }
+        if bytes.starts(with: rar4Signature) {
+            var volume = UsenetRarVolume(format: .rar4)
+            parseRar4(bytes, from: rar4Signature.count, base: 0, into: &volume)
+            return volume
+        }
         return nil
     }
 
-    private static func parseRar4(_ b: [UInt8]) -> UsenetRarVolume {
-        var volume = UsenetRarVolume(format: .rar4)
-        var pos = rar4Signature.count
-        while pos + 7 <= b.count {
+    /// Continues reading headers from `bytes`, which start at `offset` in the
+    /// volume (a later file's header, past the previous file's data).
+    static func continueVolume(_ volume: inout UsenetRarVolume, bytes: Data, at offset: Int64) {
+        volume.pendingHeaderOffset = nil
+        let b = [UInt8](bytes)
+        switch volume.format {
+        case .rar4: parseRar4(b, from: 0, base: offset, into: &volume)
+        case .rar5: parseRar5(b, from: 0, base: offset, into: &volume)
+        }
+    }
+
+    private static func parseRar4(_ b: [UInt8], from start: Int, base: Int64, into volume: inout UsenetRarVolume) {
+        var pos = start
+        while true {
+            guard pos + 7 <= b.count else {
+                volume.pendingHeaderOffset = base + Int64(pos)
+                return
+            }
             let type = b[pos + 2]
             let flags = Int(le16(b, pos + 3))
             let headSize = Int(le16(b, pos + 5))
-            guard headSize >= 7, pos + headSize <= b.count else { break }
+            guard headSize >= 7 else { return }
+            guard pos + headSize <= b.count else {
+                volume.pendingHeaderOffset = base + Int64(pos)
+                return
+            }
             var dataSize: Int64 = 0
 
             switch type {
@@ -65,17 +96,17 @@ enum UsenetRar {
                 volume.isFirstVolume = flags & 0x0100 != 0
                 if flags & 0x0080 != 0 {
                     volume.headersEncrypted = true
-                    return volume
+                    return
                 }
             case 0x74, 0x7A: // file, service
-                guard headSize >= 32 else { return volume }
+                guard headSize >= 32 else { return }
                 var packed = Int64(le32(b, pos + 7))
                 var unpacked = Int64(le32(b, pos + 11))
                 let method = b[pos + 25]
                 let nameSize = Int(le16(b, pos + 26))
                 var nameStart = pos + 32
                 if flags & 0x0100 != 0 {
-                    guard headSize >= 40 else { return volume }
+                    guard headSize >= 40 else { return }
                     packed |= Int64(le32(b, pos + 32)) << 32
                     unpacked |= Int64(le32(b, pos + 36)) << 32
                     nameStart = pos + 40
@@ -91,7 +122,7 @@ enum UsenetRar {
                         name: decodeName(nameBytes),
                         packedSize: packed,
                         unpackedSize: unpacked,
-                        dataOffset: Int64(pos + headSize),
+                        dataOffset: base + Int64(pos + headSize),
                         isStored: method == 0x30,
                         isEncrypted: flags & 0x0004 != 0,
                         isDirectory: flags & 0x00E0 == 0x00E0,
@@ -100,42 +131,55 @@ enum UsenetRar {
                     ))
                 }
             case 0x7B: // end of archive
-                return volume
+                volume.reachedEnd = true
+                return
             default:
                 if flags & 0x8000 != 0, headSize >= 11 { dataSize = Int64(le32(b, pos + 7)) }
             }
 
             let next = Int64(pos) + Int64(headSize) + dataSize
-            guard next > Int64(pos), next <= Int64(b.count) else { break }
+            guard next > Int64(pos) else { return }
+            guard next < Int64(b.count) else {
+                volume.pendingHeaderOffset = base + next
+                return
+            }
             pos = Int(next)
         }
-        return volume
     }
 
-    private static func parseRar5(_ b: [UInt8]) -> UsenetRarVolume {
-        var volume = UsenetRarVolume(format: .rar5)
-        var pos = rar5Signature.count
-        scan: while pos + 6 <= b.count {
+    private static func parseRar5(_ b: [UInt8], from start: Int, base: Int64, into volume: inout UsenetRarVolume) {
+        var pos = start
+        while true {
+            guard pos + 6 <= b.count else {
+                volume.pendingHeaderOffset = base + Int64(pos)
+                return
+            }
             var cursor = pos + 4 // header CRC32
-            guard let headerSize = vint(b, &cursor), headerSize > 0, headerSize < 2 << 20 else { break }
+            guard let headerSize = vint(b, &cursor) else {
+                volume.pendingHeaderOffset = base + Int64(pos)
+                return
+            }
+            guard headerSize > 0, headerSize < 2 << 20 else { return }
             let headerEnd = cursor + Int(headerSize)
-            guard headerEnd <= b.count,
-                  let type = vint(b, &cursor),
-                  let flags = vint(b, &cursor) else { break }
+            guard headerEnd <= b.count else {
+                volume.pendingHeaderOffset = base + Int64(pos)
+                return
+            }
+            guard let type = vint(b, &cursor), let flags = vint(b, &cursor) else { return }
             var extraSize: UInt64 = 0
             var dataSize: UInt64 = 0
             if flags & 0x0001 != 0 {
-                guard let value = vint(b, &cursor) else { break }
+                guard let value = vint(b, &cursor) else { return }
                 extraSize = value
             }
             if flags & 0x0002 != 0 {
-                guard let value = vint(b, &cursor) else { break }
+                guard let value = vint(b, &cursor) else { return }
                 dataSize = value
             }
 
             switch type {
             case 1: // main archive header
-                guard let archiveFlags = vint(b, &cursor) else { break scan }
+                guard let archiveFlags = vint(b, &cursor) else { return }
                 if archiveFlags & 0x0002 != 0, let number = vint(b, &cursor) {
                     volume.volumeNumber = Int(number)
                     volume.isFirstVolume = false
@@ -146,13 +190,13 @@ enum UsenetRar {
             case 2: // file header
                 guard let fileFlags = vint(b, &cursor),
                       let unpacked = vint(b, &cursor),
-                      vint(b, &cursor) != nil else { break scan } // attributes
+                      vint(b, &cursor) != nil else { return } // attributes
                 if fileFlags & 0x0002 != 0 { cursor += 4 } // mtime
                 if fileFlags & 0x0004 != 0 { cursor += 4 } // CRC32
                 guard let compression = vint(b, &cursor),
                       vint(b, &cursor) != nil, // host OS
                       let nameLength = vint(b, &cursor),
-                      cursor + Int(nameLength) <= headerEnd else { break scan }
+                      cursor + Int(nameLength) <= headerEnd else { return }
                 let name = decodeName(Array(b[cursor..<(cursor + Int(nameLength))]))
                 var encrypted = false
                 if extraSize > 0, extraSize <= headerSize {
@@ -170,7 +214,7 @@ enum UsenetRar {
                     name: name,
                     packedSize: Int64(dataSize),
                     unpackedSize: fileFlags & 0x0008 != 0 ? -1 : Int64(unpacked),
-                    dataOffset: Int64(headerEnd),
+                    dataOffset: base + Int64(headerEnd),
                     isStored: (compression >> 7) & 0x07 == 0,
                     isEncrypted: encrypted,
                     isDirectory: fileFlags & 0x0001 != 0,
@@ -179,18 +223,21 @@ enum UsenetRar {
                 ))
             case 4: // archive encryption header: everything after it is encrypted
                 volume.headersEncrypted = true
-                return volume
+                return
             case 5: // end of archive
-                return volume
+                volume.reachedEnd = true
+                return
             default:
                 break
             }
 
             let next = UInt64(headerEnd) + dataSize
-            guard next <= UInt64(b.count) else { break }
+            guard next < UInt64(b.count) else {
+                volume.pendingHeaderOffset = base + Int64(clamping: next)
+                return
+            }
             pos = Int(next)
         }
-        return volume
     }
 
     /// RAR 5 variable-length integer: 7 bits per byte, high bit = more.

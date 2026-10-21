@@ -52,6 +52,11 @@ struct UsenetStreamSource: Sendable {
     }
 }
 
+/// A multi-file RAR set with every volume's headers read, in volume order.
+struct UsenetRarSetDetail: Sendable {
+    var parsed: [(index: Int, head: UsenetYEncSegment, volume: UsenetRarVolume)]
+}
+
 /// How an NZB file is treated, judged from its (possibly restored) name.
 enum UsenetFileRole: Equatable, Sendable {
     case video
@@ -143,12 +148,20 @@ struct UsenetReleaseResolver {
 
         // 2. What could be played.
         var entries = Self.plainAndSplitEntries(files: files, names: names, roles: roles)
+        var rarDetails: [[Int]: UsenetRarSetDetail] = [:]
         for set in Self.rarSets(names: names, roles: roles, obfuscated: obfuscatedRar) {
-            if let entry = try await rarEntry(set, files: files, heads: &heads) { entries.append(entry) }
+            entries += try await rarEntries(
+                set, files: files, obfuscated: set.allSatisfy(obfuscatedRar.contains),
+                heads: &heads, details: &rarDetails
+            )
         }
         entries.sort { $0.order < $1.order }
 
         guard let chosen = Self.choose(entries, mustInclude: mustInclude, fileIdx: fileIdx) else {
+            if let mustInclude, !mustInclude.isEmpty, entries.count > 1 {
+                // A pack without the wanted episode: never play another one instead.
+                throw UsenetError.fileNotInPack
+            }
             if let archive = files.indices.first(where: { roles[$0] == .unsupportedArchive }) {
                 throw UsenetError.archiveNotSupported(names[archive])
             }
@@ -175,14 +188,19 @@ struct UsenetReleaseResolver {
                 extents: extents, firstArticles: volumeHeads
             )
         case .rar(let indices):
-            let volumeHeads = try await requireHeads(indices, heads: &heads)
             var parsed: [(index: Int, head: UsenetYEncSegment, volume: UsenetRarVolume)] = []
-            for (index, head) in zip(indices, volumeHeads) {
-                guard let volume = UsenetRar.parseVolume(head.data) else { throw UsenetError.releaseIncomplete }
-                parsed.append((index, head, volume))
-            }
-            if indices.allSatisfy(obfuscatedRar.contains) {
-                parsed = Self.orderObfuscated(parsed)
+            if let detail = rarDetails[indices] {
+                // Multi-file set: every volume's headers were read already.
+                parsed = detail.parsed
+            } else {
+                let volumeHeads = try await requireHeads(indices, heads: &heads)
+                for (index, head) in zip(indices, volumeHeads) {
+                    guard let volume = UsenetRar.parseVolume(head.data) else { throw UsenetError.releaseIncomplete }
+                    parsed.append((index, head, volume))
+                }
+                if indices.allSatisfy(obfuscatedRar.contains) {
+                    parsed = Self.orderObfuscated(parsed)
+                }
             }
             let extents = try Self.rarExtents(parsed.map { $0.volume }, innerName: chosen.name)
             let used = Set(extents.map(\.volume))
@@ -251,7 +269,7 @@ struct UsenetReleaseResolver {
         for index in files.indices {
             switch roles[index] {
             case .video:
-                entries.append(UsenetPlayableEntry(name: names[index], source: .plain(index), size: files[index].encodedBytes, order: index))
+                entries.append(UsenetPlayableEntry(name: names[index], source: .plain(index), size: files[index].encodedBytes, order: index * 1000))
             case .split:
                 let base = (names[index] as NSString).deletingPathExtension
                 let number = Int((names[index] as NSString).pathExtension) ?? 0
@@ -265,7 +283,7 @@ struct UsenetReleaseResolver {
             entries.append(UsenetPlayableEntry(
                 name: base, source: .split(ordered),
                 size: ordered.reduce(0) { $0 + files[$1].encodedBytes },
-                order: ordered.min() ?? 0
+                order: (ordered.min() ?? 0) * 1000
             ))
         }
         return entries
@@ -306,17 +324,20 @@ struct UsenetReleaseResolver {
 
     /// Where a stored file's bytes sit across the volumes of its set.
     static func rarExtents(_ volumes: [UsenetRarVolume], innerName: String) throws -> [UsenetExtent] {
-        guard let firstVolume = volumes.first else { throw UsenetError.noPlayableFile }
+        guard !volumes.isEmpty else { throw UsenetError.noPlayableFile }
         if volumes.contains(where: \.headersEncrypted) { throw UsenetError.archiveEncrypted }
-        guard let firstEntry = firstVolume.entries.first(where: { $0.name == innerName }) else {
+        // In a multi-file set the wanted file can start in any volume.
+        let startsHere: (UsenetRarEntry) -> Bool = { $0.name == innerName && !$0.continuesFromPrevious }
+        guard let startVolume = volumes.firstIndex(where: { $0.entries.contains(where: startsHere) }),
+              let firstEntry = volumes[startVolume].entries.first(where: startsHere) else {
             throw UsenetError.noPlayableFile
         }
         if firstEntry.isEncrypted { throw UsenetError.archiveEncrypted }
         guard firstEntry.isStored else { throw UsenetError.archiveCompressed(innerName) }
 
-        var extents = [UsenetExtent(volume: 0, offset: firstEntry.dataOffset, length: firstEntry.packedSize)]
+        var extents = [UsenetExtent(volume: startVolume, offset: firstEntry.dataOffset, length: firstEntry.packedSize)]
         var continues = firstEntry.continuesInNext
-        var volume = 1
+        var volume = startVolume + 1
         while continues, volume < volumes.count {
             guard let part = volumes[volume].entries.first(where: { $0.name == innerName && $0.continuesFromPrevious }) else {
                 throw UsenetError.releaseIncomplete
@@ -334,6 +355,19 @@ struct UsenetReleaseResolver {
         return extents.filter { $0.length > 0 }
     }
 
+    /// Stremio examples write `fileMustInclude` like a JavaScript literal,
+    /// `/E05|- 05/i`; the slashes and flags are dropped (matching is always
+    /// case-insensitive). Anything else is used as it is.
+    static func normalizedPattern(_ pattern: String) -> String {
+        let trimmed = pattern.trimmingCharacters(in: .whitespaces)
+        guard trimmed.count >= 2, trimmed.hasPrefix("/"),
+              let close = trimmed.lastIndex(of: "/"), close > trimmed.startIndex else { return trimmed }
+        let flags = trimmed[trimmed.index(after: close)...]
+        guard flags.allSatisfy({ "gimsuy".contains($0) }) else { return trimmed }
+        let body = String(trimmed[trimmed.index(after: trimmed.startIndex)..<close])
+        return body.isEmpty ? trimmed : body
+    }
+
     /// `fileMustInclude` (a regex, case-insensitive) wins, then `fileIdx`
     /// among the entries in NZB order, then the largest entry.
     static func choose(_ entries: [UsenetPlayableEntry], mustInclude: String?, fileIdx: Int?) -> UsenetPlayableEntry? {
@@ -347,6 +381,8 @@ struct UsenetReleaseResolver {
                 return name.localizedCaseInsensitiveContains(mustInclude)
             }
             if let match = entries.first(where: { matches($0.name) }) { return match }
+            // Several files and none is the wanted one: let the caller fail.
+            if candidates.count > 1 { return nil }
         }
         if let fileIdx, entries.indices.contains(fileIdx) { return entries[fileIdx] }
         return (candidates.isEmpty ? entries : candidates).max { $0.size < $1.size }
@@ -363,8 +399,18 @@ struct UsenetReleaseResolver {
 
     // MARK: - Fetching first articles
 
-    private func rarEntry(_ set: [Int], files: [UsenetFile], heads: inout [Int: UsenetYEncSegment]) async throws -> UsenetPlayableEntry? {
-        guard let first = set.first else { return nil }
+    /// The videos inside one RAR set. A set holding one big file is judged
+    /// from its first volume; a set whose first file is much smaller than the
+    /// set (a season packed in one archive) has every volume's headers read,
+    /// including headers that sit mid-volume after the previous file's data.
+    private func rarEntries(
+        _ set: [Int], files: [UsenetFile], obfuscated: Bool,
+        heads: inout [Int: UsenetYEncSegment], details: inout [[Int]: UsenetRarSetDetail]
+    ) async throws -> [UsenetPlayableEntry] {
+        guard let first = set.first else { return [] }
+        let baseOrder = (set.min() ?? first) * 1000
+        let setBytes = set.reduce(0) { $0 + files[$1].encodedBytes }
+
         // Obfuscated sets: find the first volume among them.
         var leader = first
         if heads[first] != nil, set.count > 1 {
@@ -376,17 +422,112 @@ struct UsenetReleaseResolver {
             }
         }
         guard let head = try await requireHeads([leader], heads: &heads).first,
-              let volume = UsenetRar.parseVolume(head.data) else { return nil }
-        let videos = volume.entries.filter {
-            !$0.isDirectory && UsenetFile.videoExtensions.contains(($0.name as NSString).pathExtension.lowercased())
+              let volume = UsenetRar.parseVolume(head.data) else { return [] }
+
+        let listed = volume.entries.filter { !$0.isDirectory && !$0.continuesFromPrevious }
+            .reduce(Int64(0)) { $0 + max(0, $1.unpackedSize) }
+        let isMultiFile = Self.isMultiFileSet(listedBytes: listed, encodedSetBytes: setBytes)
+            && !volume.headersEncrypted
+
+        if !isMultiFile {
+            let videos = volume.entries.filter { !$0.isDirectory && Self.isVideoName($0.name) }
+            guard let inner = videos.max(by: { $0.unpackedSize < $1.unpackedSize }) else { return [] }
+            return [UsenetPlayableEntry(name: inner.name, source: .rar(set), size: setBytes, order: baseOrder)]
         }
-        guard let inner = videos.max(by: { $0.unpackedSize < $1.unpackedSize }) else { return nil }
-        return UsenetPlayableEntry(
-            name: inner.name,
-            source: .rar(set),
-            size: set.reduce(0) { $0 + files[$1].encodedBytes },
-            order: set.min() ?? first
+
+        let volumeHeads = try await requireHeads(set, heads: &heads)
+        var parsed: [(index: Int, head: UsenetYEncSegment, volume: UsenetRarVolume)] = []
+        for (index, volumeHead) in zip(set, volumeHeads) {
+            guard let parsedVolume = UsenetRar.parseVolume(volumeHead.data) else { throw UsenetError.releaseIncomplete }
+            parsed.append((index, volumeHead, parsedVolume))
+        }
+        if obfuscated { parsed = Self.orderObfuscated(parsed) }
+        for k in parsed.indices {
+            parsed[k].volume = try await completeHeaders(parsed[k].volume, file: files[parsed[k].index], head: parsed[k].head)
+        }
+        details[set] = UsenetRarSetDetail(parsed: parsed)
+
+        let starts = parsed.flatMap { $0.volume.entries }
+            .filter { !$0.isDirectory && !$0.continuesFromPrevious && Self.isVideoName($0.name) }
+        usenetLog.notice("usenet: RAR set holds \(starts.count) videos")
+        return starts.enumerated().map { number, entry in
+            UsenetPlayableEntry(
+                name: entry.name, source: .rar(set),
+                size: Int(clamping: max(0, entry.unpackedSize)),
+                order: baseOrder + number
+            )
+        }
+    }
+
+    /// A first file under 85 % of the set means more files follow it
+    /// (yEnc adds roughly 2–3 %, a single big file covers nearly all of it).
+    static func isMultiFileSet(listedBytes: Int64, encodedSetBytes: Int) -> Bool {
+        guard encodedSetBytes > 0 else { return false }
+        let estimatedDecoded = Double(encodedSetBytes) / 1.03
+        return Double(listedBytes) < estimatedDecoded * 0.85
+    }
+
+    static func isVideoName(_ name: String) -> Bool {
+        UsenetFile.videoExtensions.contains((name as NSString).pathExtension.lowercased())
+    }
+
+    /// Reads the headers that sit after the previous file's data, until the
+    /// volume's end (a few KB of trailer or recovery data is not a file).
+    private func completeHeaders(_ start: UsenetRarVolume, file: UsenetFile, head: UsenetYEncSegment) async throws -> UsenetRarVolume {
+        var volume = start
+        let size = Int64(head.header.size ?? head.data.count)
+        var rounds = 0
+        while !volume.reachedEnd, !volume.headersEncrypted,
+              let offset = volume.pendingHeaderOffset, size - offset > 4096, rounds < 64 {
+            rounds += 1
+            guard let bytes = try await volumeBytes(file, head: head, at: offset, length: 64 * 1024),
+                  !bytes.isEmpty else { break }
+            UsenetRar.continueVolume(&volume, bytes: bytes, at: offset)
+            if volume.pendingHeaderOffset == offset { break }   // no progress
+        }
+        return volume
+    }
+
+    /// `length` bytes of a volume from `offset`, fetching the articles that hold them.
+    private func volumeBytes(_ file: UsenetFile, head: UsenetYEncSegment, at offset: Int64, length: Int) async throws -> Data? {
+        let size = Int64(head.header.size ?? head.data.count)
+        let begin = Int64(head.fileOffset)
+        var layout = UsenetFileLayout(
+            totalSize: size,
+            firstPart: begin..<(begin + Int64(head.data.count)),
+            segments: file.segments
         )
+        var out = Data()
+        var position = offset
+        var probe = layout.index(for: position)
+        var hops = 0
+        while out.count < length, position < size, hops < 24 {
+            hops += 1
+            let article: UsenetYEncSegment
+            if probe.index == 0 {
+                article = head
+            } else {
+                guard case .body(let body) = try await pool.fetch(messageID: file.segments[probe.index].messageID),
+                      let decoded = try? UsenetYEnc.decode(body: body) else { break }
+                article = decoded
+            }
+            let start = Int64(article.fileOffset)
+            let range = start..<(start + Int64(article.data.count))
+            layout.learn(probe.index, range: range)
+            if range.contains(position) {
+                let from = Int(position - start)
+                let take = min(article.data.count - from, length - out.count)
+                out.append(article.data.subdata(in: from..<(from + take)))
+                position += Int64(take)
+                guard probe.index + 1 < file.segments.count else { break }
+                probe = (probe.index + 1, true)
+            } else {
+                let next = position < range.lowerBound ? probe.index - 1 : probe.index + 1
+                guard next >= 0, next < file.segments.count else { break }
+                probe = (next, false)
+            }
+        }
+        return out.isEmpty ? nil : out
     }
 
     private func requireHeads(_ indices: [Int], heads: inout [Int: UsenetYEncSegment]) async throws -> [UsenetYEncSegment] {

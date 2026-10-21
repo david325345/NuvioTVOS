@@ -120,6 +120,7 @@ enum UsenetError: LocalizedError, Equatable {
     case archiveCompressed(String)
     case archiveEncrypted
     case releaseIncomplete
+    case fileNotInPack
 
     var errorDescription: String? {
         switch self {
@@ -143,6 +144,8 @@ enum UsenetError: LocalizedError, Equatable {
             return L10n.string("usenet_error_archive_encrypted", fallback: "The release is password protected.")
         case .releaseIncomplete:
             return L10n.string("usenet_error_incomplete", fallback: "Parts of this release are missing on your Usenet servers.")
+        case .fileNotInPack:
+            return L10n.string("usenet_error_not_in_pack", fallback: "The episode wasn't found in this pack.")
         }
     }
 }

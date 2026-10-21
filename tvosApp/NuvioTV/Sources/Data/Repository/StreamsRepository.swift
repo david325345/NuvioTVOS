@@ -955,7 +955,7 @@ struct StreamAddonStreamDTO: Decodable {
         guard let raw = nzbUrl?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty,
               let nzb = URL(string: raw), let scheme = nzb.scheme?.lowercased(),
               scheme == "http" || scheme == "https" else { return nil }
-        let patterns = (fileMustInclude ?? []).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        let patterns = (fileMustInclude ?? []).map(UsenetReleaseResolver.normalizedPattern).filter { !$0.isEmpty }
         return UsenetStreamSpec(
             nzbURL: nzb,
             servers: (servers ?? []).compactMap(UsenetServerConfig.init(url:)),

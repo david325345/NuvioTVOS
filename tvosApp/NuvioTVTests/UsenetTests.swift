@@ -232,6 +232,32 @@ final class UsenetNZBTests: XCTestCase {
         XCTAssertEqual(UsenetReleaseResolver.choose(list, mustInclude: nil, fileIdx: 9)?.name, "Show.S01E01.1080p.mkv")
     }
 
+    func testPackWithoutTheEpisodeIsNotPlayed() throws {
+        let pack = entries(try UsenetNZB.parse(UsenetFixture.nzb([
+            (#""Show.S01E01.mkv" yEnc (1/1)"#, [("e1@x", 500, 1)]),
+            (#""Show.S01E02.mkv" yEnc (1/1)"#, [("e2@x", 520, 1)]),
+            (#""Show.S01E03.mkv" yEnc (1/1)"#, [("e3@x", 510, 1)]),
+        ])))
+        XCTAssertEqual(UsenetReleaseResolver.choose(pack, mustInclude: "S01E02", fileIdx: nil)?.name, "Show.S01E02.mkv")
+        XCTAssertNil(UsenetReleaseResolver.choose(pack, mustInclude: "S01E09", fileIdx: nil))
+        // One episode plus its sample is a single release: still played.
+        XCTAssertEqual(UsenetReleaseResolver.choose(entries(try sampleNZB()), mustInclude: "S01E09", fileIdx: nil)?.name,
+                       "Show.S01E01.1080p.mkv")
+        // A single file is played even when the pattern doesn't fit it.
+        let single = [UsenetPlayableEntry(name: "Movie.mp4", source: .plain(0), size: 10, order: 0)]
+        XCTAssertEqual(UsenetReleaseResolver.choose(single, mustInclude: "\\.mkv$", fileIdx: nil)?.name, "Movie.mp4")
+    }
+
+    func testJavaScriptStylePatterns() {
+        let normalized = UsenetReleaseResolver.normalizedPattern
+        XCTAssertEqual(normalized("/E05|- 05/i"), "E05|- 05")
+        XCTAssertEqual(normalized(" /.mkv$|.mp4$/i "), ".mkv$|.mp4$")
+        XCTAssertEqual(normalized("/S01E05/"), "S01E05")
+        XCTAssertEqual(normalized("S01E05"), "S01E05")
+        XCTAssertEqual(normalized("/path/to"), "/path/to")
+        XCTAssertEqual(normalized("//"), "//")
+    }
+
     func testRolesFromNames() {
         let role = UsenetReleaseResolver.role(ofName:)
         XCTAssertEqual(role("Show.S01E01.mkv"), .video)
@@ -377,6 +403,26 @@ private enum FormatFixture {
         return (Data(b), offset)
     }
 
+    /// One RAR 4 file block (header + stored data) to append after a volume's headers.
+    static func rar4FileBlock(name: String, packed: Int, unpacked: Int, fileFlags: Int = 0) -> [UInt8] {
+        let nameBytes = Array(name.utf8)
+        var b: [UInt8] = [0, 0, 0x74]
+        b.append(contentsOf: le16(0x8000 | fileFlags))
+        b.append(contentsOf: le16(32 + nameBytes.count))
+        b.append(contentsOf: le32(packed))
+        b.append(contentsOf: le32(unpacked))
+        b.append(2)
+        b.append(contentsOf: le32(0))
+        b.append(contentsOf: le32(0))
+        b.append(29)
+        b.append(0x30)
+        b.append(contentsOf: le16(nameBytes.count))
+        b.append(contentsOf: le32(0x20))
+        b.append(contentsOf: nameBytes)
+        b.append(contentsOf: [UInt8](repeating: 0xEE, count: packed))
+        return b
+    }
+
     static func par2FileDescription(name: String, head: Data) -> Data {
         var body: [UInt8] = [UInt8](repeating: 1, count: 16)    // file ID
         body.append(contentsOf: [UInt8](repeating: 2, count: 16)) // full MD5
@@ -451,6 +497,49 @@ final class UsenetFormatTests: XCTestCase {
         let extents = try UsenetReleaseResolver.rarExtents([v1, v2], innerName: "Show/E01.mkv")
         XCTAssertEqual(extents.map(\.length), [200, 100])
         XCTAssertEqual(extents.map(\.offset), [Int64(first.dataOffset), Int64(second.dataOffset)])
+    }
+
+    func testMultiFileRarHeadersAcrossTheBuffer() throws {
+        // Volume: E01 (100 bytes) then E02's header and data.
+        var bytes = [UInt8](FormatFixture.rar4(name: "E01.mkv", packed: 100, unpacked: 100, firstVolume: true, dataBytes: 100).data)
+        let secondHeaderAt = bytes.count
+        bytes += FormatFixture.rar4FileBlock(name: "E02.mkv", packed: 60, unpacked: 60)
+
+        let whole = try XCTUnwrap(UsenetRar.parseVolume(Data(bytes)))
+        XCTAssertEqual(whole.entries.map(\.name), ["E01.mkv", "E02.mkv"])
+
+        // Only the first article's worth: stops at E01's data, points at E02's header.
+        var partial = try XCTUnwrap(UsenetRar.parseVolume(Data(bytes.prefix(secondHeaderAt - 40))))
+        XCTAssertEqual(partial.entries.map(\.name), ["E01.mkv"])
+        XCTAssertEqual(partial.pendingHeaderOffset, Int64(secondHeaderAt))
+        UsenetRar.continueVolume(&partial, bytes: Data(bytes[secondHeaderAt...]), at: Int64(secondHeaderAt))
+        XCTAssertEqual(partial.entries.map(\.name), ["E01.mkv", "E02.mkv"])
+        XCTAssertEqual(partial.entries.last?.dataOffset, whole.entries.last?.dataOffset)
+    }
+
+    func testRarExtentsForAFileStartingInALaterVolume() throws {
+        // Volume 0: E01 whole, then E02's first 30 bytes; volume 1: the other 50.
+        var first = [UInt8](FormatFixture.rar4(name: "E01.mkv", packed: 100, unpacked: 100, firstVolume: true, dataBytes: 100).data)
+        first += FormatFixture.rar4FileBlock(name: "E02.mkv", packed: 30, unpacked: 80, fileFlags: 0x02)
+        let second = FormatFixture.rar4(name: "E02.mkv", packed: 50, unpacked: 80, fileFlags: 0x01, firstVolume: false, dataBytes: 50)
+        // Volume 2: E03 on its own.
+        let third = FormatFixture.rar4(name: "E03.mkv", packed: 70, unpacked: 70, firstVolume: false, dataBytes: 70)
+        let volumes = try [Data(first), second.data, third.data].map { try XCTUnwrap(UsenetRar.parseVolume($0)) }
+
+        let e02 = try UsenetReleaseResolver.rarExtents(volumes, innerName: "E02.mkv")
+        XCTAssertEqual(e02.map(\.volume), [0, 1])
+        XCTAssertEqual(e02.map(\.length), [30, 50])
+        XCTAssertEqual(e02.last?.offset, Int64(second.dataOffset))
+
+        let e03 = try UsenetReleaseResolver.rarExtents(volumes, innerName: "E03.mkv")
+        XCTAssertEqual(e03, [UsenetExtent(volume: 2, offset: Int64(third.dataOffset), length: 70)])
+        XCTAssertThrowsError(try UsenetReleaseResolver.rarExtents(volumes, innerName: "E09.mkv"))
+    }
+
+    func testMultiFileSetHeuristic() {
+        XCTAssertFalse(UsenetReleaseResolver.isMultiFileSet(listedBytes: 900, encodedSetBytes: 1000))
+        XCTAssertTrue(UsenetReleaseResolver.isMultiFileSet(listedBytes: 300, encodedSetBytes: 1000))
+        XCTAssertFalse(UsenetReleaseResolver.isMultiFileSet(listedBytes: 0, encodedSetBytes: 0))
     }
 
     func testRar5CompressedAndEncrypted() throws {
