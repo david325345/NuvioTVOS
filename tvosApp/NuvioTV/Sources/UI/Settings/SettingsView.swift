@@ -181,6 +181,8 @@ enum SettingsKey {
     static let cardCornerRadius = "nuvio.tv.settings.layout.cardCornerRadius"
     static let cardSize = "nuvio.tv.settings.layout.cardSize"
     static let liquidGlassCards = "nuvio.tv.settings.layout.liquidGlassCards"
+    /// Fork-only: kept out of `all`, so it is never sent with account settings.
+    static let showCalendarTab = "nuvio.tv.settings.layout.showCalendarTab"
     static let hideUnreleased = "nuvio.tv.settings.layout.hideUnreleased"
     static let showFullDates = "nuvio.tv.settings.layout.showFullDates"
     static let detailsActionsBelowInfo = "nuvio.tv.settings.layout.detailsActionsBelowInfo"
@@ -2136,6 +2138,7 @@ private struct AppearanceSettingsView: View {
     @AppStorage(SettingsKey.amoledSurfaces) private var amoledSurfaces = false
     @AppStorage(SettingsKey.cardCornerRadius) private var cardCornerRadius = AppCardStyle.defaultCornerRadiusRaw
     @AppStorage(SettingsKey.liquidGlassCards) private var liquidGlassCards = true
+    @AppStorage(SettingsKey.showCalendarTab) private var showCalendarTab = true
     @AppStorage(SettingsKey.customPosterURLPattern) private var customPosterURLPattern = ""
     @AppStorage(SettingsKey.customPosterEnabledScreens) private var customPosterEnabledScreens = "all"
     @State private var customPosterURLDraft = ""
@@ -2157,6 +2160,21 @@ private struct AppearanceSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
+            SettingsGroup(
+                title: L10n.string("settings_sidebar_tabs", fallback: "Sidebar"),
+                subtitle: L10n.string("settings_sidebar_tabs_subtitle", fallback: "Choose which sections appear in the sidebar")
+            ) {
+                SettingsToggleRow(
+                    title: L10n.string("nav_calendar", fallback: "Calendar"),
+                    subtitle: L10n.string(
+                        "settings_show_calendar_tab_subtitle",
+                        fallback: "Upcoming episodes and releases from your library"
+                    ),
+                    isOn: $showCalendarTab,
+                    accentColor: accentColor
+                )
+            }
+
             SettingsGroup(
                 title: L10n.string("settings_poster_card_style", fallback: "Card & Poster Style"),
                 subtitle: L10n.string(

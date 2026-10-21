@@ -275,11 +275,17 @@ enum TVTab: Hashable, Identifiable, CaseIterable {
     case collection(CollectionHomeID)
 
     static var allCases: [Self] {
-        if WatchPartyConfiguration.isEnabled {
-            return [.profile, .home, .party, .search, .library, .calendar, .settings]
-        } else {
-            return [.profile, .home, .search, .library, .calendar, .settings]
-        }
+        var tabs: [Self] = [.profile, .home]
+        if WatchPartyConfiguration.isEnabled { tabs.append(.party) }
+        tabs += [.search, .library]
+        if isCalendarEnabled { tabs.append(.calendar) }
+        tabs.append(.settings)
+        return tabs
+    }
+
+    /// Settings → Appearance → Sidebar → Calendar (on unless turned off).
+    static var isCalendarEnabled: Bool {
+        ProfileSettings.current.object(forKey: SettingsKey.showCalendarTab) as? Bool ?? true
     }
     var id: String { rawValue }
     var rawValue: String {
@@ -3624,6 +3630,7 @@ private struct TVMainTabView: View {
     @AppStorage(SettingsKey.amoled) private var amoled = false
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
     @AppStorage(SettingsKey.discoverLocation) private var discoverLocation = "Search"
+    @AppStorage(SettingsKey.showCalendarTab) private var showCalendarTab = true
     @AppStorage(SettingsKey.searchStyle) private var searchStyle = "Netflix"
     @AppStorage("nuvio.keyboard.detectedLayout") private var detectedKeyboardMode: TVOSKeyboardLayoutMode = .linear
     @AppStorage(SettingsKey.profileName) private var settingsProfileName = "Nuvio User"
@@ -3647,11 +3654,16 @@ private struct TVMainTabView: View {
     }
 
     var body: some View {
-        if #available(tvOS 18.0, *) {
-            tabs
-                .tabViewStyle(.sidebarAdaptable)
-        } else {
-            tabs
+        Group {
+            if #available(tvOS 18.0, *) {
+                tabs
+                    .tabViewStyle(.sidebarAdaptable)
+            } else {
+                tabs
+            }
+        }
+        .onChange(of: showCalendarTab) { _, isShown in
+            if !isShown, selectedTab == .calendar { selectedTab = .home }
         }
     }
 
@@ -3857,9 +3869,11 @@ private struct TVMainTabView: View {
             libraryTabContent
                 .tabItem { Label(TVTab.library.title, systemImage: TVTab.library.symbol) }
                 .tag(TVTab.library)
-            calendarTabContent
-                .tabItem { Label(TVTab.calendar.title, systemImage: TVTab.calendar.symbol) }
-                .tag(TVTab.calendar)
+            if showCalendarTab {
+                calendarTabContent
+                    .tabItem { Label(TVTab.calendar.title, systemImage: TVTab.calendar.symbol) }
+                    .tag(TVTab.calendar)
+            }
             settingsTabContent.tabItem { settingsTabLabel }.tag(TVTab.settings)
         }
     }
@@ -3897,8 +3911,10 @@ private struct TVMainTabView: View {
             Tab(TVTab.library.title, systemImage: TVTab.library.symbol, value: TVTab.library) {
                 libraryTabContent
             }
-            Tab(TVTab.calendar.title, systemImage: TVTab.calendar.symbol, value: TVTab.calendar) {
-                calendarTabContent
+            if showCalendarTab {
+                Tab(TVTab.calendar.title, systemImage: TVTab.calendar.symbol, value: TVTab.calendar) {
+                    calendarTabContent
+                }
             }
             Tab(value: TVTab.settings) { settingsTabContent } label: { settingsTabLabel }
             if !directCollectionDestinations.isEmpty {
