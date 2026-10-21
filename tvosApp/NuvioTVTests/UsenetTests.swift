@@ -574,6 +574,32 @@ final class UsenetSourceTests: XCTestCase {
         XCTAssertNil(UsenetEngineManager.canonicalSource("https://cdn.example/a.mkv"))
     }
 
+    func testTokenBucketPacesToTheCap() {
+        let start = ContinuousClock.Instant.now
+        var bucket = UsenetTokenBucket(megabitsPerSecond: 8, now: start) // 1 MB/s, 1 MiB burst
+        XCTAssertEqual(bucket.take(1_048_576, now: start), .zero)
+        XCTAssertEqual(bucket.take(1_000_000, now: start), .seconds(1))
+        // Requests made together queue up behind each other.
+        XCTAssertEqual(bucket.take(1_000_000, now: start), .seconds(2))
+        // Time refills the bucket.
+        var later = UsenetTokenBucket(megabitsPerSecond: 8, now: start)
+        _ = later.take(1_048_576, now: start)
+        XCTAssertEqual(later.take(500_000, now: start + .seconds(1)), .zero)
+        XCTAssertEqual(later.take(1_000_000, now: start + .seconds(1)), .seconds(0.5))
+    }
+
+    func testSpeedLimitSetting() {
+        let store = UserDefaults(suiteName: "usenet-speed-\(UUID().uuidString)")!
+        XCTAssertEqual(UsenetSettings.speedLimitMbps(store: store), 0)
+        UsenetSettings.setSpeedLimitMbps(50, store: store)
+        XCTAssertEqual(UsenetSettings.speedLimitMbps(store: store), 50)
+        UsenetSettings.setSpeedLimitMbps(37, store: store)
+        XCTAssertEqual(UsenetSettings.speedLimitMbps(store: store), 0)
+        var stats = UsenetStreamStats()
+        stats.speedLimitMbps = 50
+        XCTAssertTrue(stats.connectionLine.contains("max 50 Mbit/s"))
+    }
+
     func testStatsSummary() {
         var stats = UsenetStreamStats()
         stats.server = "news.example.com"

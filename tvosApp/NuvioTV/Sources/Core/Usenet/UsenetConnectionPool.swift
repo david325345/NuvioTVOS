@@ -3,6 +3,48 @@ import OSLog
 
 let usenetLog = Logger(subsystem: "com.nuvio.tv", category: "Usenet")
 
+/// Token bucket for the optional speed cap: hands out bytes at a steady rate
+/// with a small burst, so requests are spread out instead of fired at once.
+struct UsenetTokenBucket {
+    let bytesPerSecond: Double
+    let capacity: Double
+    private(set) var tokens: Double
+    private var last: ContinuousClock.Instant
+
+    init(megabitsPerSecond: Int, now: ContinuousClock.Instant) {
+        bytesPerSecond = Double(max(1, megabitsPerSecond)) * 1_000_000 / 8
+        capacity = max(1_048_576, bytesPerSecond / 2)
+        tokens = capacity
+        last = now
+    }
+
+    /// Takes `bytes` and returns how long the caller has to wait before using them.
+    mutating func take(_ bytes: Int, now: ContinuousClock.Instant) -> Duration {
+        let elapsed = now - last
+        let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+        tokens = min(capacity, tokens + max(0, seconds) * bytesPerSecond)
+        last = now
+        tokens -= Double(bytes)
+        guard tokens < 0 else { return .zero }
+        return .seconds(-tokens / bytesPerSecond)
+    }
+}
+
+/// The speed cap shared by every connection of one stream.
+actor UsenetRateLimiter {
+    private var bucket: UsenetTokenBucket
+
+    init?(megabitsPerSecond: Int) {
+        guard megabitsPerSecond > 0 else { return nil }
+        bucket = UsenetTokenBucket(megabitsPerSecond: megabitsPerSecond, now: .now)
+    }
+
+    func consume(_ bytes: Int) async throws {
+        let wait = bucket.take(bytes, now: .now)
+        if wait > .zero { try await Task.sleep(for: wait) }
+    }
+}
+
 /// Long-lived authenticated NNTP connections to one or more providers.
 ///
 /// Each server gets up to its `maxConnections`. An article is tried on the
@@ -18,13 +60,18 @@ actor UsenetConnectionPool {
 
     private var servers: [ServerState]
     private var closed = false
+    private let limiter: UsenetRateLimiter?
 
     /// Connections across all servers, the limit for concurrent fetches.
     nonisolated let totalConnections: Int
+    /// The speed cap in Mbit/s, 0 for none.
+    nonisolated let speedLimitMbps: Int
 
-    init(servers: [UsenetServerConfig]) {
+    init(servers: [UsenetServerConfig], speedLimitMbps: Int = 0) {
         self.servers = servers.map { ServerState(config: $0) }
         self.totalConnections = max(1, servers.reduce(0) { $0 + $1.maxConnections })
+        self.speedLimitMbps = max(0, speedLimitMbps)
+        self.limiter = UsenetRateLimiter(megabitsPerSecond: speedLimitMbps)
     }
 
     enum FetchOutcome: Sendable {
@@ -34,7 +81,11 @@ actor UsenetConnectionPool {
     }
 
     /// Fetches an article body, trying every server before giving up.
-    func fetch(messageID: String) async throws -> FetchOutcome {
+    /// `paced` fetches (playback) wait for the speed cap; start-up fetches don't.
+    func fetch(messageID: String, expectedBytes: Int = 0, paced: Bool = false) async throws -> FetchOutcome {
+        if paced, let limiter, expectedBytes > 0 {
+            try await limiter.consume(expectedBytes)
+        }
         switch try await run(messageID: messageID, statOnly: false) {
         case .body(let body): return .body(body)
         case .exists, .missing: return .missing

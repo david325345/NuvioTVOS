@@ -298,7 +298,7 @@ actor UsenetStreamSession {
         let segment = source.volumes[place.volume].segments[place.index]
         let pool = self.pool
         return Task {
-            let outcome = try await pool.fetch(messageID: segment.messageID)
+            let outcome = try await pool.fetch(messageID: segment.messageID, expectedBytes: segment.bytes, paced: true)
             switch outcome {
             case .body(let body):
                 let decoded = try await Self.decode(body)

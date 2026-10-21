@@ -31,6 +31,19 @@ enum UsenetSettings {
     static let serversKey = "nuvio.tv.settings.integrations.usenetServers"
     static let profileKey = "nuvio.tv.settings.integrations.usenetProfile"
     static let preferOwnServersKey = "nuvio.tv.settings.integrations.usenetPreferOwnServers"
+    static let speedLimitKey = "nuvio.tv.settings.integrations.usenetSpeedLimit"
+
+    /// Speed cap choices in Mbit/s; 0 means no cap.
+    static let speedLimitOptions = [0, 200, 100, 50, 25]
+
+    static func speedLimitMbps(store: UserDefaults = ProfileSettings.current) -> Int {
+        let value = store.integer(forKey: speedLimitKey)
+        return speedLimitOptions.contains(value) ? value : 0
+    }
+
+    static func setSpeedLimitMbps(_ value: Int, store: UserDefaults = ProfileSettings.current) {
+        store.set(speedLimitOptions.contains(value) ? value : 0, forKey: speedLimitKey)
+    }
 
     static func servers(store: UserDefaults = ProfileSettings.current) -> [UsenetSavedServer] {
         guard let data = store.data(forKey: serversKey),

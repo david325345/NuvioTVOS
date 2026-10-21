@@ -15,6 +15,7 @@ struct UsenetStreamStats: Equatable, Sendable {
     var fileName = ""
     var kind = ""
     var fileSize: Int64 = 0
+    var speedLimitMbps = 0
 
     var downloadRateFormatted: String {
         ByteCountFormatter.string(fromByteCount: Int64(downloadRate), countStyle: .file) + "/s"
@@ -29,7 +30,9 @@ struct UsenetStreamStats: Equatable, Sendable {
     /// HUD line 1: where the articles come from and how fast.
     var connectionLine: String {
         let host = server.isEmpty ? "Usenet" : server + (serverCount > 1 ? " +\(serverCount - 1)" : "")
-        return [host, "\(connectionsText) conn", downloadRateFormatted].joined(separator: " · ")
+        var parts = [host, "\(connectionsText) conn", downloadRateFormatted]
+        if speedLimitMbps > 0 { parts.append("max \(speedLimitMbps) Mbit/s") }
+        return parts.joined(separator: " · ")
     }
 
     /// HUD line 2: what the article cache holds and what went missing.
@@ -82,7 +85,7 @@ final class UsenetEngineManager: ObservableObject {
             throw UsenetError.noServers
         }
 
-        let pool = UsenetConnectionPool(servers: servers)
+        let pool = UsenetConnectionPool(servers: servers, speedLimitMbps: UsenetSettings.speedLimitMbps())
         do {
             let nzb = try await Self.loadNZB(spec.nzbURL)
             let resolver = UsenetReleaseResolver(nzb: nzb, pool: pool, mustInclude: spec.fileMustInclude, fileIdx: spec.fileIdx)
@@ -113,7 +116,8 @@ final class UsenetEngineManager: ObservableObject {
                 serverCount: servers.count,
                 fileName: source.name,
                 kind: source.kind.rawValue,
-                fileSize: source.totalSize
+                fileSize: source.totalSize,
+                speedLimitMbps: pool.speedLimitMbps
             )
             isStreaming = true
             Self.remember(source: spec.url.absoluteString, playback: url.absoluteString)

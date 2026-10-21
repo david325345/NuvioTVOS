@@ -68,4 +68,15 @@ jobs:
             -only-testing:NuvioTVTests/UsenetCoreTests \
             -only-testing:NuvioTVTests/UsenetNZBTests \
             -only-testing:NuvioTVTests/UsenetLayoutTests \
-            -only-testing:NuvioTVTests/UsenetServerTests -only-testing:NuvioTVTests/UsenetFormatTests -only-testing:NuvioTVTests/UsenetSourceTests
+            -only-testing:NuvioTVTests/UsenetServerTests \
+            -only-testing:NuvioTVTests/UsenetFormatTests \
+            -only-testing:NuvioTVTests/UsenetSourceTests \
+            -only-testing:NuvioTVTests/CalendarDayTests \
+            -only-testing:NuvioTVTests/CalendarBuilderTests \
+            -only-testing:NuvioTVTests/CalendarServiceTests \
+            -only-testing:NuvioTVTests/CalendarSuggestionTests \
+            -only-testing:NuvioTVTests/CalendarAnimeTodayTests \
+            -only-testing:NuvioTVTests/CalendarAnimeTimesTests \
+            -only-testing:NuvioTVTests/CalendarReadableTitleTests \
+            -only-testing:NuvioTVTests/DetailsEpisodeFocusTests \
+            -only-testing:NuvioTVTests/CalendarLibraryListTests

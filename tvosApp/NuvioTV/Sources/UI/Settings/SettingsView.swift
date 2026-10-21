@@ -15452,6 +15452,7 @@ private struct UsenetSettingsSection: View {
     @State private var isAddingServer = false
     @State private var profile = UsenetSettings.profile().rawValue
     @State private var prefersOwnServers = UsenetSettings.prefersOwnServers()
+    @State private var speedLimit = String(UsenetSettings.speedLimitMbps())
 
     var body: some View {
         SettingsGroup(
@@ -15487,6 +15488,17 @@ private struct UsenetSettingsSection: View {
                 accentColor: accentColor
             )
 
+            SettingsChoiceRow(
+                title: L10n.string("usenet_speed_limit_title", fallback: "Speed Limit"),
+                subtitle: L10n.string("usenet_speed_limit_subtitle", fallback: "Cap downloads while playing so buffering doesn't saturate your connection. 1080p needs about 5–10 Mbit/s, 4K remux up to 80."),
+                selection: $speedLimit,
+                options: UsenetSettings.speedLimitOptions.map(String.init),
+                optionLabels: Dictionary(uniqueKeysWithValues: UsenetSettings.speedLimitOptions.map {
+                    (String($0), $0 == 0 ? L10n.string("usenet_speed_unlimited", fallback: "Unlimited") : "\($0) Mbit/s")
+                }),
+                accentColor: accentColor
+            )
+
             SettingsToggleRow(
                 title: L10n.string("usenet_prefer_own_title", fallback: "Always Use My Servers"),
                 subtitle: L10n.string("usenet_prefer_own_subtitle", fallback: "Ignore servers an add-on sends with its streams. When off, yours are the fallback."),
@@ -15499,6 +15511,9 @@ private struct UsenetSettingsSection: View {
         }
         .onChange(of: prefersOwnServers) { _, value in
             UsenetSettings.setPrefersOwnServers(value)
+        }
+        .onChange(of: speedLimit) { _, value in
+            UsenetSettings.setSpeedLimitMbps(Int(value) ?? 0)
         }
         .onReceive(NotificationCenter.default.publisher(for: .usenetServersChanged)) { _ in
             model.reload()
