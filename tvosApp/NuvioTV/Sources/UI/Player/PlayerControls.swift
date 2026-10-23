@@ -14,6 +14,7 @@ enum PlayerControlFocus: Hashable {
 
 struct PlayerControls: View {
     @ObservedObject var viewModel: PlayerViewModel
+    var didReportPlaybackStarted: Bool = false
     var isSkipSegmentFocused: Bool = false
     var isNextEpisodeFocused: Bool = false
     @Binding var requestedFocus: PlayerControlFocus?
@@ -41,10 +42,11 @@ struct PlayerControls: View {
         .onChange(of: requestedFocus) { _, target in
             guard let target, viewModel.showControls, !viewModel.controlsAutoHideSuspended else { return }
             DispatchQueue.main.async {
-                if target == .timeline {
+                let resolvedTarget: PlayerControlFocus = target == .timeline && !didReportPlaybackStarted ? .settings : target
+                if resolvedTarget == .timeline {
                     focusedControl = .timeline
                 } else {
-                    focusedControl = isTransportButtonFocusable(target) ? target : (transportFocusOrder.first ?? .settings)
+                    focusedControl = isTransportButtonFocusable(resolvedTarget) ? resolvedTarget : (transportFocusOrder.first ?? .settings)
                 }
                 requestedFocus = nil
             }
@@ -55,13 +57,13 @@ struct PlayerControls: View {
             }
         }
         .onAppear {
-            if isPlaybackStarted,
+            if (viewModel.showControls || viewModel.isScrubbing),
                !viewModel.showPauseOverlay,
                !viewModel.postPlayState.isVisible,
                !isSkipSegmentFocused,
                !isNextEpisodeFocused {
                 DispatchQueue.main.async {
-                    focusedControl = viewModel.isLiveStream ? (transportFocusOrder.first ?? .settings) : .timeline
+                    focusedControl = initialFocusControl
                 }
             }
         }
@@ -74,7 +76,7 @@ struct PlayerControls: View {
                !isSkipSegmentFocused,
                !isNextEpisodeFocused {
                 DispatchQueue.main.async {
-                    focusedControl = viewModel.isLiveStream ? (transportFocusOrder.first ?? .settings) : .timeline
+                    focusedControl = initialFocusControl
                 }
             } else if status == .playing,
                viewModel.showControls,
@@ -84,7 +86,7 @@ struct PlayerControls: View {
                !isNextEpisodeFocused,
                focusedControl == nil {
                 DispatchQueue.main.async {
-                    focusedControl = viewModel.isLiveStream ? (transportFocusOrder.first ?? .settings) : .timeline
+                    focusedControl = initialFocusControl
                 }
             }
         }
@@ -92,17 +94,32 @@ struct PlayerControls: View {
             guard !viewModel.controlsAutoHideSuspended else { return }
             // Don't steal focus while the pause metadata sheet, loading, or post play owns the remote.
             if isVisible,
-               isPlaybackStarted,
                !viewModel.isSwitchingSource,
                !viewModel.showPauseOverlay,
                !viewModel.postPlayState.isVisible,
                !isSkipSegmentFocused,
                !isNextEpisodeFocused {
                 DispatchQueue.main.async {
-                    focusedControl = viewModel.isLiveStream ? (transportFocusOrder.first ?? .settings) : .timeline
+                    focusedControl = initialFocusControl
                 }
             } else if !isVisible {
                 focusedControl = nil
+            }
+        }
+        .onChange(of: viewModel.isSwitchingSource) { _, isSwitching in
+            guard !isSwitching,
+                  viewModel.showControls,
+                  !viewModel.controlsAutoHideSuspended,
+                  !viewModel.showSettingsPanel,
+                  !viewModel.showScenePanel,
+                  !viewModel.isSceneDetailVisible,
+                  viewModel.sidePanel == nil,
+                  !viewModel.postPlayState.isVisible,
+                  !viewModel.showPauseOverlay,
+                  !isSkipSegmentFocused,
+                  !isNextEpisodeFocused else { return }
+            DispatchQueue.main.async {
+                focusedControl = initialFocusControl
             }
         }
         .onChange(of: viewModel.isTimelineFocused) { _, isTimelineFocused in
@@ -115,13 +132,13 @@ struct PlayerControls: View {
                !isNextEpisodeFocused,
                focusedControl != .timeline {
                 DispatchQueue.main.async {
-                    focusedControl = viewModel.isLiveStream ? (transportFocusOrder.first ?? .settings) : .timeline
+                    focusedControl = initialFocusControl
                 }
             }
         }
         .onChange(of: viewModel.isLiveStream) { _, isLive in
             if isLive, focusedControl == .timeline {
-                DispatchQueue.main.async { focusedControl = transportFocusOrder.first ?? .settings }
+                DispatchQueue.main.async { focusedControl = initialFocusControl }
             }
         }
         .onChange(of: viewModel.showPauseOverlay) { _, visible in
@@ -139,14 +156,12 @@ struct PlayerControls: View {
             } else if canRestoreFocusAfterNextEpisode {
                 DispatchQueue.main.async {
                     guard canRestoreFocusAfterNextEpisode else { return }
-                    focusedControl = viewModel.isLiveStream
-                        ? (transportFocusOrder.first ?? .settings)
-                        : .timeline
+                    focusedControl = initialFocusControl
                 }
             }
         }
         .onChange(of: viewModel.isHoldingSeek) { _, isHolding in
-            guard !viewModel.controlsAutoHideSuspended else { return }
+            guard didReportPlaybackStarted, !viewModel.controlsAutoHideSuspended else { return }
             if isHolding, viewModel.showControls {
                 DispatchQueue.main.async {
                     focusedControl = .timeline
@@ -208,12 +223,16 @@ struct PlayerControls: View {
         viewModel.status == .playing || viewModel.status == .paused || viewModel.time.duration > 0 || viewModel.isLiveStream || viewModel.hasRenderedFirstFrame
     }
 
+    private var initialFocusControl: PlayerControlFocus {
+        guard didReportPlaybackStarted else { return .settings }
+        return viewModel.isLiveStream ? (transportFocusOrder.first ?? .settings) : .timeline
+    }
+
     /// Transport + timeline are focusable whenever chrome is up. Do not gate on
     /// `focusedControl != .timeline` — toggling `.focusable` when moving between
     /// buttons left Select dead after visiting settings/episodes/sources.
     private var controlsInteractable: Bool {
         (viewModel.showControls || viewModel.isScrubbing)
-            && isPlaybackStarted
             && !viewModel.isSwitchingSource
             && !viewModel.showPauseOverlay
             && !viewModel.showSettingsPanel
@@ -235,11 +254,11 @@ struct PlayerControls: View {
     /// Left-to-right order of currently visible transport buttons.
     private var transportFocusOrder: [PlayerControlFocus] {
         var order: [PlayerControlFocus] = []
-        if viewModel.isPictureInPictureSupported && playerShowPiP { order.append(.pip) }
+        if didReportPlaybackStarted && viewModel.isPictureInPictureSupported && playerShowPiP { order.append(.pip) }
         if viewModel.canShowEpisodesPanel && playerShowEpisodes { order.append(.episodes) }
         if viewModel.canShowSourcesPanel && playerShowSources { order.append(.sources) }
-        if canShowSubtitlePicker && playerShowSubtitles { order.append(.subtitles) }
-        if canShowAudioPicker && playerShowAudio { order.append(.audio) }
+        if didReportPlaybackStarted && canShowSubtitlePicker && playerShowSubtitles { order.append(.subtitles) }
+        if didReportPlaybackStarted && canShowAudioPicker && playerShowAudio { order.append(.audio) }
         order.append(.settings)
         return order
     }
@@ -277,6 +296,7 @@ struct PlayerControls: View {
     /// again so left/right still walks the full row.
     private func isTransportButtonFocusable(_ key: PlayerControlFocus) -> Bool {
         guard controlsInteractable else { return false }
+        guard key != .pip || didReportPlaybackStarted else { return false }
         if focusedControl == .timeline {
             return key == (transportFocusOrder.first ?? .settings)
         }
@@ -292,6 +312,7 @@ struct PlayerControls: View {
     private func handleMove(_ direction: MoveCommandDirection, from origin: PlayerControlFocus) {
         guard !isSkipSegmentFocused, !isNextEpisodeFocused else { return }
         guard controlsInteractable else { return }
+        guard origin != .timeline || didReportPlaybackStarted else { return }
         guard focusedControl != nil, !viewModel.controlsAutoHideSuspended else { return }
 
         // If we are currently holding to seek, stay on timeline and extend hold
@@ -321,7 +342,9 @@ struct PlayerControls: View {
         case .down:
             viewModel.cancelMoveSeekTracking()
             if origin != .timeline, !viewModel.isLiveStream {
-                moveFocus(to: .timeline)
+                if didReportPlaybackStarted {
+                    moveFocus(to: .timeline)
+                }
             } else if origin == .timeline, viewModel.isSceneEnabled {
                 viewModel.openScene()
             }
@@ -408,7 +431,7 @@ struct PlayerControls: View {
         HStack(spacing: 18) {
             Spacer()
 
-            if viewModel.isPictureInPictureSupported && playerShowPiP {
+            if didReportPlaybackStarted && viewModel.isPictureInPictureSupported && playerShowPiP {
                 glassIconButton(
                     size: 70,
                     iconSize: 28,
@@ -450,7 +473,7 @@ struct PlayerControls: View {
                 .id("sources_button")
             }
 
-            if canShowSubtitlePicker && playerShowSubtitles {
+            if didReportPlaybackStarted && canShowSubtitlePicker && playerShowSubtitles {
                 PlayerSubtitleMenuButton(
                     noneOption: subtitleNoneOption,
                     languageGroups: subtitleLanguageGroups,
@@ -460,12 +483,13 @@ struct PlayerControls: View {
                 .equatable()
                 .focused($focusedControl, equals: .subtitles)
                 .disabled(!isTransportButtonFocusable(.subtitles))
+                .onExitCommand(perform: handleExit)
                 .onMoveCommand { direction in
                     handleMove(direction, from: .subtitles)
                 }
             }
 
-            if canShowAudioPicker && playerShowAudio {
+            if didReportPlaybackStarted && canShowAudioPicker && playerShowAudio {
                 PlayerAudioMenuButton(
                     orderedTracks: orderedAudioTracks,
                     enhanceDialogueMode: viewModel.enhanceDialogueMode,
@@ -490,6 +514,7 @@ struct PlayerControls: View {
                 .equatable()
                 .focused($focusedControl, equals: .audio)
                 .disabled(!isTransportButtonFocusable(.audio))
+                .onExitCommand(perform: handleExit)
                 .onMoveCommand { direction in
                     handleMove(direction, from: .audio)
                 }
@@ -626,7 +651,7 @@ struct PlayerControls: View {
     // MARK: - Timeline
 
     private var isTimelineFocused: Bool {
-        focusedControl == .timeline || viewModel.isHoldingSeek
+        didReportPlaybackStarted && (focusedControl == .timeline || viewModel.isHoldingSeek)
     }
 
     @ViewBuilder
@@ -682,17 +707,21 @@ struct PlayerControls: View {
             .transaction { transaction in transaction.animation = nil }
         }
         .focusable(
-            (viewModel.showControls || viewModel.isScrubbing)
+            didReportPlaybackStarted
+                && (viewModel.showControls || viewModel.isScrubbing)
                 && !viewModel.showSettingsPanel
                 && !viewModel.showPauseOverlay
                 && !viewModel.showScenePanel
                 && !viewModel.isSceneDetailVisible
         )
         .focused($focusedControl, equals: .timeline)
+        .allowsHitTesting(didReportPlaybackStarted)
         .focusEffectDisabledIfAvailable()
         .onExitCommand(perform: handleExit)
         .onTapGesture {
-            viewModel.handleSelectTap()
+            if didReportPlaybackStarted {
+                viewModel.handleSelectTap()
+            }
         }
         .onMoveCommand { direction in
             // Timeline owns move while focused so hold-to-seek cannot promote
@@ -930,7 +959,7 @@ private struct PlayerAudioMenuButton: View, Equatable {
             if !humanLanguage.isEmpty {
                 return humanLanguage
             }
-            return rawName.isEmpty ? L10n.string("player_track_format", fallback: "Track \(track.id)") : rawName
+            return rawName.isEmpty ? L10n.format("player_track_format", fallback: "Track %d", track.id) : rawName
         }
 
         // 2. If name is just the language code (e.g. "eng", "en", "fra", "nob")
@@ -1614,6 +1643,7 @@ private func subtitlePanelOptions(for viewModel: PlayerViewModel) -> [SubtitlePa
 
 struct PlayerSettingsPanel: View {
     @ObservedObject var viewModel: PlayerViewModel
+    let didReportPlaybackStarted: Bool
     var onClose: () -> Void
 
     private enum Tab: String, CaseIterable, Hashable {
@@ -1668,6 +1698,14 @@ struct PlayerSettingsPanel: View {
     @State private var style = SubtitleStyle.current
     @FocusState private var focus: Focus?
 
+    private var visibleTabs: [Tab] {
+        didReportPlaybackStarted ? Tab.allCases : [.logs]
+    }
+
+    private var activeTab: Tab {
+        didReportPlaybackStarted ? tab : .logs
+    }
+
     var body: some View {
         ZStack(alignment: .topLeading) {
             LinearGradient(
@@ -1680,7 +1718,7 @@ struct PlayerSettingsPanel: View {
             VStack(alignment: .leading, spacing: 38) {
                 tabBar
 
-                switch tab {
+                switch activeTab {
                 case .subtitles: subtitlesPage
                 case .audio: audioPage
                 case .speed: speedPage
@@ -1697,7 +1735,10 @@ struct PlayerSettingsPanel: View {
             style = SubtitleStyle.current
             viewModel.setControlsAutoHideSuspended(true)
             DispatchQueue.main.async {
-                if let language = effectiveLanguage {
+                if !didReportPlaybackStarted {
+                    tab = .logs
+                    focus = .tab(.logs)
+                } else if let language = effectiveLanguage {
                     selectedLanguage = language
                     focus = .language(language)
                 } else {
@@ -1719,6 +1760,12 @@ struct PlayerSettingsPanel: View {
                 focus = .audioControl(.delayMinus)
             }
         }
+        .onChange(of: didReportPlaybackStarted) { _, isReady in
+            if !isReady {
+                tab = .logs
+                focus = .tab(.logs)
+            }
+        }
         .focusSection()
         .onExitCommand { onClose() }
     }
@@ -1727,10 +1774,15 @@ struct PlayerSettingsPanel: View {
 
     private var tabBar: some View {
         HStack(spacing: 22) {
-            ForEach(Tab.allCases, id: \.self) { item in
+            ForEach(visibleTabs, id: \.self) { item in
                 let isFocused = focus == .tab(item)
-                let isSelected = tab == item
+                let isSelected = activeTab == item
                 Button {
+                    guard didReportPlaybackStarted else {
+                        tab = .logs
+                        focus = .tab(.logs)
+                        return
+                    }
                     tab = item
                     if item == .audio && orderedAudioTracks.isEmpty {
                         focus = .audioControl(.delayMinus)
@@ -1860,7 +1912,7 @@ struct PlayerSettingsPanel: View {
             }
             .focusSection()
         }
-        .frame(width: 380, alignment: .leading)
+        .frame(width: 360, alignment: .leading)
     }
 
     private func languageRow(
@@ -1939,9 +1991,10 @@ struct PlayerSettingsPanel: View {
                     .padding(.vertical, 6)
                 }
                 .focusSection()
+                .scrollClipDisabledIfAvailable()
             }
         }
-        .frame(width: 460, alignment: .leading)
+        .frame(width: 580, alignment: .leading)
     }
 
     private func optionCard(_ option: SubtitlePanelOption) -> some View {
@@ -1954,7 +2007,7 @@ struct PlayerSettingsPanel: View {
                 viewModel.selectExternalSubtitle(subtitle)
             }
         } label: {
-            HStack(spacing: 14) {
+            HStack(alignment: .center, spacing: 14) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(option.badge)
                         .font(.system(size: 17, weight: .semibold))
@@ -1967,15 +2020,20 @@ struct PlayerSettingsPanel: View {
                     Text(option.title)
                         .font(.system(size: 28, weight: .semibold))
                         .foregroundColor(isFocused ? .black : .white)
-                        .lineLimit(1)
+                        .multilineTextAlignment(.leading)
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
                     if let detail = option.detail {
                         Text(detail)
                             .font(.system(size: 20, weight: .medium))
                             .foregroundColor(isFocused ? .black.opacity(0.52) : .white.opacity(0.5))
-                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                            .lineLimit(nil)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                Spacer(minLength: 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
                 if option.isSelected {
                     Image(systemName: "checkmark")
                         .font(.system(size: 27, weight: .bold))
@@ -2737,7 +2795,7 @@ private struct PlaybackLogsPage: View {
                 .buttonStyle(PosterCardButtonStyle())
             }
 
-            Text("Reproduce the issue, then read the latest events. The log keeps recent player and network diagnostics in memory.")
+            Text("Recent playback events are shown here. For crash details, collect the Apple TV unified log in Console (subsystem com.pyksel.nuviotvos, category playback-diagnostics).")
                 .font(.system(size: 20))
                 .foregroundColor(.white.opacity(0.55))
 

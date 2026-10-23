@@ -16,6 +16,235 @@ final class PlaybackBackendPolicyTests: XCTestCase {
     }
 
     @MainActor
+    func testHybridDiskCacheEligibilitySkipsLiveAndSportsRequests() {
+        let vod = PlaybackLoadRequest(videoURL: URL(string: "https://example.test/movie.mp4")!)
+        let live = PlaybackLoadRequest(
+            videoURL: URL(string: "https://example.test/channel.ts")!,
+            isLiveStream: true
+        )
+        let sports = PlaybackLoadRequest(
+            videoURL: URL(string: "https://example.test/event.ts")!,
+            isSports: true
+        )
+        let hls = PlaybackLoadRequest(videoURL: URL(string: "https://example.test/movie.m3u8")!)
+
+        XCTAssertTrue(PlaybackSessionCoordinator.shouldUseHybridDiskCache(isEnabled: true, request: vod))
+        XCTAssertFalse(PlaybackSessionCoordinator.shouldUseHybridDiskCache(isEnabled: true, request: live))
+        XCTAssertFalse(PlaybackSessionCoordinator.shouldUseHybridDiskCache(isEnabled: true, request: sports))
+        XCTAssertFalse(PlaybackSessionCoordinator.shouldUseHybridDiskCache(isEnabled: true, request: hls))
+        XCTAssertFalse(PlaybackSessionCoordinator.shouldUseHybridDiskCache(isEnabled: false, request: vod))
+    }
+
+    @MainActor
+    func testAutomaticLiveStartupFallbackHandsOffOnceWithoutResumeSeek() throws {
+        let aether = try XCTUnwrap(AetherPlaybackController())
+        var dispatched: [(PlaybackLoadRequest, PlayerBackendKind)] = []
+        let coordinator = PlaybackSessionCoordinator(
+            aetherController: aether,
+            engineSettingProvider: { "Auto" },
+            loadDispatcher: { request, backend, _ in dispatched.append((request, backend)) }
+        )
+        defer { coordinator.stopAll() }
+
+        coordinator.load(PlaybackLoadRequest(
+            videoURL: URL(string: "https://example.test/channel.ts")!,
+            resumePositionSeconds: 180,
+            isLiveStream: true
+        ))
+        let initialGeneration = coordinator.loadGeneration
+
+        XCTAssertTrue(coordinator.requestLiveStartupFallback(generation: initialGeneration))
+        XCTAssertEqual(coordinator.activeBackend, .mpv)
+        XCTAssertEqual(dispatched.map { $0.1 }, [.aether, .mpv])
+        XCTAssertNil(dispatched.last?.0.resumePositionSeconds)
+        XCTAssertFalse(coordinator.requestLiveStartupFallback(generation: coordinator.loadGeneration))
+    }
+
+    @MainActor
+    func testLiveStartupFallbackRespectsManualBackendAndStaleGeneration() throws {
+        let aether = try XCTUnwrap(AetherPlaybackController())
+        let coordinator = PlaybackSessionCoordinator(
+            aetherController: aether,
+            engineSettingProvider: { "AetherEngine" },
+            loadDispatcher: { _, _, _ in }
+        )
+        defer { coordinator.stopAll() }
+
+        coordinator.load(PlaybackLoadRequest(
+            videoURL: URL(string: "https://example.test/channel.ts")!,
+            isLiveStream: true
+        ))
+        let firstGeneration = coordinator.loadGeneration
+        XCTAssertFalse(coordinator.requestLiveStartupFallback(generation: firstGeneration))
+
+        coordinator.load(PlaybackLoadRequest(
+            videoURL: URL(string: "https://example.test/another-channel.ts")!,
+            isSports: true
+        ))
+        XCTAssertFalse(coordinator.requestLiveStartupFallback(generation: firstGeneration))
+        XCTAssertEqual(coordinator.activeBackend, .aether)
+    }
+
+    func testAetherLifecycleRetriesOneActiveCancellationOnly() {
+        XCTAssertTrue(AetherPlaybackLifecyclePolicy.shouldReloadAfterBackground(state: .loading))
+        XCTAssertTrue(AetherPlaybackLifecyclePolicy.shouldReloadAfterBackground(state: .seeking))
+        XCTAssertTrue(AetherPlaybackLifecyclePolicy.shouldResumeAfterBackground(
+            state: .seeking,
+            isPlayerPlaying: false,
+            isTransportPlaying: true,
+            previousIntent: false
+        ))
+        XCTAssertEqual(
+            AetherPlaybackLifecyclePolicy.reloadFailureDisposition(
+                isCancellation: true,
+                tokenIsCurrent: true,
+                applicationIsActive: true,
+                activeCancellationRetryCount: 0
+            ),
+            .retryAfterTaskClears
+        )
+        XCTAssertEqual(
+            AetherPlaybackLifecyclePolicy.reloadFailureDisposition(
+                isCancellation: true,
+                tokenIsCurrent: true,
+                applicationIsActive: true,
+                activeCancellationRetryCount: AetherPlaybackLifecyclePolicy.maximumActiveCancellationRetries
+            ),
+            .report
+        )
+        XCTAssertEqual(
+            AetherPlaybackLifecyclePolicy.reloadFailureDisposition(
+                isCancellation: false,
+                tokenIsCurrent: true,
+                applicationIsActive: true,
+                activeCancellationRetryCount: 0
+            ),
+            .report
+        )
+        XCTAssertEqual(
+            AetherPlaybackLifecyclePolicy.reloadFailureDisposition(
+                isCancellation: true,
+                tokenIsCurrent: true,
+                applicationIsActive: false,
+                activeCancellationRetryCount: 0
+            ),
+            .keepPending
+        )
+        XCTAssertEqual(
+            AetherPlaybackLifecyclePolicy.reloadFailureDisposition(
+                isCancellation: false,
+                tokenIsCurrent: false,
+                applicationIsActive: true,
+                activeCancellationRetryCount: 0
+            ),
+            .ignore
+        )
+    }
+
+    func testMPVLifecycleRestoreWaitsForActiveAppAndSettledDisplay() {
+        XCTAssertFalse(MPVPlaybackLifecyclePolicy.canIssueRestore(
+            pending: true,
+            applicationIsActive: false,
+            displayIsSafe: true
+        ))
+        XCTAssertFalse(MPVPlaybackLifecyclePolicy.canIssueRestore(
+            pending: true,
+            applicationIsActive: true,
+            displayIsSafe: false
+        ))
+        XCTAssertTrue(MPVPlaybackLifecyclePolicy.canIssueRestore(
+            pending: true,
+            applicationIsActive: true,
+            displayIsSafe: true
+        ))
+        XCTAssertFalse(MPVPlaybackLifecyclePolicy.canIssueRestore(
+            pending: false,
+            applicationIsActive: true,
+            displayIsSafe: true
+        ))
+    }
+
+    func testMPVLifecycleRestorePlansTargetSeekAndPreservesPauseIntent() {
+        let plan = MPVPlaybackLifecyclePolicy.restorePlan(
+            targetPositionMs: 80_000,
+            currentPositionMs: 130_000,
+            watchPartyControlled: false,
+            reachedEOF: false,
+            shouldResume: false
+        )
+        XCTAssertEqual(plan.seekTargetMs, 80_000)
+        XCTAssertFalse(plan.shouldResume)
+
+        let alreadyAtTarget = MPVPlaybackLifecyclePolicy.restorePlan(
+            targetPositionMs: 80_000,
+            currentPositionMs: 80_500,
+            watchPartyControlled: false,
+            reachedEOF: false,
+            shouldResume: true
+        )
+        XCTAssertNil(alreadyAtTarget.seekTargetMs)
+        XCTAssertTrue(alreadyAtTarget.shouldResume)
+
+        let watchPartyRestore = MPVPlaybackLifecyclePolicy.restorePlan(
+            targetPositionMs: 80_000,
+            currentPositionMs: 80_500,
+            watchPartyControlled: true,
+            reachedEOF: false,
+            shouldResume: true
+        )
+        XCTAssertEqual(watchPartyRestore.seekTargetMs, 80_000)
+        XCTAssertFalse(watchPartyRestore.shouldResume)
+    }
+
+    func testMPVExplicitTransportInputUpdatesIntentWhileRestoreWaitsForDisplay() {
+        XCTAssertFalse(MPVPlaybackLifecyclePolicy.updatingSavedPlayIntent(
+            currentIntent: true,
+            restoreIsPending: true,
+            playWasRequested: false
+        ))
+        XCTAssertTrue(MPVPlaybackLifecyclePolicy.updatingSavedPlayIntent(
+            currentIntent: false,
+            restoreIsPending: true,
+            playWasRequested: true
+        ))
+        XCTAssertTrue(MPVPlaybackLifecyclePolicy.updatingSavedPlayIntent(
+            currentIntent: true,
+            restoreIsPending: false,
+            playWasRequested: false
+        ))
+    }
+
+    func testMPVLateLifecycleRecoveryClearsOnlyItsRestoreFailure() {
+        XCTAssertTrue(MPVPlaybackLifecyclePolicy.hasRecovered(
+            targetPositionMs: 80_000,
+            durationIsAvailable: true,
+            currentPositionMs: 84_000,
+            reachedEOF: false
+        ))
+        XCTAssertFalse(MPVPlaybackLifecyclePolicy.hasRecovered(
+            targetPositionMs: 80_000,
+            durationIsAvailable: true,
+            currentPositionMs: 86_000,
+            reachedEOF: false
+        ))
+        XCTAssertFalse(MPVPlaybackLifecyclePolicy.hasRecovered(
+            targetPositionMs: 80_000,
+            durationIsAvailable: true,
+            currentPositionMs: 80_000,
+            reachedEOF: true
+        ))
+
+        let combinedError = "Decoder warning\n\(MPVPlaybackLifecyclePolicy.restoreFailureMessage)"
+        XCTAssertEqual(
+            MPVPlaybackLifecyclePolicy.removingRestoreFailure(from: combinedError),
+            "Decoder warning"
+        )
+        XCTAssertNil(MPVPlaybackLifecyclePolicy.removingRestoreFailure(
+            from: MPVPlaybackLifecyclePolicy.restoreFailureMessage
+        ))
+    }
+
+    @MainActor
     func testFailedStartupRetryPublishesErrorWithoutSourceWatchdog() {
         let coordinator = PlaybackSessionCoordinator(aetherControllerFactory: { nil }, engineSettingProvider: { "AetherEngine" }, loadDispatcher: { _, _, _ in XCTFail("Failed startup must not dispatch a load") })
         let model = PlayerViewModel(sessionCoordinator: coordinator)
@@ -159,6 +388,34 @@ final class PlaybackBackendPolicyTests: XCTestCase {
 
         XCTAssertNotNil(model.loadWatchdogTask)
         model.shutdown()
+    }
+
+    @MainActor
+    func testUnstartedVODWatchdogRearmsAfterAetherToMPVHandoff() throws {
+        let aether = try XCTUnwrap(AetherPlaybackController())
+        let coordinator = PlaybackSessionCoordinator(
+            aetherController: aether,
+            engineSettingProvider: { "Auto" },
+            loadDispatcher: { _, _, _ in }
+        )
+        let model = PlayerViewModel(sessionCoordinator: coordinator)
+        defer { model.shutdown() }
+        model.reloadCurrentStream = { _, _ in nil }
+        model.load(
+            url: URL(fileURLWithPath: "/tmp/vod-handoff-watchdog.mkv"),
+            meta: NuvioMeta(id: "tt7654321", name: "Handoff test", type: "movie"),
+            subtitle: "",
+            resumeFrom: nil
+        )
+        let oldWatchdog = try XCTUnwrap(model.loadWatchdogTask)
+        let initialGeneration = coordinator.loadGeneration
+
+        coordinator.handoffToMPV(reason: "startup test", resumeSeconds: 0)
+
+        let currentWatchdog = try XCTUnwrap(model.loadWatchdogTask)
+        XCTAssertGreaterThan(coordinator.loadGeneration, initialGeneration)
+        XCTAssertTrue(oldWatchdog.isCancelled)
+        XCTAssertFalse(currentWatchdog.isCancelled)
     }
 
     @MainActor
@@ -1741,6 +1998,186 @@ final class PlaybackBackendPolicyTests: XCTestCase {
         XCTAssertFalse(PlayerViewModel.shouldPreserveBackendSubtitleSelection(
             forced, preferredLanguages: ["Spanish"], allowForcedSubtitles: true
         ))
+        XCTAssertFalse(PlayerViewModel.shouldPreserveBackendSubtitleSelection(
+            SubtitleTrack(id: "4", name: "English Full", language: "eng", isSelected: true),
+            preferredLanguages: ["English"], requireForcedSubtitle: true
+        ))
+        XCTAssertTrue(PlayerViewModel.shouldPreserveBackendSubtitleSelection(
+            SubtitleTrack(id: "5", name: "English", language: "eng", isSelected: true, isForced: true),
+            preferredLanguages: ["English"], requireForcedSubtitle: true
+        ))
+    }
+
+    @MainActor
+    func testPreferredFullSubtitleOutranksForcedAndHasNoForcedOnlyFallback() {
+        let forced = SubtitleTrack(
+            id: "1", name: "English Forced", language: "eng", isSelected: true, isForced: true
+        )
+        let full = SubtitleTrack(
+            id: "2", name: "English Full", language: "eng", isSelected: false
+        )
+
+        XCTAssertFalse(PlayerViewModel.shouldPreserveBackendSubtitleSelection(
+            forced, preferredLanguages: ["English"], allowForcedSubtitles: false
+        ))
+        XCTAssertEqual(
+            PlayerViewModel.matchingPreferredFullSubtitle(in: [forced, full], language: "English")?.id,
+            "2"
+        )
+        XCTAssertNil(PlayerViewModel.matchingPreferredFullSubtitle(in: [forced], language: "English"))
+    }
+
+    @MainActor
+    func testAutomaticSubtitlePolicyFollowsPreferredAudioLanguage() {
+        let englishAudio = AudioTrack(id: "1", name: "English", language: "eng", isSelected: true)
+        let japaneseAudio = AudioTrack(id: "2", name: "Japanese", language: "jpn", isSelected: true)
+
+        XCTAssertEqual(
+            PlayerViewModel.automaticSubtitlePolicy(
+                selectedAudio: englishAudio,
+                preferredAudioLanguage: "English",
+                preferredSubtitleLanguages: ["Spanish"],
+                allowForcedSubtitles: true
+            ),
+            .forced(language: "English")
+        )
+        XCTAssertEqual(
+            PlayerViewModel.automaticSubtitlePolicy(
+                selectedAudio: englishAudio,
+                preferredAudioLanguage: "English",
+                preferredSubtitleLanguages: ["Spanish"],
+                allowForcedSubtitles: false
+            ),
+            .preferredLanguages(["Spanish"])
+        )
+        XCTAssertEqual(
+            PlayerViewModel.automaticSubtitlePolicy(
+                selectedAudio: englishAudio,
+                preferredAudioLanguage: "English",
+                preferredSubtitleLanguages: ["English", "Arabic"],
+                allowForcedSubtitles: false
+            ),
+            .preferredLanguages(["English", "Arabic"])
+        )
+        XCTAssertEqual(
+            PlayerViewModel.automaticSubtitlePolicy(
+                selectedAudio: englishAudio,
+                preferredAudioLanguage: "English",
+                preferredSubtitleLanguages: [],
+                allowForcedSubtitles: false
+            ),
+            .off
+        )
+        XCTAssertEqual(
+            PlayerViewModel.automaticSubtitlePolicy(
+                selectedAudio: japaneseAudio,
+                preferredAudioLanguage: "English",
+                preferredSubtitleLanguages: ["Spanish"],
+                allowForcedSubtitles: true
+            ),
+            .preferredLanguages(["Spanish"])
+        )
+    }
+
+    @MainActor
+    func testPersistedAudioSwitchReappliesAutomaticSubtitlePolicyAndKeepsManualSubtitle() throws {
+        let savedSubtitleLanguages = ProfileSettings.current.string(forKey: SettingsKey.subtitleLanguages)
+        let savedAudioLanguage = ProfileSettings.current.string(forKey: SettingsKey.audioLanguage)
+        let savedSmartMatching = ProfileSettings.current.object(forKey: SettingsKey.smartSubtitleMatching)
+        let savedForcedSubtitles = ProfileSettings.current.object(forKey: SettingsKey.forcedSubtitles)
+        let savedShowAudioLanguages = ProfileSettings.current.string(forKey: SettingsKey.showAudioLanguages)
+        addTeardownBlock {
+            if let savedSubtitleLanguages {
+                ProfileSettings.current.set(savedSubtitleLanguages, forKey: SettingsKey.subtitleLanguages)
+            } else {
+                ProfileSettings.current.removeObject(forKey: SettingsKey.subtitleLanguages)
+            }
+            if let savedAudioLanguage {
+                ProfileSettings.current.set(savedAudioLanguage, forKey: SettingsKey.audioLanguage)
+            } else {
+                ProfileSettings.current.removeObject(forKey: SettingsKey.audioLanguage)
+            }
+            if let savedSmartMatching {
+                ProfileSettings.current.set(savedSmartMatching, forKey: SettingsKey.smartSubtitleMatching)
+            } else {
+                ProfileSettings.current.removeObject(forKey: SettingsKey.smartSubtitleMatching)
+            }
+            if let savedForcedSubtitles {
+                ProfileSettings.current.set(savedForcedSubtitles, forKey: SettingsKey.forcedSubtitles)
+            } else {
+                ProfileSettings.current.removeObject(forKey: SettingsKey.forcedSubtitles)
+            }
+            if let savedShowAudioLanguages {
+                ProfileSettings.current.set(savedShowAudioLanguages, forKey: SettingsKey.showAudioLanguages)
+            } else {
+                ProfileSettings.current.removeObject(forKey: SettingsKey.showAudioLanguages)
+            }
+        }
+
+        ProfileSettings.current.set(SubtitleLanguagePreferences.encode(["English"]), forKey: SettingsKey.subtitleLanguages)
+        ProfileSettings.current.set("English", forKey: SettingsKey.audioLanguage)
+        ProfileSettings.current.set(true, forKey: SettingsKey.smartSubtitleMatching)
+        ProfileSettings.current.set(true, forKey: SettingsKey.forcedSubtitles)
+
+        let aether = try XCTUnwrap(AetherPlaybackController())
+        let coordinator = PlaybackSessionCoordinator(
+            aetherController: aether,
+            aetherControllerFactory: { aether },
+            engineSettingProvider: { "Auto" },
+            loadDispatcher: { _, _, _ in }
+        )
+        let model = PlayerViewModel(sessionCoordinator: coordinator)
+        defer {
+            model.shutdown()
+            coordinator.stopAll()
+        }
+
+        coordinator.load(PlaybackLoadRequest(videoURL: URL(string: "https://example.test/audio-switch.mkv")!))
+        let meta = NuvioMeta(id: "tt-subtitle-audio-switch", name: "Audio switch", type: "movie")
+        model.activeMeta = meta
+        let englishAudio = AudioTrack(id: "1", name: "English", language: "eng", isSelected: true)
+        let japaneseAudio = AudioTrack(id: "2", name: "Japanese", language: "jpn", isSelected: false)
+        model.audioTracks = [englishAudio, japaneseAudio]
+        model.subtitles = [
+            SubtitleTrack(id: "off", name: "Off", language: "", isSelected: false),
+            SubtitleTrack(id: "3", name: "English Forced", language: "eng", isSelected: true, isForced: true),
+            SubtitleTrack(id: "4", name: "Japanese Forced", language: "jpn", isSelected: false, isForced: true),
+            SubtitleTrack(id: "5", name: "English Full", language: "eng", isSelected: false)
+        ]
+        model.didApplySubtitlePreference = true
+
+        model.selectAudio(japaneseAudio)
+
+        XCTAssertEqual(ShowAudioLanguageStore.getLanguage(for: meta.id), "Japanese")
+        XCTAssertEqual(model.subtitles.first(where: { $0.isSelected })?.id, "4")
+
+        let manualFullSubtitle = model.subtitles.first(where: { $0.id == "5" })!
+        model.selectSubtitle(manualFullSubtitle)
+        model.selectAudio(englishAudio)
+
+        XCTAssertEqual(model.subtitles.first(where: { $0.isSelected })?.id, "5")
+    }
+
+    @MainActor
+    func testForcedSubtitleMatchingUsesBackendMetadataAndExternalTitleFallback() {
+        let full = SubtitleTrack(id: "1", name: "English Full", language: "eng", isSelected: false)
+        let forcedByMetadata = SubtitleTrack(
+            id: "2", name: "English", language: "eng", isSelected: false, isForced: true
+        )
+        let forcedByExternalTitle = SubtitleTrack(
+            id: "3", name: "English (Forced)", language: "eng", isSelected: false
+        )
+
+        XCTAssertTrue(PlayerViewModel.isForcedSubtitle(forcedByMetadata))
+        XCTAssertTrue(PlayerViewModel.isForcedSubtitle(forcedByExternalTitle))
+        XCTAssertEqual(
+            PlayerViewModel.matchingForcedSubtitle(in: [full, forcedByMetadata], language: "English")?.id,
+            "2"
+        )
+        XCTAssertEqual(
+            PlayerViewModel.matchingForcedSubtitle(in: [full, forcedByExternalTitle], language: "English")?.id,
+            "3"
+        )
     }
 
     @MainActor

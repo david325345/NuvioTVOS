@@ -8,7 +8,7 @@ struct PlayerWatchPartyPanel: View {
     @ObservedObject var owner: WatchPartyAppOwner
     @ObservedObject var service: WatchPartyService
     @FocusState.Binding var focusedControlID: String?
-    @FocusState.Binding var focusedTab: SceneTab?
+    let focusContext: ScenePanelWatchPartyFocusContext
     let isCurrentPlayerSurface: @MainActor () -> Bool
     let onOpenLobby: () -> Void
 
@@ -21,7 +21,7 @@ struct PlayerWatchPartyPanel: View {
     @State private var showingMemberRemovalConfirmation = false
     @State private var memberToRemove: WatchPartyMember?
     @State private var roomCodeQR: UIImage?
-    @State private var tabFocusRequestID = UUID()
+    @State private var chatToastsEnabled = ProfileSettings.current.object(forKey: SettingsKey.partyChatToastsEnabled) as? Bool ?? true
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -39,8 +39,8 @@ struct PlayerWatchPartyPanel: View {
             .padding(.bottom, 24)
         }
         .scrollClipDisabled()
+        .focusSection()
         .onDisappear {
-            tabFocusRequestID = UUID()
             pendingStreamShare = nil
             showingStreamWarning = false
         }
@@ -57,14 +57,22 @@ struct PlayerWatchPartyPanel: View {
             }
         }
         .onAppear {
-            if let code = service.session?.party?.code { roomCodeQR = QRCode.image(from: code) }
+            if let room = service.session {
+                if let code = room.party?.code {
+                    roomCodeQR = QRCode.image(from: code)
+                } else {
+                    roomCodeQR = nil
+                }
+                hasSharedStream = room.isSharingStream
+            }
+            normalizeEntryFocusIfNeeded()
         }
         .onChange(of: service.session?.party?.id) { oldID, newID in
             pendingStreamShare = nil
             showingStreamWarning = false
             hasSharedStream = false
             if oldID == nil, newID != nil {
-                focusWatchPartyTabAfterRoomCreation()
+                focusContext.focusTab(.watchParty)
             } else if oldID != nil, newID == nil {
                 focusedControlID = "party.create"
             }
@@ -72,10 +80,33 @@ struct PlayerWatchPartyPanel: View {
         .onChange(of: owner.presentation?.id) { _, presentationID in
             guard presentationID != nil,
                   service.session?.party != nil else { return }
-            focusWatchPartyTabAfterRoomCreation()
+            focusContext.focusTab(.watchParty)
         }
         .onChange(of: service.session?.party?.code) { _, code in
             roomCodeQR = code.flatMap { QRCode.image(from: $0) }
+        }
+        .onChange(of: service.session?.isSharingStream) { _, isSharing in
+            hasSharedStream = isSharing ?? false
+        }
+        .onChange(of: focusedControlID) { _, controlID in
+            focusContext.onFocusChanged(controlID)
+            guard let controlID else { return }
+            if !enabledFocusTargets.contains(controlID) || (focusContext.entryLocked && controlID != effectiveEntryFocusTarget) {
+                guard !enabledFocusTargets.isEmpty else {
+                    focusContext.onMoveUpFromContent()
+                    return
+                }
+                focusedControlID = effectiveEntryFocusTarget
+                focusContext.onFocusChanged(effectiveEntryFocusTarget)
+            }
+        }
+        .onChange(of: focusContext.entryLocked) { _, locked in
+            if !locked { normalizeEntryFocusIfNeeded() }
+        }
+        .onChange(of: enabledFocusTargets) { _, available in
+            guard !focusContext.entryLocked else { return }
+            if let current = focusedControlID, available.contains(current) { return }
+            normalizeEntryFocusIfNeeded()
         }
         .confirmationDialog("End this room for everyone?", isPresented: $endingRoom) {
             Button("End room", role: .destructive) {
@@ -121,7 +152,8 @@ struct PlayerWatchPartyPanel: View {
         .focusEffectDisabledIfAvailable()
         .focused($focusedControlID, equals: "party.create")
         .onMoveCommand(perform: handleFocusMove)
-        .disabled(service.busy || operation != nil || service.membershipOutcomeUncertain)
+        .disabled(service.busy || operation != nil || service.membershipOutcomeUncertain
+            || (focusContext.entryLocked && "party.create" != effectiveEntryFocusTarget))
     }
 
     @ViewBuilder
@@ -138,7 +170,7 @@ struct PlayerWatchPartyPanel: View {
         .buttonStyle(PosterCardButtonStyle())
         .focusEffectDisabledIfAvailable()
         .focused($focusedControlID, equals: "party.lobby")
-        .disabled(operation != nil)
+        .disabled(operation != nil || (focusContext.entryLocked && "party.lobby" != effectiveEntryFocusTarget))
 
         if isTopRow {
             button.onMoveCommand(perform: handleFocusMove)
@@ -232,7 +264,9 @@ struct PlayerWatchPartyPanel: View {
                         .buttonStyle(PosterCardButtonStyle())
                         .focusEffectDisabledIfAvailable()
                         .focused($focusedControlID, equals: "party.member.\(member.id)")
-                        .disabled(service.busy || operation != nil)
+                        .onMoveCommand(perform: handleFocusMove)
+                        .disabled(service.busy || operation != nil
+                            || (focusContext.entryLocked && "party.member.\(member.id)" != effectiveEntryFocusTarget))
                         .accessibilityLabel(canRemove
                             ? "Remove \(member.displayName) from the room"
                             : "\(member.displayName), \(memberStatus(room.presence[member.id]?.status))")
@@ -285,7 +319,8 @@ struct PlayerWatchPartyPanel: View {
                     .focusEffectDisabledIfAvailable()
                     .focused($focusedControlID, equals: "party.hostOnly")
                     .onMoveCommand(perform: handleFocusMove)
-                    .disabled(service.busy || operation != nil || room.connection != .ready)
+                    .disabled(service.busy || operation != nil || room.connection != .ready
+                        || (focusContext.entryLocked && "party.hostOnly" != effectiveEntryFocusTarget))
 
                     let shareFocused = focusedControlID == "party.shareStream"
                     Button {
@@ -306,16 +341,18 @@ struct PlayerWatchPartyPanel: View {
                             title: "Share my stream · BETA",
                             subtitle: "Share this playback link with guests (may expose Debrid tokens)",
                             symbol: "antenna.radiowaves.left.and.right",
-                            value: hasSharedStream ? "Sent" : "Off",
+                            value: (room.isSharingStream || hasSharedStream) ? "Sharing" : "Off",
                             isFocused: shareFocused
                         )
                     }
                     .buttonStyle(PosterCardButtonStyle())
                     .focusEffectDisabledIfAvailable()
                     .focused($focusedControlID, equals: "party.shareStream")
+                    .onMoveCommand(perform: handleFocusMove)
                     .disabled(service.busy || operation != nil || room.connection != .ready
-                        || owner.presentation?.mount.isCurrent != true)
-                    if hasSharedStream {
+                        || owner.presentation?.mount.isCurrent != true
+                        || (focusContext.entryLocked && "party.shareStream" != effectiveEntryFocusTarget))
+                    if room.isSharingStream || hasSharedStream {
                         Button {
                             run {
                                 try await room.stopSharingStream()
@@ -327,7 +364,8 @@ struct PlayerWatchPartyPanel: View {
                         }
                         .buttonStyle(PosterCardButtonStyle())
                         .focused($focusedControlID, equals: "party.stopSharing")
-                        .disabled(service.busy || operation != nil || room.connection != .ready)
+                        .disabled(service.busy || operation != nil || room.connection != .ready
+                            || (focusContext.entryLocked && "party.stopSharing" != effectiveEntryFocusTarget))
                     }
                 } else {
                     if room.sharedStream != nil {
@@ -348,6 +386,24 @@ struct PlayerWatchPartyPanel: View {
                     openLobbyButton(isTopRow: !isHost)
                 }
 
+                let chatToastsFocused = focusedControlID == "party.chatToasts"
+                Button {
+                    chatToastsEnabled.toggle()
+                    ProfileSettings.current.set(chatToastsEnabled, forKey: SettingsKey.partyChatToastsEnabled)
+                } label: {
+                    actionLabel(
+                        title: "Chat message toasts",
+                        subtitle: chatToastsEnabled ? "Message bubbles appear during playback" : "Muted during playback",
+                        symbol: chatToastsEnabled ? "bubble.left.fill" : "bubble.left",
+                        value: chatToastsEnabled ? "On" : "Off",
+                        isFocused: chatToastsFocused
+                    )
+                }
+                .buttonStyle(PosterCardButtonStyle())
+                .focusEffectDisabledIfAvailable()
+                .focused($focusedControlID, equals: "party.chatToasts")
+                .onMoveCommand(perform: handleFocusMove)
+
                 let leaveFocused = focusedControlID == "party.leave"
                 Button {
                     run { try await owner.leaveRoomPreservingPlayback() }
@@ -362,7 +418,8 @@ struct PlayerWatchPartyPanel: View {
                 .buttonStyle(PosterCardButtonStyle())
                 .focusEffectDisabledIfAvailable()
                 .focused($focusedControlID, equals: "party.leave")
-                .disabled(service.busy || operation != nil)
+                .disabled(service.busy || operation != nil
+                    || (focusContext.entryLocked && "party.leave" != effectiveEntryFocusTarget))
 
                 if isHost {
                     let endFocused = focusedControlID == "party.endRoom"
@@ -377,7 +434,8 @@ struct PlayerWatchPartyPanel: View {
                     .buttonStyle(PosterCardButtonStyle())
                     .focusEffectDisabledIfAvailable()
                     .focused($focusedControlID, equals: "party.endRoom")
-                    .disabled(service.busy || operation != nil)
+                    .disabled(service.busy || operation != nil
+                        || (focusContext.entryLocked && "party.endRoom" != effectiveEntryFocusTarget))
                 }
             }
                 inlineStatus
@@ -398,7 +456,8 @@ struct PlayerWatchPartyPanel: View {
         .buttonStyle(PosterCardButtonStyle())
         .focusEffectDisabledIfAvailable()
         .focused($focusedControlID, equals: "party.catchUp")
-        .disabled(service.busy || room.connection != .ready)
+        .disabled(service.busy || room.connection != .ready
+            || (focusContext.entryLocked && "party.catchUp" != effectiveEntryFocusTarget))
 
         if isTopRow {
             button.onMoveCommand(perform: handleFocusMove)
@@ -434,9 +493,12 @@ struct PlayerWatchPartyPanel: View {
     }
 
     private func safeAvatarURL(_ rawValue: String?) -> URL? {
-        guard let rawValue, rawValue.count <= 512,
-              rawValue.hasPrefix(AuthConfig.currentConfiguration.normalizedBackendURL + "/storage/v1/object/public/avatars/"),
-              let url = URL(string: rawValue), url.scheme?.lowercased() == "https", url.host != nil else { return nil }
+        guard let rawValue = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              rawValue.count <= 2048,
+              let url = URL(string: rawValue),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "https" || scheme == "http",
+              url.host != nil else { return nil }
         return url
     }
 
@@ -590,22 +652,56 @@ struct PlayerWatchPartyPanel: View {
 
     private func handleFocusMove(_ direction: MoveCommandDirection) {
         guard direction == .up else { return }
-        focusedControlID = nil
-        focusedTab = .watchParty
+        focusContext.onMoveUpFromContent()
     }
 
-    private func focusWatchPartyTabAfterRoomCreation() {
-        let requestID = UUID()
-        tabFocusRequestID = requestID
-        focusedControlID = nil
-        focusedTab = nil
-        Task { @MainActor in
-            await Task.yield()
-            await Task.yield()
-            guard tabFocusRequestID == requestID,
-                  service.session?.party != nil else { return }
-            focusedTab = .watchParty
+    private var enabledFocusTargets: [String] {
+        guard let room = service.session, let party = room.party else {
+            return service.busy || operation != nil || service.membershipOutcomeUncertain ? [] : ["party.create"]
         }
+        let requestBusy = service.busy || operation != nil
+        var ids = requestBusy ? [] : room.members.map { "party.member.\($0.id)" }
+        let isHost = party.hostMemberID == room.memberID
+        if isHost {
+            if !requestBusy && room.connection == .ready {
+                ids.append("party.hostOnly")
+                if owner.presentation?.mount.isCurrent == true {
+                    ids.append("party.shareStream")
+                }
+                if hasSharedStream && !requestBusy && room.connection == .ready {
+                    ids.append("party.stopSharing")
+                }
+            }
+        }
+        if owner.presentation?.mount.isCurrent == true {
+            if !service.busy && room.connection == .ready { ids.append("party.catchUp") }
+        } else if operation == nil {
+            ids.append("party.lobby")
+        }
+        if !requestBusy {
+            ids.append("party.leave")
+            if isHost { ids.append("party.endRoom") }
+        }
+        return ids
+    }
+
+    private var effectiveEntryFocusTarget: String {
+        if enabledFocusTargets.contains(focusContext.entryFocusTarget) { return focusContext.entryFocusTarget }
+        if enabledFocusTargets.contains(focusContext.entryFallbackTarget) { return focusContext.entryFallbackTarget }
+        return enabledFocusTargets.first ?? ""
+    }
+
+    private func normalizeEntryFocusIfNeeded() {
+        guard !focusContext.entryLocked else { return }
+        let current = focusedControlID
+        if let current, enabledFocusTargets.contains(current) { return }
+        guard !enabledFocusTargets.isEmpty else {
+            focusContext.onMoveUpFromContent()
+            return
+        }
+        let target = effectiveEntryFocusTarget
+        focusedControlID = target
+        focusContext.onFocusChanged(target)
     }
 
     private func connectionText(_ state: WatchPartyConnectionState) -> String {

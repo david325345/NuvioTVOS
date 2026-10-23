@@ -269,6 +269,9 @@ struct PlayerLoadingOverlay: View {
     var startTime: Date? = nil
     var showTimer: Bool = true
     var onDismiss: (() -> Void)? = nil
+    var focusEnabled: Bool = true
+    var onSelect: (() -> Void)? = nil
+    var onMove: ((MoveCommandDirection) -> Void)? = nil
 
     @AppStorage(SettingsKey.showLoadingStatus) private var showLoadingStatus = true
     @FocusState private var isFocusActive: Bool
@@ -287,8 +290,19 @@ struct PlayerLoadingOverlay: View {
             #if os(tvOS)
             Color.clear
                 .frame(width: 1, height: 1)
-                .focusable(true)
+                .contentShape(Rectangle())
+                .focusable(focusEnabled)
                 .focused($isFocusActive)
+                .onTapGesture {
+                    if focusEnabled {
+                        onSelect?()
+                    }
+                }
+                .onMoveCommand { direction in
+                    if focusEnabled {
+                        onMove?(direction)
+                    }
+                }
             #endif
 
             // 1. Solid Black Base
@@ -510,17 +524,28 @@ struct PlayerLoadingOverlay: View {
         .ignoresSafeArea()
         #if os(tvOS)
         .onExitCommand {
-            onDismiss?()
+            if focusEnabled {
+                onDismiss?()
+            }
         }
         #endif
         .onAppear {
             isPulsing = true
             #if os(tvOS)
             DispatchQueue.main.async {
-                isFocusActive = true
+                isFocusActive = focusEnabled
             }
             #endif
         }
+        #if os(tvOS)
+        .onChange(of: focusEnabled) { _, enabled in
+            if enabled {
+                DispatchQueue.main.async { isFocusActive = focusEnabled }
+            } else {
+                isFocusActive = false
+            }
+        }
+        #endif
     }
 
     @ViewBuilder

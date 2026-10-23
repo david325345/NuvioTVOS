@@ -38,7 +38,11 @@ enum WatchPartyLaunchPolicy {
             season: episode?.season,
             episode: episode?.episode,
             title: meta.name,
-            episodeTitle: episode?.title
+            episodeTitle: episode?.title,
+            description: meta.description,
+            poster: meta.posterUrl,
+            background: meta.backgroundUrl,
+            logo: meta.logoUrl
         )
         try validate(media)
         return media
@@ -64,5 +68,59 @@ enum WatchPartyLaunchPolicy {
         try validate(selection)
         try validate(room)
         guard selection.key == room.key else { throw WatchPartyLaunchError.differentMedia }
+    }
+}
+
+
+/// Presentation policy for explicit confirmation after the room changes content.
+/// Identity uses the canonical media key, never the displayed title.
+enum WatchPartyMediaReviewPolicy {
+    static func changed(from oldKey: String?, to newKey: String?) -> Bool {
+        guard let oldKey, let newKey else { return false }
+        return oldKey != newKey
+    }
+
+    static func needsConfirmation(previewKey: String, joinedKey: String) -> Bool {
+        previewKey != joinedKey
+    }
+}
+
+/// Prefer an enabled control when the sidebar regains focus after room operations.
+enum WatchPartyRoomFocusPolicy {
+    static func initialAction(hasRoom: Bool, membershipEnded: Bool,
+                              connectionReady: Bool, playerAttached: Bool,
+                              busy: Bool, needsMediaReview: Bool = false) -> String? {
+        guard !busy else { return nil }
+        guard hasRoom else { return "room-code" }
+        if membershipEnded { return "leave" }
+        if !connectionReady { return "reconnect" }
+        if needsMediaReview { return "review-room" }
+        return playerAttached ? "return-to-player" : "choose-source"
+    }
+}
+
+
+/// Local Details presentation belongs to an exact accepted membership. It never starts playback.
+enum WatchPartyDetailsPresentationPolicy {
+    static func sameMembership(_ origin: WatchPartyPlaybackContext,
+                               _ current: WatchPartyPlaybackContext) -> Bool {
+        origin.request == current.request && origin.membershipID == current.membershipID
+            && origin.roomID == current.roomID && origin.memberID == current.memberID
+    }
+
+    /// A server may omit artwork. Only fill presentation fields for the exact same title/episode.
+    static func artwork(for media: WatchPartyMedia, fallback: WatchPartyMedia?) -> WatchPartyMedia {
+        let fallback = fallback?.key == media.key ? fallback : nil
+        var result = media
+        result.poster = nonblank(media.poster) ?? nonblank(fallback?.poster)
+        result.background = nonblank(media.background) ?? nonblank(fallback?.background)
+        result.logo = nonblank(media.logo) ?? nonblank(fallback?.logo)
+        return result
+    }
+
+    private static func nonblank(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else { return nil }
+        return value
     }
 }

@@ -2,8 +2,8 @@ import Foundation
 
 /// Global feature configuration for Watch Party capabilities.
 enum WatchPartyConfiguration {
-    /// Disabled until server coordination and room UX are fully ready.
-    static let isEnabled = false
+    /// Enables Watch Party capabilities across tvOS tabs, details, and player.
+    static let isEnabled = true
 }
 
 // Sync semantics adapted from NuvioMedia/NuvioTV (GPL-3.0),

@@ -43,6 +43,7 @@ struct PlayerView: View {
     var initialStartupBenchmarkToken: UUID? = nil
     var autoPlayNextEnabled: Bool = true
     var autoPlayNextCountdownSeconds: Int = 10
+    var allowsManualEpisodeSelection: Bool = true
     /// Resolves a next episode into a ready-to-play stream (add-on fetch + smart
     /// selection), supplied by the app layer. Nil disables auto-advance.
     var resolveNextStream: ((NuvioVideo, UUID?) async -> PreparedNextStream?)? = nil
@@ -60,6 +61,9 @@ struct PlayerView: View {
         _ subtitleLine: String,
         _ startupToken: UUID?
     ) async -> PreparedNextStream?)? = nil
+    var onWatchPartyIncomingMediaResolved: WatchPartyIncomingEpisodePlan.Completion? = nil
+    var onWatchPartyEpisodeResolved: (@MainActor (NuvioVideo, PreparedNextStream) async -> Bool)? = nil
+    var onWatchPartySourceChanged: (@MainActor () async -> Void)? = nil
     var onRequestSources: (() -> Void)? = nil
     var onFinished: (() -> Void)? = nil
     var onPlaybackStarted: (() -> Void)? = nil
@@ -99,10 +103,14 @@ struct PlayerView: View {
         initialStartupBenchmarkToken: UUID? = nil,
         autoPlayNextEnabled: Bool = true,
         autoPlayNextCountdownSeconds: Int = 10,
+        allowsManualEpisodeSelection: Bool = true,
         resolveNextStream: ((NuvioVideo, UUID?) async -> PreparedNextStream?)? = nil,
         reloadCurrentStream: ((NuvioVideo?, [String]) async -> PreparedNextStream?)? = nil,
         fetchPlaybackSources: ((String, String) -> AsyncStream<[NuvioStream]>)? = nil,
         resolvePlaybackStream: ((NuvioStream, String, String, UUID?) async -> PreparedNextStream?)? = nil,
+        onWatchPartyIncomingMediaResolved: WatchPartyIncomingEpisodePlan.Completion? = nil,
+        onWatchPartyEpisodeResolved: (@MainActor (NuvioVideo, PreparedNextStream) async -> Bool)? = nil,
+        onWatchPartySourceChanged: (@MainActor () async -> Void)? = nil,
         onRequestSources: (() -> Void)? = nil,
         onFinished: (() -> Void)? = nil,
         onPlaybackStarted: (() -> Void)? = nil,
@@ -143,11 +151,15 @@ struct PlayerView: View {
         self.currentEpisode = currentEpisode
         self.initialStartupBenchmarkToken = initialStartupBenchmarkToken
         self.autoPlayNextEnabled = autoPlayNextEnabled
+        self.allowsManualEpisodeSelection = allowsManualEpisodeSelection
         self.autoPlayNextCountdownSeconds = autoPlayNextCountdownSeconds
         self.resolveNextStream = resolveNextStream
         self.reloadCurrentStream = reloadCurrentStream
         self.fetchPlaybackSources = fetchPlaybackSources
         self.resolvePlaybackStream = resolvePlaybackStream
+        self.onWatchPartyIncomingMediaResolved = onWatchPartyIncomingMediaResolved
+        self.onWatchPartyEpisodeResolved = onWatchPartyEpisodeResolved
+        self.onWatchPartySourceChanged = onWatchPartySourceChanged
         self.onRequestSources = onRequestSources
         self.onFinished = onFinished
         self.onPlaybackStarted = onPlaybackStarted
@@ -203,6 +215,16 @@ struct PlayerView: View {
         DispatchQueue.main.async {
             guard viewModel.currentErrorDiagnostic == nil else { return }
             remoteInputFocused = true
+        }
+    }
+
+    func revealControlsAndFocusSettings() {
+        guard !viewModel.isSwitchingSource else { return }
+        viewModel.setControlsAutoHideSuspended(false)
+        viewModel.revealControls()
+        DispatchQueue.main.async {
+            guard viewModel.showControls else { return }
+            requestedControlFocus = .settings
         }
     }
 

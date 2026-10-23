@@ -92,6 +92,23 @@ extension WatchPartyStream {
     }
 }
 
+/// Presentation-only guest status. Never expose URL, query, headers or source metadata.
+/// Realtime stream events are not persisted in room snapshots. An absent stream
+/// is not proof that the host never shared; it may have been sent before joining
+/// or cleared when the connection was lost.
+enum WatchPartySharedSourceNotice {
+    static func text(hostName: String?, stream: WatchPartyStream?, mediaKey: String,
+                     isGuest: Bool, connected: Bool) -> String? {
+        guard isGuest, connected else { return nil }
+        let raw = hostName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let name = raw.isEmpty ? "The host" : String(raw.prefix(48))
+        if let stream, stream.mediaKey == mediaKey {
+            return "\(name) shared a source (Beta). Select Use host's source to try it, or choose your own source. Provider restrictions may apply."
+        }
+        return "No shared source available right now. If \(name) already shared a link, ask them to share it again. Or choose your own source."
+    }
+}
+
 struct WatchPartyStreamCandidate {
     let stream: NuvioStream
     let metadata: WatchPartyStream
