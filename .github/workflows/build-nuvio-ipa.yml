@@ -80,4 +80,6 @@ jobs:
             -only-testing:NuvioTVTests/CalendarReadableTitleTests \
             -only-testing:NuvioTVTests/DetailsEpisodeFocusTests \
             -only-testing:NuvioTVTests/HeroRatingsTests \
+            -only-testing:NuvioTVTests/ExternalRatingsTests \
+            -only-testing:NuvioTVTests/MdbListRatingsTests \
             -only-testing:NuvioTVTests/CalendarLibraryListTests
