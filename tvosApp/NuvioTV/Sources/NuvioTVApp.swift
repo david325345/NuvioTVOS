@@ -8,6 +8,7 @@
 import SwiftUI
 import Combine
 import Foundation
+import Observation
 import UIKit
 import ImageIO
 import OSLog
@@ -3713,6 +3714,19 @@ private struct CrossfadingBackdrop: View {
     @State private var outgoingOpacity = 0.0
     @State private var imageOpacity = 1.0
 
+    init(url: String?, placeholder: Color, alignment: Alignment = .center) {
+        self.url = url
+        self.placeholder = placeholder
+        self.alignment = alignment
+        // Already decoded (e.g. by the hero settle or a prefetch): draw it on
+        // the first frame instead of the placeholder colour.
+        if let url, let imageURL = URL(string: url),
+           let cached = BackdropImageCache.shared.cachedImage(for: imageURL) {
+            _image = State(initialValue: cached)
+            _loadedURL = State(initialValue: url)
+        }
+    }
+
     var body: some View {
         // Read the displayed state outside the GeometryReader so the body
         // depends on it. Reads that only happen inside the reader's content
@@ -3741,8 +3755,22 @@ private struct CrossfadingBackdrop: View {
             .frame(width: proxy.size.width, height: proxy.size.height)
             .clipped()
         }
+        // An image the hero settle already decoded starts its crossfade in
+        // the same update as the new title text, not a frame or two later.
+        .onAppear { showCachedImageIfReady(url) }
+        .onChange(of: url) { _, newURL in showCachedImageIfReady(newURL) }
         .task(id: url) {
-            guard let url, url != loadedURL, let imageURL = URL(string: url) else {
+            if let url, url == loadedURL {
+                // Swapped in synchronously from the memory cache; just finish
+                // the crossfade.
+                guard outgoingImage != nil else { return }
+                try? await Task.sleep(nanoseconds: 320_000_000)
+                guard !Task.isCancelled, loadedURL == url else { return }
+                outgoingImage = nil
+                outgoingOpacity = 0
+                return
+            }
+            guard let url, let imageURL = URL(string: url) else {
                 outgoingImage = nil
                 outgoingOpacity = 0
                 return
@@ -3754,23 +3782,40 @@ private struct CrossfadingBackdrop: View {
             // `.task(id:)` cancels when `url` changes, so reaching here means this
             // URL is still the focused one. Cancellation leaves the old image up.
             guard !Task.isCancelled else { return }
-            let previousImage = image
-            if previousImage != nil {
-                outgoingImage = previousImage
-                outgoingOpacity = 1
-            }
-            image = loaded
-            loadedURL = url
-            imageOpacity = previousImage == nil ? 1 : 0
-
-            withAnimation(.easeInOut(duration: 0.30)) {
-                imageOpacity = 1
-                outgoingOpacity = 0
-            }
+            beginCrossfade(to: loaded, url: url)
 
             try? await Task.sleep(nanoseconds: 300_000_000)
             guard !Task.isCancelled, loadedURL == url else { return }
             outgoingImage = nil
+            outgoingOpacity = 0
+        }
+    }
+
+    private func showCachedImageIfReady(_ newURL: String?) {
+        guard let newURL, newURL != loadedURL,
+              let imageURL = URL(string: newURL),
+              let cached = BackdropImageCache.shared.cachedImage(for: imageURL) else { return }
+        beginCrossfade(to: cached, url: newURL)
+    }
+
+    private func beginCrossfade(to newImage: UIImage, url newURL: String) {
+        let previousImage = image
+        // The swap itself must not inherit an animation from the change that
+        // triggered it (Grid hero slides switch inside `withAnimation`).
+        var setup = Transaction()
+        setup.disablesAnimations = true
+        withTransaction(setup) {
+            if previousImage != nil {
+                outgoingImage = previousImage
+                outgoingOpacity = 1
+            }
+            image = newImage
+            loadedURL = newURL
+            imageOpacity = previousImage == nil ? 1 : 0
+        }
+
+        withAnimation(.easeInOut(duration: 0.30)) {
+            imageOpacity = 1
             outgoingOpacity = 0
         }
     }
@@ -3797,7 +3842,10 @@ extension CrossfadingBackdrop: Equatable {
 
 /// Small in-memory cache + loader for backdrop images so revisiting a poster is
 /// instant (no decode flicker) and repeated focus changes don't refetch.
-actor BackdropImageCache {
+/// A lock-protected class rather than an actor: views read decoded images
+/// synchronously in the same update that changes the URL, so the hero text,
+/// logo and backdrop switch in one frame instead of an actor hop apart.
+final class BackdropImageCache: @unchecked Sendable {
     static let shared = BackdropImageCache()
     private static let tracker = NSCacheMemoryTracker(
         maxCost: {
@@ -3817,6 +3865,7 @@ actor BackdropImageCache {
     }
 
     private let cache = NSCache<NSString, UIImage>()
+    private let lock = NSLock()
     private var inFlight: [String: Task<UIImage?, Never>] = [:]
 
     init() {
@@ -3828,9 +3877,7 @@ actor BackdropImageCache {
             object: nil,
             queue: nil
         ) { _ in
-            Task {
-                await BackdropImageCache.shared.purge()
-            }
+            BackdropImageCache.shared.purge()
         }
         #endif
     }
@@ -3842,26 +3889,59 @@ actor BackdropImageCache {
         Self.tracker.reset()
     }
 
-    func image(for url: URL) async -> UIImage? {
-        let key = url.absoluteString as NSString
-        if let cached = cache.object(forKey: key) { return cached }
-        if let pending = inFlight[url.absoluteString] { return await pending.value }
+    /// The decoded image when it is already in memory. Never downloads.
+    func cachedImage(for url: URL) -> UIImage? {
+        cache.object(forKey: url.absoluteString as NSString)
+    }
+
+    /// `minimumBytes` rejects error pages posing as artwork; small rating
+    /// icons pass 0. Non-HTTP responses (`data:` icon URLs) are accepted.
+    func image(
+        for url: URL,
+        priority: TaskPriority = .userInitiated,
+        minimumBytes: Int = 512
+    ) async -> UIImage? {
+        let key = url.absoluteString
+        if let cached = cache.object(forKey: key as NSString) { return cached }
         let pixelSize = Self.maxPixelSize
-        let task = Task.detached(priority: .userInitiated) { () -> UIImage? in
-            guard let (data, response) = try? await URLSession.shared.data(from: url),
-                  !Task.isCancelled,
-                  let http = response as? HTTPURLResponse,
-                  (200...299).contains(http.statusCode),
-                  data.count > 512 else { return nil }
-            return downsampleBackdropImage(data: data, maxPixelSize: pixelSize)
+        let task: Task<UIImage?, Never> = lock.withLock {
+            if let pending = inFlight[key] { return pending }
+            let task = Task.detached(priority: priority) { [weak self] () -> UIImage? in
+                var decoded: UIImage?
+                if let (data, response) = try? await URLSession.shared.data(from: url) {
+                    let statusOK = (response as? HTTPURLResponse).map { (200...299).contains($0.statusCode) } ?? true
+                    if statusOK, data.count > minimumBytes {
+                        decoded = downsampleBackdropImage(data: data, maxPixelSize: pixelSize)
+                    }
+                }
+                // Store before leaving the in-flight list, so a caller arriving
+                // in between finds the image instead of downloading it again.
+                self?.finishLoad(key: key, image: decoded)
+                return decoded
+            }
+            inFlight[key] = task
+            return task
         }
-        inFlight[url.absoluteString] = task
-        defer { inFlight[url.absoluteString] = nil }
-        guard let decoded = await task.value else { return nil }
-        let cost = decoded.decodedByteCost
-        cache.setObject(decoded, forKey: key, cost: cost)
-        Self.tracker.recordInsertion(cost: cost)
-        return decoded
+        return await task.value
+    }
+
+    /// Downloads and decodes images about to be shown (the next hero slide,
+    /// the cards beside the focused one) at low priority.
+    func prefetch(_ urls: [URL]) {
+        for url in urls where cachedImage(for: url) == nil {
+            Task.detached(priority: .utility) { [weak self] in
+                _ = await self?.image(for: url, priority: .utility)
+            }
+        }
+    }
+
+    private func finishLoad(key: String, image: UIImage?) {
+        if let image {
+            let cost = image.decodedByteCost
+            cache.setObject(image, forKey: key as NSString, cost: cost)
+            Self.tracker.recordInsertion(cost: cost)
+        }
+        lock.withLock { inFlight[key] = nil }
     }
 }
 
@@ -4782,6 +4862,7 @@ struct TVHomeView: View {
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
     @AppStorage(SettingsKey.heroEnabled) private var heroEnabled = true
     @AppStorage(SettingsKey.fullscreenHeroBackdrop) private var fullscreenHeroBackdrop = true
+    @AppStorage(SettingsKey.homeHeroRatingSource) private var homeHeroRatingSource = "imdb"
     @AppStorage(SettingsKey.focusedPosterBackdropEnabled) private var focusedPosterBackdropEnabled = true
     @AppStorage(SettingsKey.focusedPosterBackdropDelay) private var focusedPosterBackdropDelay = 3
     @AppStorage(SettingsKey.fastNavigation) private var fastNavigation = false
@@ -8152,6 +8233,16 @@ struct TVHomeView: View {
             let settledMeta = collectionHome?.preparedHero(for: pendingMeta) ?? pendingMeta
             focusWork.pendingFocusedMeta = settledMeta
 
+            // Switch the hero only once its backdrop, logo and ratings are
+            // ready (bounded), so they all change in one step instead of the
+            // text first and the artwork a moment later.
+            if focusedMeta?.id != settledMeta.id {
+                await prepareHeroDisplay(for: settledMeta)
+                guard !Task.isCancelled,
+                      focusWork.pendingFocusedMeta?.id == settledMeta.id,
+                      focusWork.pendingSectionId == targetSectionId else { return }
+            }
+
             // Leaving a folder hero: clear only after settle so backdrop stays frozen.
             focusedSectionId = targetSectionId
             if focusedCollectionFolder != nil {
@@ -8160,6 +8251,7 @@ struct TVHomeView: View {
             if focusedMeta?.id != settledMeta.id {
                 focusedMeta = settledMeta
             }
+            prefetchHeroNeighbors(of: settledMeta, in: targetSectionId)
 
             TVHomeDebugTrace.log(
                 "hero.publish section=\(targetSectionId) meta=\(settledMeta.id) "
@@ -8173,6 +8265,69 @@ struct TVHomeView: View {
             guard settledMeta.needsHeroMetadataEnrichment else { return }
             enrichSettledCatalogMeta(settledMeta, in: targetSectionId)
         }
+    }
+
+    /// Bounded wait for the settled title's backdrop, logo and (when the hero
+    /// shows them) ratings. Anything not ready by the timeout keeps loading
+    /// and fades in on its own, as before.
+    private func prepareHeroDisplay(for meta: NuvioMeta) async {
+        guard homeLayout != "Grid View" else { return }
+        let displayMeta = cachedEnrichedHeroMeta(for: meta) ?? meta
+        var urls: [URL] = []
+        if let backdrop = preferredBackdropURL(for: displayMeta), let url = URL(string: backdrop) {
+            urls.append(url)
+        }
+        // The raw string `CachedHeroLogo` loads, so the cache key matches.
+        if heroEnabled, let logo = displayMeta.logoUrl, !logo.isEmpty, let url = URL(string: logo) {
+            urls.append(url)
+        }
+        let missingImages = urls.filter { BackdropImageCache.shared.cachedImage(for: $0) == nil }
+        let needsRatings = heroEnabled
+            && AddonRatingsService.heroNeedsFetchedRatings(source: homeHeroRatingSource, meta: displayMeta)
+            && AddonRatingsService.cachedHomeHeroRatings(for: displayMeta) == nil
+        guard !missingImages.isEmpty || needsRatings else { return }
+
+        let timeout: Duration = fastNavigation ? .milliseconds(350) : .milliseconds(600)
+        await HeroDisplayPreparation.waitBounded(timeout: timeout) {
+            await withTaskGroup(of: Void.self) { group in
+                for url in missingImages {
+                    group.addTask { _ = await BackdropImageCache.shared.image(for: url) }
+                }
+                if needsRatings {
+                    group.addTask { _ = await AddonRatingsService.fetchHomeHeroRatings(for: displayMeta) }
+                }
+            }
+        }
+    }
+
+    /// The full `/meta` merge the enrichment step already fetched once for
+    /// this title, so its logo can be waited for too.
+    private func cachedEnrichedHeroMeta(for meta: NuvioMeta) -> NuvioMeta? {
+        let key = "\(CinemetaCatalogRepository.metadataCacheContext)\u{1f}\(meta.type.lowercased())\u{1f}\(meta.id)"
+        guard let cached = focusWork.enrichedHeroMetadata[key] else { return nil }
+        return meta.fillingMissingHeroMetadata(from: cached)
+    }
+
+    /// Decodes the backdrop and logo of the cards either side of the settled
+    /// one, so the next step along the row has them ready.
+    private func prefetchHeroNeighbors(of meta: NuvioMeta, in sectionId: String) {
+        guard homeLayout != "Grid View",
+              isActive, !isFullScreenOverlayPresented,
+              let items = visibleSections.first(where: { $0.id == sectionId })?.items,
+              let index = items.firstIndex(where: { $0.id == meta.id }) else { return }
+        var urls: [URL] = []
+        for offset in [1, -1] {
+            let position = index + offset
+            guard items.indices.contains(position) else { continue }
+            let neighbor = collectionHome?.preparedHero(for: items[position]) ?? items[position]
+            if let backdrop = preferredBackdropURL(for: neighbor), let url = URL(string: backdrop) {
+                urls.append(url)
+            }
+            if heroEnabled, let logo = neighbor.logoUrl, !logo.isEmpty, let url = URL(string: logo) {
+                urls.append(url)
+            }
+        }
+        BackdropImageCache.shared.prefetch(urls)
     }
 
     private enum EnrichmentFetchOutcome {
@@ -10360,7 +10515,8 @@ enum AppCacheManager {
     static func clearCache() async {
         // 1. Wipe poster data (memory + disk + URLSession)
         await PosterArtworkCache.clearAllArtwork()
-        await BackdropImageCache.shared.purge()
+        BackdropImageCache.shared.purge()
+        HomeHeroRatingsCache.shared.clear()
         await PersonProfileImageCache.shared.purge()
 
         // 2. Wipe catalog order & snapshots
@@ -10472,6 +10628,24 @@ private struct TVHeroView: View {
     }
 
     var body: some View {
+        // The settle step already waited for this title's backdrop, logo and
+        // ratings, so the whole block fades over in one piece while the
+        // backdrop crossfades behind it. The ZStack lets the outgoing and
+        // incoming blocks overlap instead of stacking for the transition.
+        ZStack(alignment: .bottomLeading) {
+            heroInfo
+                .id(meta.id)
+                .transition(.opacity)
+        }
+        .animation(.easeInOut(duration: 0.3), value: meta.id)
+        .foregroundColor(.white)
+        .padding(.leading, TVLayout.rowLeading)
+        .padding(.top, homeLayout == "Compact" ? 82 : 140)
+        .padding(.bottom, TVHomeLayout.heroBottomPadding)
+        .frame(height: heroHeight, alignment: .bottomLeading)
+    }
+
+    private var heroInfo: some View {
         VStack(alignment: .leading, spacing: 18) {
             if let logoUrl = meta.logoUrl {
                 CachedHeroLogo(url: logoUrl, title: meta.name)
@@ -10500,11 +10674,6 @@ private struct TVHeroView: View {
                     .padding(.top, 4)
             }
         }
-        .foregroundColor(.white)
-        .padding(.leading, TVLayout.rowLeading)
-        .padding(.top, homeLayout == "Compact" ? 82 : 140)
-        .padding(.bottom, TVHomeLayout.heroBottomPadding)
-        .frame(height: heroHeight, alignment: .bottomLeading)
     }
 
     /// "S1 E3 · Title" for the episode in progress; nil for movies or when the
@@ -10871,6 +11040,52 @@ private struct TvHeroActionButtonStyle: ButtonStyle {
     }
 }
 
+/// Grid hero slideshow progress (trailer position or the 10 s countdown).
+/// It changes about four times a second; as `@Observable` state that only
+/// `GridHeroPageSlider` reads, those updates redraw the slider and not the
+/// whole hero with its glass buttons.
+@Observable
+private final class GridHeroProgress {
+    var trailer = 0.0
+    var countdown = 0.0
+
+    func reset() {
+        trailer = 0
+        countdown = 0
+    }
+}
+
+private struct GridHeroPageSlider: View {
+    enum Source: Equatable {
+        case trailer
+        case countdown
+        case none
+    }
+
+    let progress: GridHeroProgress
+    let source: Source
+    let totalCount: Int
+    let selectedIndex: Int
+    let isFocused: Bool
+
+    var body: some View {
+        AppleTvPageSlider(
+            totalCount: totalCount,
+            selectedIndex: selectedIndex,
+            isFocused: isFocused,
+            progress: currentValue
+        )
+    }
+
+    private var currentValue: Double {
+        switch source {
+        case .trailer: return progress.trailer
+        case .countdown: return progress.countdown
+        case .none: return 0
+        }
+    }
+}
+
 /// Apple TV native page slider pill matching the tvOS system carousel indicator:
 /// dark frosted capsule container with proportional dots and an elongated
 /// active track with a bright white indicator.
@@ -10972,8 +11187,8 @@ private struct TVGridHeroSlideshowView: View {
     @State private var finishedTrailerPreviewIdentity: String?
     @State private var unavailableTrailerPreviewIdentity: String?
     @State private var readyTrailerPreviewIdentity: String?
-    @State private var trailerPlaybackProgress = 0.0
-    @State private var fallbackCountdownProgress = 0.0
+    /// Written here, read only by the page slider (see `GridHeroProgress`).
+    @State private var slideProgress = GridHeroProgress()
     @State private var nativeFocusTracker = GridHeroNativeFocusTracker()
     @State private var resolvedSeriesMetadata: NuvioMeta?
     @State private var resolvedSeriesMetadataIdentity: String?
@@ -11033,12 +11248,14 @@ private struct TVGridHeroSlideshowView: View {
         "\(index)\u{1f}\(currentTrailerPreviewIdentity ?? "none")\u{1f}\(isFallbackCountdownEligible)\u{1f}\(unavailableTrailerPreviewIdentity ?? "none")"
     }
 
-    private var sliderProgress: Double {
+    /// Which progress the slider shows. Only the choice lives in this view's
+    /// body; the value itself is read by the slider alone.
+    private var sliderSource: GridHeroPageSlider.Source {
         if isTrailerPreviewEligible, activeTrailerPreviewIdentity == currentTrailerPreviewIdentity {
-            return trailerPlaybackProgress
+            return .trailer
         }
-        if isFallbackCountdownEligible { return fallbackCountdownProgress }
-        return 0
+        if isFallbackCountdownEligible { return .countdown }
+        return .none
     }
 
     private func trailerPreviewIdentity(for item: NuvioMeta) -> String {
@@ -11164,7 +11381,7 @@ private struct TVGridHeroSlideshowView: View {
                         finishedTrailerPreviewIdentity = previewIdentity
                         activeTrailerPreviewIdentity = nil
                         readyTrailerPreviewIdentity = nil
-                        trailerPlaybackProgress = 1
+                        slideProgress.trailer = 1
                         if items.count > 1 {
                             setIndex((index + 1) % items.count)
                         }
@@ -11173,7 +11390,7 @@ private struct TVGridHeroSlideshowView: View {
                         guard isTrailerPreviewEligible,
                               currentTrailerPreviewIdentity == previewIdentity,
                               activeTrailerPreviewIdentity == previewIdentity else { return }
-                        trailerPlaybackProgress = min(max(elapsed / duration, 0), 1)
+                        slideProgress.trailer = min(max(elapsed / duration, 0), 1)
                     },
                     onPlaybackUnavailable: {
                         markTrailerPreviewUnavailable(previewIdentity)
@@ -11231,11 +11448,12 @@ private struct TVGridHeroSlideshowView: View {
 
             // Apple TV native slider pill
             if items.count > 1 {
-                AppleTvPageSlider(
+                GridHeroPageSlider(
+                    progress: slideProgress,
+                    source: sliderSource,
                     totalCount: items.count,
                     selectedIndex: index,
-                    isFocused: isAnyFocused,
-                    progress: sliderProgress
+                    isFocused: isAnyFocused
                 )
                 .offset(y: 20)
             }
@@ -11289,22 +11507,27 @@ private struct TVGridHeroSlideshowView: View {
         }
         .onChange(of: index) { _, _ in
             updateLibraryStatus()
-            trailerPlaybackProgress = 0
-            fallbackCountdownProgress = 0
+            slideProgress.reset()
         }
         .onReceive(NotificationCenter.default.publisher(for: LibraryStore.changedNotification)) { _ in
             updateLibraryStatus()
         }
         .focusSection()
-        .task(id: "\(activeItem?.id ?? "")-\(homeHeroRatingSource)") {
-            guard let item = activeItem,
-                  homeHeroRatingSource != "imdb",
-                  item.externalRatings == nil || item.externalRatings?.isEmpty == true,
+        .task(id: "\(activeItem?.id ?? "")-\(homeHeroRatingSource)-\(items.count)") {
+            guard let item = activeItem else { return }
+            // Ready the slides either side before they are asked for; the
+            // timer and the Next button then switch to decoded artwork.
+            prefetchNeighborSlides()
+            guard AddonRatingsService.heroNeedsFetchedRatings(source: homeHeroRatingSource, meta: item),
                   gridHeroRatings[item.id] == nil else { return }
-            let ratings = await AddonRatingsService.fetchHomeHeroRatings(for: item)
-            if !ratings.isEmpty {
-                gridHeroRatings[item.id] = ratings
+            if let cached = AddonRatingsService.cachedHomeHeroRatings(for: item) {
+                // Keep them with the slide, so they survive the cache entry expiring.
+                gridHeroRatings[item.id] = cached
+                return
             }
+            let ratings = await AddonRatingsService.fetchHomeHeroRatings(for: item)
+            guard !Task.isCancelled else { return }
+            gridHeroRatings[item.id] = ratings
         }
         .task(id: playTargetTaskIdentity) {
             await resolveCurrentHeroPlayTarget()
@@ -11329,8 +11552,7 @@ private struct TVGridHeroSlideshowView: View {
             finishedTrailerPreviewIdentity = nil
             unavailableTrailerPreviewIdentity = nil
             readyTrailerPreviewIdentity = nil
-            trailerPlaybackProgress = 0
-            fallbackCountdownProgress = 0
+            slideProgress.reset()
         }
         .onChange(of: isTrailerPreviewEligible) { _, eligible in
             guard !eligible else { return }
@@ -11338,8 +11560,7 @@ private struct TVGridHeroSlideshowView: View {
             finishedTrailerPreviewIdentity = nil
             unavailableTrailerPreviewIdentity = nil
             readyTrailerPreviewIdentity = nil
-            trailerPlaybackProgress = 0
-            fallbackCountdownProgress = 0
+            slideProgress.reset()
         }
         .task(id: trailerPreviewTaskIdentity) {
             await activateTrailerPreviewAfterDelay()
@@ -11350,8 +11571,7 @@ private struct TVGridHeroSlideshowView: View {
         .onChange(of: items.count) { _, count in
             if count == 0 { selectedIndex = 0 }
             else if selectedIndex >= count { selectedIndex = count - 1 }
-            trailerPlaybackProgress = 0
-            fallbackCountdownProgress = 0
+            slideProgress.reset()
         }
     }
 
@@ -11382,13 +11602,13 @@ private struct TVGridHeroSlideshowView: View {
 
     @MainActor
     private func runFallbackCountdown() async {
-        fallbackCountdownProgress = 0
+        slideProgress.countdown = 0
         guard isFallbackCountdownEligible else { return }
 
         let startTime = CACurrentMediaTime()
         while !Task.isCancelled {
             let elapsed = max(0, CACurrentMediaTime() - startTime)
-            fallbackCountdownProgress = min(elapsed / 10, 1)
+            slideProgress.countdown = min(elapsed / 10, 1)
             guard elapsed < 10 else {
                 guard !Task.isCancelled, isFallbackCountdownEligible else { return }
                 setIndex((index + 1) % items.count)
@@ -11431,11 +11651,15 @@ private struct TVGridHeroSlideshowView: View {
         finishedTrailerPreviewIdentity = identity
         readyTrailerPreviewIdentity = nil
         activeTrailerPreviewIdentity = nil
-        trailerPlaybackProgress = 0
+        slideProgress.trailer = 0
     }
 
+    /// Logo, metadata, ratings and synopsis of one slide. Swapped as one
+    /// block inside a ZStack: with separate transitions in the VStack the
+    /// outgoing and incoming copies stood on top of each other for the length
+    /// of the fade, briefly pushing the whole hero up.
     @ViewBuilder
-    private func gridHeroContent(_ item: NuvioMeta) -> some View {
+    private func gridHeroInfo(_ item: NuvioMeta) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             // 1. Logo or Title
             Group {
@@ -11450,13 +11674,15 @@ private struct TVGridHeroSlideshowView: View {
                         .shadow(color: .black.opacity(0.6), radius: 6, y: 3)
                 }
             }
-            .id("hero-title-\(item.id)")
-            .transition(.opacity)
 
             // 2. Metadata Row (Apple TV style: Type • Genres • Year • Badge)
             heroMetadataRow(item)
-                .id("hero-meta-\(item.id)")
-                .transition(.opacity)
+
+            // 2b. "All" rating source: the Details ratings row with icons.
+            if AddonRatingsService.heroShowsAllRatings(homeHeroRatingSource) {
+                TvHeroRatingsRow(badges: gridRatingBadges(for: item), iconHeight: 22, fontSize: 19)
+                    .shadow(color: .black.opacity(0.6), radius: 4, y: 2)
+            }
 
             // 3. Description (2 lines, clean Apple TV typography)
             if let description = item.description, !description.isEmpty {
@@ -11467,7 +11693,46 @@ private struct TVGridHeroSlideshowView: View {
                     .lineSpacing(4)
                     .frame(maxWidth: 820, alignment: .leading)
                     .shadow(color: .black.opacity(0.7), radius: 4, y: 2)
-                    .id("hero-desc-\(item.id)")
+            }
+        }
+    }
+
+    private func gridRatingBadges(for item: NuvioMeta) -> [TvRatingBadge] {
+        TvRatingBadge.badges(
+            from: AddonRatingsService.heroDisplayRatings(for: item, fetched: gridHeroRatings[item.id])
+        )
+    }
+
+    /// Decodes the backdrop and logo of the next and previous slides and
+    /// fetches the next slide's ratings, so a switch never waits on them.
+    private func prefetchNeighborSlides() {
+        guard items.count > 1 else { return }
+        let neighbors = [items[(index + 1) % items.count], items[(index - 1 + items.count) % items.count]]
+        var urls: [URL] = []
+        // The same URL strings `artLayer` and `CachedHeroLogo` load, so the
+        // cache keys match.
+        for neighbor in neighbors {
+            if let backdrop = neighbor.backgroundUrl ?? neighbor.landscapePosterUrl ?? neighbor.posterUrl,
+               let url = URL(string: backdrop) {
+                urls.append(url)
+            }
+            if let logo = neighbor.logoUrl, !logo.isEmpty, let url = URL(string: logo) {
+                urls.append(url)
+            }
+        }
+        BackdropImageCache.shared.prefetch(urls)
+        if let next = neighbors.first,
+           AddonRatingsService.heroNeedsFetchedRatings(source: homeHeroRatingSource, meta: next) {
+            AddonRatingsService.prefetchHomeHeroRatings(for: [next])
+        }
+    }
+
+    @ViewBuilder
+    private func gridHeroContent(_ item: NuvioMeta) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            ZStack(alignment: .bottomLeading) {
+                gridHeroInfo(item)
+                    .id("hero-info-\(item.id)")
                     .transition(.opacity)
             }
 
@@ -11510,14 +11775,16 @@ private struct TVGridHeroSlideshowView: View {
             #endif
 
             // 5. Subtitle info under primary button
-            if let subtitle = heroSubtitleText(item) {
-                Text(subtitle)
-                    .font(.custom("Inter-Medium", size: 15))
-                    .foregroundColor(.white.opacity(0.58))
-                    .padding(.top, 2)
-                    .shadow(color: .black.opacity(0.6), radius: 3, y: 1)
-                    .id("hero-sub-\(item.id)")
-                    .transition(.opacity)
+            ZStack(alignment: .topLeading) {
+                if let subtitle = heroSubtitleText(item) {
+                    Text(subtitle)
+                        .font(.custom("Inter-Medium", size: 15))
+                        .foregroundColor(.white.opacity(0.58))
+                        .padding(.top, 2)
+                        .shadow(color: .black.opacity(0.6), radius: 3, y: 1)
+                        .id("hero-sub-\(item.id)")
+                        .transition(.opacity)
+                }
             }
         }
         .animation(.easeInOut(duration: 0.28), value: item.id)
@@ -11560,8 +11827,11 @@ private struct TVGridHeroSlideshowView: View {
                 heroBadge(cert)
             } else if let badge = item.statusBadgeLabel, !badge.isEmpty {
                 heroBadge(badge)
-            } else {
-                let effectiveRatings = (item.externalRatings?.isEmpty == false ? item.externalRatings : nil) ?? gridHeroRatings[item.id]
+            } else if !AddonRatingsService.heroShowsAllRatings(homeHeroRatingSource) {
+                // ("All" shows the full ratings row on its own line instead.)
+                let effectiveRatings = (item.externalRatings?.isEmpty == false ? item.externalRatings : nil)
+                    ?? gridHeroRatings[item.id]
+                    ?? AddonRatingsService.cachedHomeHeroRatings(for: item)
                 if let ratingStr = AddonRatingsService.heroRatingString(for: item, source: homeHeroRatingSource, ratings: effectiveRatings) {
                     heroBadge(ratingStr)
                 }
@@ -11721,7 +11991,12 @@ private struct TVGridHeroSlideshowView: View {
         if isInLibraryCache {
             return L10n.string("details_in_library", fallback: "In your library")
         }
-        let effectiveRatings = (item.externalRatings?.isEmpty == false ? item.externalRatings : nil) ?? gridHeroRatings[item.id]
+        guard !AddonRatingsService.heroShowsAllRatings(homeHeroRatingSource) else {
+            return "4K Ultra HD • HDR • Dolby Atmos"
+        }
+        let effectiveRatings = (item.externalRatings?.isEmpty == false ? item.externalRatings : nil)
+            ?? gridHeroRatings[item.id]
+            ?? AddonRatingsService.cachedHomeHeroRatings(for: item)
         if let ratingStr = AddonRatingsService.heroRatingString(for: item, source: homeHeroRatingSource, ratings: effectiveRatings) {
             return "\(ratingStr) • 4K Ultra HD • HDR"
         }
@@ -11768,6 +12043,19 @@ private struct CachedHeroLogo: View {
     @State private var outgoingImage: UIImage?
     @State private var outgoingOpacity = 0.0
     @State private var imageOpacity = 1.0
+
+    init(url: String, title: String) {
+        self.url = url
+        self.title = title
+        // A logo already in memory is drawn on the first frame. Without this
+        // a freshly created logo (each Grid hero slide) showed the text title
+        // for a moment before the image replaced it.
+        if let imageURL = URL(string: url),
+           let cached = BackdropImageCache.shared.cachedImage(for: imageURL) {
+            _image = State(initialValue: cached)
+            _loadedURL = State(initialValue: url)
+        }
+    }
 
     private var showsLogoImage: Bool {
         image != nil || outgoingImage != nil
@@ -11847,7 +12135,10 @@ private struct TVHeroMetaLine: View {
     var episodeLine: String? = nil
     @AppStorage(SettingsKey.showFullDates) private var showFullDates = true
     @AppStorage(SettingsKey.homeHeroRatingSource) private var homeHeroRatingSource = "imdb"
-    @State private var fetchedRatings: [NuvioExternalRating] = []
+    @State private var fetchedRatings: [NuvioExternalRating]?
+    /// Which title/source `fetchedRatings` belong to, so a reused view never
+    /// shows the previous title's scores.
+    @State private var fetchedRatingsKey: String?
 
     var body: some View {
         let values = [
@@ -11858,13 +12149,30 @@ private struct TVHeroMetaLine: View {
         ].compactMap { $0 }.filter { !$0.isEmpty }
 
         let badge = meta.statusBadgeLabel
-        let effectiveRatings = (meta.externalRatings?.isEmpty == false ? meta.externalRatings : nil) ?? (fetchedRatings.isEmpty ? nil : fetchedRatings)
-        let rating = AddonRatingsService.heroRatingString(for: meta, source: homeHeroRatingSource, ratings: effectiveRatings)
+        // Same key as the ratings cache: enrichment can add an IMDb id to a
+        // kitsu:/tmdb: item, which must re-run the lookup below.
+        let ratingsKey = "\(AddonRatingsService.homeHeroRatingsKey(for: meta))-\(homeHeroRatingSource)"
+        let fetched = fetchedRatingsKey == ratingsKey ? fetchedRatings : nil
+        let cached = AddonRatingsService.cachedHomeHeroRatings(for: meta)
+        let showsAllRatings = AddonRatingsService.heroShowsAllRatings(homeHeroRatingSource)
+        let ratingBadges = showsAllRatings
+            ? TvRatingBadge.badges(from: AddonRatingsService.heroDisplayRatings(for: meta, fetched: fetched))
+            : []
+        // Still waiting for MDBList/add-on scores: keep the ratings line.
+        let ratingsPending = showsAllRatings && fetched == nil && cached == nil
+        let effectiveRatings = (meta.externalRatings?.isEmpty == false ? meta.externalRatings : nil)
+            ?? nonEmpty(fetched)
+            ?? nonEmpty(cached)
+        let rating = showsAllRatings
+            ? nil
+            : AddonRatingsService.heroRatingString(for: meta, source: homeHeroRatingSource, ratings: effectiveRatings)
         // Movies have no status badge, so their rating would sit alone on the
         // second line; ride it on the primary line right after the date instead.
         let isMovie = !meta.isSeries
         let primaryValues = isMovie ? values + [rating].compactMap { $0 } : values
-        let showSecondLine = !isMovie && (badge != nil || rating != nil)
+        let showSecondLine = showsAllRatings
+            ? (badge != nil || !ratingBadges.isEmpty || ratingsPending)
+            : (!isMovie && (badge != nil || rating != nil))
         // An empty `Text("")` still consumes a full line height and, with the
         // hero VStack spacing, opens a dead gap between the title and the first
         // catalog row (e.g. "The Chi" → "gg"). Collapse entirely when blank.
@@ -11880,7 +12188,8 @@ private struct TVHeroMetaLine: View {
                             .lineLimit(1)
                     }
 
-                    // Second line, like the Android hero: "[ONGOING] • IMDb 7.4".
+                    // Second line, like the Android hero: "[ONGOING] • IMDb 7.4",
+                    // or with "All" the Details ratings row with icons.
                     if showSecondLine {
                         HStack(spacing: 14) {
                             if let badge {
@@ -11895,22 +12204,38 @@ private struct TVHeroMetaLine: View {
                                     )
                             }
 
-                            if let rating {
+                            if showsAllRatings {
+                                TvHeroRatingsRow(badges: ratingBadges, iconHeight: 26, fontSize: 22)
+                            } else if let rating {
                                 Text(badge != nil ? "•  \(rating)" : rating)
                                     .font(.custom("Inter-SemiBold", size: 22))
                                     .foregroundColor(.white.opacity(0.66))
                                     .lineLimit(1)
                             }
                         }
+                        .frame(minHeight: showsAllRatings ? 34 : nil, alignment: .leading)
                     }
                 }
             }
         }
-        .task(id: "\(meta.id)-\(homeHeroRatingSource)") {
-            if homeHeroRatingSource != "imdb" && (meta.externalRatings == nil || meta.externalRatings?.isEmpty == true) {
-                fetchedRatings = await AddonRatingsService.fetchHomeHeroRatings(for: meta)
+        .task(id: ratingsKey) {
+            guard AddonRatingsService.heroNeedsFetchedRatings(source: homeHeroRatingSource, meta: meta) else { return }
+            if let cached = AddonRatingsService.cachedHomeHeroRatings(for: meta) {
+                // Keep them here too, so the row survives the cache entry expiring.
+                fetchedRatings = cached
+                fetchedRatingsKey = ratingsKey
+                return
             }
+            let ratings = await AddonRatingsService.fetchHomeHeroRatings(for: meta)
+            guard !Task.isCancelled else { return }
+            fetchedRatings = ratings
+            fetchedRatingsKey = ratingsKey
         }
+    }
+
+    private func nonEmpty(_ ratings: [NuvioExternalRating]?) -> [NuvioExternalRating]? {
+        guard let ratings, !ratings.isEmpty else { return nil }
+        return ratings
     }
 
     private var formattedRuntime: String? {

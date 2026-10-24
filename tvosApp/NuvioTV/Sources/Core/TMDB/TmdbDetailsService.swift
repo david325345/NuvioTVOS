@@ -1870,6 +1870,15 @@ enum MdbListDetailsService {
         let rating: Double?
     }
 
+    /// MDBList is switched on and has an API key, so ratings are expected.
+    static var isConfigured: Bool {
+        let defaults = ProfileSettings.current
+        guard defaults.bool(forKey: SettingsKey.mdbListEnabled),
+              let apiKey = defaults.string(forKey: SettingsKey.mdbListApiKey)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) else { return false }
+        return !apiKey.isEmpty
+    }
+
     static func fetchRatings(for meta: NuvioMeta) async -> [NuvioExternalRating] {
         let defaults = ProfileSettings.current
         guard defaults.bool(forKey: SettingsKey.mdbListEnabled),

@@ -10571,6 +10571,9 @@ struct DetailsUiState {
     /// Top liked Trakt comments (max 5).
     var comments: [TraktCommentReview] = []
     var isLoadingEnrichment: Bool = false
+    /// The MDBList/add-on ratings request for this title has answered (even
+    /// with nothing), so Details stops keeping room for the ratings row.
+    var externalRatingsLoaded: Bool = false
 }
 
 /// Nil for missing or whitespace-only values, so blank artwork/status fields

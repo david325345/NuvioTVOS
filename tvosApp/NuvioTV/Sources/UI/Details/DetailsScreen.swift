@@ -3589,15 +3589,19 @@ struct TvDetailsContent: View {
         focusedDetailsSection != .actions || episodeFocus != nil || castHeaderFocus != nil || scrollOffset > 30
     }
 
-    private var backdropBlurRadius: CGFloat {
-        isScrolledDown ? 22 : 0
+    /// MDBList/add-on ratings for this title have not arrived yet but are
+    /// expected, so the summary keeps the ratings row's room.
+    private func areRatingsPending(for meta: NuvioMeta) -> Bool {
+        !uiState.externalRatingsLoaded
+            && (meta.externalRatings?.isEmpty ?? true)
+            && AddonRatingsService.mayHaveExternalRatings
     }
 
     @ViewBuilder
     private func backdropView(for meta: NuvioMeta) -> some View {
         TvDetailsBackdrop(
             meta: meta,
-            blurRadius: backdropBlurRadius,
+            isBlurred: isScrolledDown,
             player: isFullscreenTrailerPresented ? nil : trailerPlayer,
             isTrailerVisible: isTrailerPlaying && isTrailerRenderReady && !isFullscreenTrailerPresented,
             onTrailerReadyForDisplay: handleTrailerReady
@@ -3782,7 +3786,8 @@ struct TvDetailsContent: View {
                                             meta: meta,
                                             simkl: uiState.simklRatings,
                                             isBackgroundTrailerPlaying: isTrailerPlaying && isTrailerRenderReady,
-                                            isSynopsisFocused: false
+                                            isSynopsisFocused: false,
+                                            ratingsPending: areRatingsPending(for: meta)
                                         )
 
                                         actionRowView(meta: meta, playTarget: playTarget, scrollProxy: scrollProxy)
@@ -3793,7 +3798,8 @@ struct TvDetailsContent: View {
                                             meta: meta,
                                             simkl: uiState.simklRatings,
                                             isBackgroundTrailerPlaying: isTrailerPlaying && isTrailerRenderReady,
-                                            isSynopsisFocused: false
+                                            isSynopsisFocused: false,
+                                            ratingsPending: areRatingsPending(for: meta)
                                         )
                                     }
                                 }
@@ -4415,31 +4421,27 @@ private struct TvDetailsScrollTransitionShadow: View {
 
 private struct TvDetailsBackdrop: View {
     let meta: NuvioMeta
-    var blurRadius: CGFloat = 0
+    /// Scrolled down to the episodes/cast: show the blurred backdrop.
+    var isBlurred: Bool = false
     var player: AVPlayer? = nil
     var isTrailerVisible: Bool = false
     var onTrailerReadyForDisplay: (() -> Void)? = nil
     @AppStorage(SettingsKey.amoled) private var amoled = false
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
 
+    private var backdropURL: URL? {
+        guard let imageUrl = meta.backgroundUrl ?? meta.posterUrl else { return nil }
+        return URL(string: imageUrl.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
     var body: some View {
         let backdropColor = Color.nuvioBackground(amoled: amoled, body: bodyColor)
+        let blursTrailer = isTrailerVisible && isBlurred
 
         ZStack {
-            if let imageUrl = meta.backgroundUrl ?? meta.posterUrl,
-               let url = URL(string: imageUrl.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                AsyncImage(url: url) { phase in
-                    if case .success(let image) = phase {
-                        image
-                            .resizable()
-                            .scaledToFill()
-                    } else {
-                        backdropColor
-                    }
-                }
-                .blur(radius: blurRadius, opaque: true)
-                .animation(.easeInOut(duration: 0.35), value: blurRadius)
-                .ignoresSafeArea()
+            if let url = backdropURL {
+                TvDetailsBackdropImage(url: url, placeholder: backdropColor, isBlurred: isBlurred)
+                    .ignoresSafeArea()
             } else {
                 backdropColor.ignoresSafeArea()
             }
@@ -4449,12 +4451,20 @@ private struct TvDetailsBackdrop: View {
                     onTrailerReadyForDisplay?()
                 }
                 .scaleEffect(1.35)
-                .blur(radius: blurRadius, opaque: true)
                 .opacity(isTrailerVisible ? 1 : 0)
                 .animation(.easeInOut(duration: 0.35), value: isTrailerVisible)
-                .animation(.easeInOut(duration: 0.35), value: blurRadius)
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
+
+                // Animating a blur radius over a playing video re-renders the
+                // whole blur every frame. A system material with a fixed blur
+                // only fades in, which the compositor handles cheaply.
+                Rectangle()
+                    .fill(.ultraThinMaterial)
+                    .opacity(blursTrailer ? 1 : 0)
+                    .animation(.easeInOut(duration: 0.35), value: blursTrailer)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
             }
 
             GeometryReader { proxy in
@@ -4479,6 +4489,87 @@ private struct TvDetailsBackdrop: View {
     }
 }
 
+/// Details backdrop from the shared image cache (usually already decoded by
+/// the Home hero, so it is there on the first frame), with a pre-blurred copy
+/// that fades in when scrolling down instead of animating a blur radius.
+private struct TvDetailsBackdropImage: View {
+    let url: URL
+    let placeholder: Color
+    let isBlurred: Bool
+
+    @State private var image: UIImage?
+    @State private var blurredImage: UIImage?
+    @State private var loadedURL: URL?
+
+    init(url: URL, placeholder: Color, isBlurred: Bool) {
+        self.url = url
+        self.placeholder = placeholder
+        self.isBlurred = isBlurred
+        let cached = BackdropImageCache.shared.cachedImage(for: url)
+        _image = State(initialValue: cached)
+        _loadedURL = State(initialValue: cached == nil ? nil : url)
+        _blurredImage = State(initialValue: cached == nil ? nil : BackdropBlurCache.shared.cachedImage(for: url))
+    }
+
+    var body: some View {
+        let currentImage = image
+        let currentBlurred = blurredImage
+        let currentURL = loadedURL
+        GeometryReader { proxy in
+            ZStack {
+                placeholder
+                if let currentImage {
+                    filled(currentImage, size: proxy.size)
+                        .id(currentURL)
+                        .transition(.opacity)
+                }
+                if let currentBlurred {
+                    filled(currentBlurred, size: proxy.size)
+                        .opacity(isBlurred ? 1 : 0)
+                }
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .clipped()
+        }
+        .animation(.easeInOut(duration: 0.35), value: isBlurred)
+        .task(id: url) {
+            await load()
+        }
+    }
+
+    private func filled(_ uiImage: UIImage, size: CGSize) -> some View {
+        Image(uiImage: uiImage)
+            .resizable()
+            .aspectRatio(contentMode: .fill)
+            .frame(width: size.width, height: size.height)
+            .clipped()
+    }
+
+    @MainActor
+    private func load() async {
+        if loadedURL != url || image == nil {
+            if let cached = BackdropImageCache.shared.cachedImage(for: url) {
+                image = cached
+                loadedURL = url
+            } else {
+                guard let loaded = await BackdropImageCache.shared.image(for: url),
+                      !Task.isCancelled else { return }
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    image = loaded
+                    loadedURL = url
+                }
+            }
+            blurredImage = BackdropBlurCache.shared.cachedImage(for: url)
+        }
+        guard blurredImage == nil, let source = image else { return }
+        let blurred = await BackdropBlurCache.shared.blurredImage(for: url, from: source)
+        guard !Task.isCancelled, loadedURL == url else { return }
+        withAnimation(.easeInOut(duration: 0.2)) {
+            blurredImage = blurred
+        }
+    }
+}
+
 private struct TvDetailsLogo: View {
     let meta: NuvioMeta
     var alignment: Alignment = .leading
@@ -4487,15 +4578,7 @@ private struct TvDetailsLogo: View {
         Group {
             if let logoUrl = meta.logoUrl,
                let url = URL(string: logoUrl) {
-                AsyncImage(url: url) { phase in
-                    if case .success(let image) = phase {
-                        image
-                            .resizable()
-                            .scaledToFit()
-                    } else {
-                        titleFallback
-                    }
-                }
+                TvDetailsLogoImage(url: url, alignment: alignment, fallback: titleFallback)
             } else {
                 titleFallback
             }
@@ -4512,6 +4595,59 @@ private struct TvDetailsLogo: View {
             .shadow(color: .black.opacity(0.65), radius: 14, y: 6)
             .multilineTextAlignment(alignment == .center ? .center : .leading)
             .frame(maxWidth: 560, alignment: alignment)
+    }
+}
+
+/// Logo from the shared image cache. A cached logo is there on the first
+/// frame; otherwise it fades in. The title only shows when the logo fails or
+/// takes over a second, instead of flashing before every logo.
+private struct TvDetailsLogoImage<Fallback: View>: View {
+    let url: URL
+    let alignment: Alignment
+    let fallback: Fallback
+
+    @State private var image: UIImage?
+    @State private var showsFallback = false
+
+    init(url: URL, alignment: Alignment, fallback: Fallback) {
+        self.url = url
+        self.alignment = alignment
+        self.fallback = fallback
+        _image = State(initialValue: BackdropImageCache.shared.cachedImage(for: url))
+    }
+
+    var body: some View {
+        ZStack(alignment: alignment) {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .transition(.opacity)
+            } else if showsFallback {
+                fallback
+                    .transition(.opacity)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignment)
+        .task(id: url) {
+            if let cached = BackdropImageCache.shared.cachedImage(for: url) {
+                image = cached
+                showsFallback = false
+                return
+            }
+            let slowLogo = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(1200))
+                guard !Task.isCancelled, image == nil else { return }
+                withAnimation(.easeInOut(duration: 0.25)) { showsFallback = true }
+            }
+            let loaded = await BackdropImageCache.shared.image(for: url)
+            slowLogo.cancel()
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeInOut(duration: 0.25)) {
+                image = loaded
+                showsFallback = loaded == nil
+            }
+        }
     }
 }
 
@@ -4770,6 +4906,9 @@ private struct TvDetailsSummary: View {
     var simkl: SimklTitleRatings? = nil
     var isBackgroundTrailerPlaying: Bool = false
     var isSynopsisFocused: Bool = false
+    /// Ratings are still on their way: keep the row's room so the synopsis
+    /// does not jump down when they land.
+    var ratingsPending: Bool = false
 
     private var textOpacity: Double {
         if isBackgroundTrailerPlaying && !isSynopsisFocused {
@@ -4779,6 +4918,7 @@ private struct TvDetailsSummary: View {
     }
 
     var body: some View {
+        let ratingBadges = externalRatingBadges
         VStack(alignment: .leading, spacing: 0) {
             if let creatorLine {
                 Text(creatorLine)
@@ -4787,10 +4927,17 @@ private struct TvDetailsSummary: View {
                     .padding(.bottom, 24)
             }
 
-            if !externalRatingBadges.isEmpty {
-                TvDetailsRatingsRow(badges: externalRatingBadges)
-                    .padding(.bottom, 28)
+            ZStack(alignment: .leading) {
+                if !ratingBadges.isEmpty {
+                    TvDetailsRatingsRow(badges: ratingBadges)
+                        .transition(.opacity)
+                } else if ratingsPending {
+                    Color.clear
+                        .frame(height: 38)
+                }
             }
+            .padding(.bottom, ratingBadges.isEmpty && !ratingsPending ? 0 : 28)
+            .animation(.easeInOut(duration: 0.25), value: ratingBadges.isEmpty)
 
             if let description = meta.description, !description.isEmpty {
                 Text(description)
@@ -4948,148 +5095,8 @@ private struct TvDetailsSummary: View {
     }
 
     private var externalRatingBadges: [TvRatingBadge] {
-        let ratings = Dictionary(
-            (meta.externalRatings ?? []).map { rating in
-                let key = rating.source.lowercased() == "mal" ? MdbListDetailsService.providerMyAnimeList : rating.source
-                return (key, rating)
-            },
-            uniquingKeysWith: { first, _ in first }
-        )
-        // 1. Built-in MDBList provider badges in priority order:
-        var badges = TvRatingVisual.all.compactMap { visual -> TvRatingBadge? in
-            guard let rating = ratings[visual.source] else { return nil }
-            return TvRatingBadge(visual: visual, rating: rating)
-        }
-        // 2. Extra rating badges provided by add-ons:
-        let builtInSources = Set(TvRatingVisual.all.map { $0.source.lowercased() })
-        let extraRatings = (meta.externalRatings ?? []).filter {
-            let lower = $0.source.lowercased()
-            return !builtInSources.contains(lower) && lower != "mal"
-        }
-        for extra in extraRatings {
-            let visual = TvRatingVisual(
-                source: extra.source,
-                displayName: extra.name ?? extra.source.capitalized,
-                assetName: nil,
-                iconUrl: extra.iconUrl.flatMap { URL(string: $0) },
-                iconWidth: 38,
-                color: Color(red: 0.96, green: 0.77, blue: 0.09),
-                format: { AddonRatingsService.formatRating(value: $0, max: extra.max) }
-            )
-            badges.append(TvRatingBadge(visual: visual, rating: extra))
-        }
-        return AddonRatingsService.sortRatings(badges, by: { $0.visual.source })
+        TvRatingBadge.badges(from: meta.externalRatings ?? [])
     }
-}
-
-private struct TvRatingBadge: Identifiable {
-    let visual: TvRatingVisual
-    let rating: NuvioExternalRating
-
-    var id: String { rating.source }
-}
-
-private struct TvRatingVisual {
-    let source: String
-    let displayName: String
-    let assetName: String?
-    let iconUrl: URL?
-    let iconWidth: CGFloat
-    let color: Color
-    let format: (Double) -> String
-
-    init(
-        source: String,
-        displayName: String,
-        assetName: String? = nil,
-        iconUrl: URL? = nil,
-        iconWidth: CGFloat,
-        color: Color,
-        format: @escaping (Double) -> String
-    ) {
-        self.source = source
-        self.displayName = displayName
-        self.assetName = assetName
-        self.iconUrl = iconUrl
-        self.iconWidth = iconWidth
-        self.color = color
-        self.format = format
-    }
-
-    static let all: [TvRatingVisual] = [
-        TvRatingVisual(
-            source: MdbListDetailsService.providerIMDb,
-            displayName: "IMDb",
-            assetName: "rating_imdb",
-            iconWidth: 68,
-            color: Color(red: 0.96, green: 0.77, blue: 0.09),
-            format: { String(format: "%.1f", $0) }
-        ),
-        TvRatingVisual(
-            source: MdbListDetailsService.providerTMDB,
-            displayName: "TMDB",
-            assetName: "rating_tmdb",
-            iconWidth: 40,
-            color: Color(red: 0.00, green: 0.71, blue: 0.89),
-            format: { String(Int($0.rounded())) }
-        ),
-        TvRatingVisual(
-            source: MdbListDetailsService.providerTomatoes,
-            displayName: "Rotten Tomatoes",
-            assetName: "rating_rotten_tomatoes",
-            iconWidth: 38,
-            color: Color(red: 0.98, green: 0.20, blue: 0.04),
-            format: { "\(Int($0.rounded()))%" }
-        ),
-        TvRatingVisual(
-            source: MdbListDetailsService.providerAudience,
-            displayName: "Audience Score",
-            assetName: "rating_audience_score",
-            iconWidth: 31,
-            color: Color(red: 0.98, green: 0.20, blue: 0.04),
-            format: { "\(Int($0.rounded()))%" }
-        ),
-        TvRatingVisual(
-            source: MdbListDetailsService.providerMetacritic,
-            displayName: "Metacritic",
-            assetName: "rating_metacritic",
-            iconWidth: 38,
-            color: Color(red: 1.00, green: 0.80, blue: 0.20),
-            format: { String(Int($0.rounded())) }
-        ),
-        TvRatingVisual(
-            source: MdbListDetailsService.providerTrakt,
-            displayName: "Trakt",
-            assetName: "rating_trakt",
-            iconWidth: 38,
-            color: Color(red: 0.93, green: 0.11, blue: 0.14),
-            format: { String(Int($0.rounded())) }
-        ),
-        TvRatingVisual(
-            source: MdbListDetailsService.providerLetterboxd,
-            displayName: "Letterboxd",
-            assetName: "rating_letterboxd",
-            iconWidth: 38,
-            color: Color(red: 0.00, green: 0.88, blue: 0.33),
-            format: { String(format: "%.1f", $0) }
-        ),
-        TvRatingVisual(
-            source: MdbListDetailsService.providerMyAnimeList,
-            displayName: "MyAnimeList",
-            assetName: "rating_myanimelist",
-            iconWidth: 42,
-            color: Color(red: 0.18, green: 0.32, blue: 0.64),
-            format: { String(format: "%.1f", $0) }
-        ),
-        TvRatingVisual(
-            source: MdbListDetailsService.providerTVDB,
-            displayName: "TVDB",
-            assetName: "rating_tvdb",
-            iconWidth: 42,
-            color: Color(red: 0.11, green: 0.66, blue: 0.31),
-            format: { $0 > 10 ? "\(Int($0.rounded()))%" : String(format: "%.1f", $0) }
-        ),
-    ]
 }
 
 private struct TvDetailsRatingsRow: View {
@@ -5100,37 +5107,9 @@ private struct TvDetailsRatingsRow: View {
             HStack(spacing: 26) {
                 ForEach(badges) { badge in
                     HStack(spacing: 9) {
-                        if let assetName = badge.visual.assetName {
-                            Image(assetName)
-                                .resizable()
-                                .scaledToFit()
-                                .frame(width: badge.visual.iconWidth, height: 38)
-                                .accessibilityLabel(badge.visual.displayName)
-                        } else if let iconUrl = badge.visual.iconUrl {
-                            AsyncImage(url: iconUrl) { phase in
-                                if let image = phase.image {
-                                    image
-                                        .resizable()
-                                        .scaledToFit()
-                                } else {
-                                    Image(systemName: "star.fill")
-                                        .resizable()
-                                        .scaledToFit()
-                                        .foregroundColor(badge.visual.color)
-                                }
-                            }
-                            .frame(width: badge.visual.iconWidth, height: 38)
-                            .accessibilityLabel(badge.visual.displayName)
-                        } else {
-                            Image(systemName: "star.fill")
-                                .resizable()
-                                .scaledToFit()
-                                .frame(width: 24, height: 24)
-                                .foregroundColor(badge.visual.color)
-                                .accessibilityLabel(badge.visual.displayName)
-                        }
+                        TvRatingIcon(visual: badge.visual, height: 38)
 
-                        Text(badge.visual.format(badge.rating.value))
+                        Text(badge.formattedValue)
                             .font(.system(size: 28, weight: .regular))
                             .foregroundColor(.white.opacity(0.62))
                     }
@@ -7319,6 +7298,21 @@ private struct TvDetailsEpisodes: View {
                 episodeRatings.merge(results) { _, new in new }
             }
         }
+        .task(id: "\(selectedSeason)-artwork-\(episodeScrollIndex / 3)-\(seasonEpisodes.count)") {
+            // Warm the stills just ahead of the strip, so cards scrolled into
+            // view already have their image instead of a placeholder.
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled, !seasonEpisodes.isEmpty else { return }
+            let focusIndex = min(max(episodeScrollIndex, 0), seasonEpisodes.count - 1)
+            let lower = max(0, focusIndex - 2)
+            let upper = min(seasonEpisodes.count, focusIndex + 12)
+            guard lower < upper else { return }
+            // Same URL string the card loads, so the cache key matches.
+            let urls = seasonEpisodes[lower..<upper].compactMap { video -> URL? in
+                video.thumbnail.flatMap { URL(string: $0) }
+            }
+            await TvEpisodeCardLayout.prefetchArtwork(urls)
+        }
     }
 
     @ViewBuilder
@@ -7403,6 +7397,34 @@ private enum TvEpisodeCardLayout {
     static let verticalPadding: CGFloat = 28
     static let stripHeight: CGFloat = height + verticalPadding * 2
     static let step: CGFloat = width + spacing
+
+    /// Loads episode stills into the poster cache at the size the cards ask
+    /// for (same key as `CachedPosterArtwork`), three at a time.
+    @MainActor
+    static func prefetchArtwork(_ urls: [URL]) async {
+        guard !urls.isEmpty else { return }
+        let pixelSize = max(160, Int(ceil(max(width, height) * UIScreen.main.scale)))
+        await withTaskGroup(of: Void.self) { group in
+            var pending = urls.makeIterator()
+            for _ in 0..<3 {
+                guard let url = pending.next() else { break }
+                group.addTask(priority: .utility) {
+                    _ = await PosterArtworkCache.shared.image(for: url, maxPixelSize: pixelSize)
+                }
+            }
+            while await group.next() != nil {
+                guard !Task.isCancelled else {
+                    group.cancelAll()
+                    return
+                }
+                if let url = pending.next() {
+                    group.addTask(priority: .utility) {
+                        _ = await PosterArtworkCache.shared.image(for: url, maxPixelSize: pixelSize)
+                    }
+                }
+            }
+        }
+    }
 }
 
 private struct TvSeasonPill: View {
@@ -7553,19 +7575,8 @@ private struct TvEpisodeCard: View {
                         ForEach(episodeRatingItems) { item in
                             HStack(spacing: 6) {
                                 if let iconUrl = item.iconUrl {
-                                    AsyncImage(url: iconUrl) { phase in
-                                        if let image = phase.image {
-                                            image
-                                                .resizable()
-                                                .scaledToFit()
-                                        } else {
-                                            Image(systemName: "star.fill")
-                                                .resizable()
-                                                .scaledToFit()
-                                                .foregroundColor(item.color)
-                                        }
-                                    }
-                                    .frame(width: 22, height: 22)
+                                    CachedRatingIcon(url: iconUrl, fallbackColor: item.color)
+                                        .frame(width: 22, height: 22)
                                 } else if let assetName = item.assetName {
                                     Image(assetName)
                                         .resizable()
@@ -7788,19 +7799,8 @@ private struct TvEpisodeCard: View {
                 ForEach(episodeRatingItems) { item in
                     HStack(spacing: 6) {
                         if let iconUrl = item.iconUrl {
-                            AsyncImage(url: iconUrl) { phase in
-                                if let image = phase.image {
-                                    image
-                                        .resizable()
-                                        .scaledToFit()
-                                } else {
-                                    Image(systemName: "star.fill")
-                                        .resizable()
-                                        .scaledToFit()
-                                        .foregroundColor(item.color)
-                                }
-                            }
-                            .frame(width: 22, height: 22)
+                            CachedRatingIcon(url: iconUrl, fallbackColor: item.color)
+                                .frame(width: 22, height: 22)
                         } else if let assetName = item.assetName {
                             Image(assetName)
                                 .resizable()
@@ -8324,19 +8324,8 @@ private struct TvStreamPickerOverlay: View {
                             ForEach(episodeRatingItems) { item in
                                 HStack(spacing: 6) {
                                     if let iconUrl = item.iconUrl {
-                                        AsyncImage(url: iconUrl) { phase in
-                                            if let image = phase.image {
-                                                image
-                                                    .resizable()
-                                                    .scaledToFit()
-                                            } else {
-                                                Image(systemName: "star.fill")
-                                                    .resizable()
-                                                    .scaledToFit()
-                                                    .foregroundColor(item.color)
-                                            }
-                                        }
-                                        .frame(width: 24, height: 24)
+                                        CachedRatingIcon(url: iconUrl, fallbackColor: item.color)
+                                            .frame(width: 24, height: 24)
                                     } else if let assetName = item.assetName {
                                         Image(assetName)
                                             .resizable()
