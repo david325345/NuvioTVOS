@@ -1,0 +1,69 @@
+name: Build NuvioTV IPA (fork)
+
+# Fork only, not for upstream. Builds an unsigned NuvioTV IPA on every push
+# to the mdblist-ratings-ci branch and runs the ratings unit tests next to it.
+on:
+  push:
+    branches: [mdblist-ratings-ci]
+  workflow_dispatch:
+
+jobs:
+  ipa:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Xcode version
+        run: xcodebuild -version
+
+      - name: Install Tuist
+        run: brew install tuist
+
+      - name: Build unsigned IPA
+        run: |
+          set -o pipefail
+          report() {
+            grep -E "error: " build.log | grep -v "produced no further output" \
+              | sort -u | head -40 | while IFS= read -r line; do echo "::error::$line"; done
+          }
+          trap 'report' ERR
+          bash scripts/build-ipa.sh 2>&1 | tee build.log
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NuvioTV-mdblist-unsigned-ipa
+          path: build-ipa/NuvioTV-unsigned.ipa
+          retention-days: 7
+
+  usenet-tests:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Tuist
+        run: brew install tuist
+
+      - name: Generate Xcode project
+        run: tuist generate --path tvosApp --no-open
+
+      - name: Ratings unit tests
+        env:
+          NUVIO_TEST_ARTIFACTS: ${{ runner.temp }}/nuvio-tests
+          NUVIO_DERIVED_DATA: ${{ runner.temp }}/NuvioTVDerivedData
+        run: |
+          set -o pipefail
+          report() {
+            grep -E "error: |XCTAssert|failed \(" "$NUVIO_TEST_ARTIFACTS/xcodebuild.log" 2>/dev/null \
+              | grep -v "produced no further output" \
+              | sort -u | head -40 | while IFS= read -r line; do echo "::error::$line"; done
+          }
+          trap 'report' ERR
+          bash scripts/test-tvos.sh \
+            -only-testing:NuvioTVTests/MdbListRatingsTests \
+            -only-testing:NuvioTVTests/ExternalRatingsTests
