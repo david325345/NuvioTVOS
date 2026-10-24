@@ -214,8 +214,9 @@ struct CachedRatingIcon: View {
         }
         .task(id: url) {
             if let cached = BackdropImageCache.shared.cachedImage(for: url) {
-                image = cached
-                failed = false
+                // Usually already set by `init`; avoid a redundant redraw.
+                if image !== cached { image = cached }
+                if failed { failed = false }
                 return
             }
             // Icons are often tiny PNGs or `data:` URLs; don't apply the

@@ -4458,13 +4458,19 @@ private struct TvDetailsBackdrop: View {
 
                 // Animating a blur radius over a playing video re-renders the
                 // whole blur every frame. A system material with a fixed blur
-                // only fades in, which the compositor handles cheaply.
-                Rectangle()
-                    .fill(.ultraThinMaterial)
-                    .opacity(blursTrailer ? 1 : 0)
-                    .animation(.easeInOut(duration: 0.35), value: blursTrailer)
-                    .ignoresSafeArea()
-                    .allowsHitTesting(false)
+                // only fades in, which the compositor handles cheaply. It is
+                // only inserted while needed, so no idle backdrop layer stays
+                // behind the episodes.
+                ZStack {
+                    if blursTrailer {
+                        Rectangle()
+                            .fill(.ultraThinMaterial)
+                            .transition(.opacity)
+                    }
+                }
+                .animation(.easeInOut(duration: 0.35), value: blursTrailer)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
             }
 
             GeometryReader { proxy in
@@ -7294,24 +7300,12 @@ private struct TvDetailsEpisodes: View {
             guard !episodes.isEmpty else { return }
             let ids = episodes.map { meta.canonicalEpisodeStreamId(for: $0) }
             let results = await AddonRatingsService.fetchRatingsForEpisodes(episodeIds: ids)
-            if !results.isEmpty {
-                episodeRatings.merge(results) { _, new in new }
-            }
-        }
-        .task(id: "\(selectedSeason)-artwork-\(episodeScrollIndex / 3)-\(seasonEpisodes.count)") {
-            // Warm the stills just ahead of the strip, so cards scrolled into
-            // view already have their image instead of a placeholder.
-            try? await Task.sleep(for: .milliseconds(400))
-            guard !Task.isCancelled, !seasonEpisodes.isEmpty else { return }
-            let focusIndex = min(max(episodeScrollIndex, 0), seasonEpisodes.count - 1)
-            let lower = max(0, focusIndex - 2)
-            let upper = min(seasonEpisodes.count, focusIndex + 12)
-            guard lower < upper else { return }
-            // Same URL string the card loads, so the cache key matches.
-            let urls = seasonEpisodes[lower..<upper].compactMap { video -> URL? in
-                video.thumbnail.flatMap { URL(string: $0) }
-            }
-            await TvEpisodeCardLayout.prefetchArtwork(urls)
+            // Write only what actually changed: without episode rating
+            // providers every pause returned the same empty lists, and the
+            // assignment alone redrew the whole strip mid-navigation.
+            let changed = results.filter { episodeRatings[$0.key] != $0.value }
+            guard !Task.isCancelled, !changed.isEmpty else { return }
+            episodeRatings.merge(changed) { _, new in new }
         }
     }
 
@@ -7397,34 +7391,6 @@ private enum TvEpisodeCardLayout {
     static let verticalPadding: CGFloat = 28
     static let stripHeight: CGFloat = height + verticalPadding * 2
     static let step: CGFloat = width + spacing
-
-    /// Loads episode stills into the poster cache at the size the cards ask
-    /// for (same key as `CachedPosterArtwork`), three at a time.
-    @MainActor
-    static func prefetchArtwork(_ urls: [URL]) async {
-        guard !urls.isEmpty else { return }
-        let pixelSize = max(160, Int(ceil(max(width, height) * UIScreen.main.scale)))
-        await withTaskGroup(of: Void.self) { group in
-            var pending = urls.makeIterator()
-            for _ in 0..<3 {
-                guard let url = pending.next() else { break }
-                group.addTask(priority: .utility) {
-                    _ = await PosterArtworkCache.shared.image(for: url, maxPixelSize: pixelSize)
-                }
-            }
-            while await group.next() != nil {
-                guard !Task.isCancelled else {
-                    group.cancelAll()
-                    return
-                }
-                if let url = pending.next() {
-                    group.addTask(priority: .utility) {
-                        _ = await PosterArtworkCache.shared.image(for: url, maxPixelSize: pixelSize)
-                    }
-                }
-            }
-        }
-    }
 }
 
 private struct TvSeasonPill: View {

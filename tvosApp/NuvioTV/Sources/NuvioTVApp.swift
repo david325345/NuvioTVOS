@@ -4630,10 +4630,15 @@ private final class TVHomeFocusWork {
     /// can consume before the previous lazy row is materialized.
     var upwardFocusTask: Task<Void, Never>?
     var focusedRowIndex: Int = 0
+    /// Moves the wider window of mounted rows once a row scroll has settled.
+    var rowWindowTask: Task<Void, Never>?
+    /// `CACurrentMediaTime()` at which the current animated row scroll ends.
+    var verticalScrollEndTime: Double = 0
 
     func cancelAll() {
         cachedVisibleSections = nil
         restoreReleaseTask?.cancel()
+        rowWindowTask?.cancel()
         focusSettleTask?.cancel()
         heroEnrichmentTask?.cancel()
         landscapeFocusTask?.cancel()
@@ -4951,6 +4956,9 @@ struct TVHomeView: View {
     @State private var overlayRestoreGeneration = 0
     @Environment(\.isEnabled) private var isEnabled
     @State private var focusedRowIndex: Int = 0
+    /// Centre of the wider window of mounted rows; trails `focusedRowIndex`
+    /// until a row scroll settles (see `updateMountedRowWindow`).
+    @State private var mountedRowCenter: Int = 0
     @State private var browsingSection: TVHomeSection?
     @State private var gridHeroIndex = 0
     @State private var didRequestInitialGridHeroFocus = false
@@ -5169,7 +5177,13 @@ struct TVHomeView: View {
                                         }
 
                                         ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
-                                            let isNearFocusedRow = abs(index - focusedRowIndex) <= 2
+                                            // The rows next to the focused one are always built
+                                            // (focus moves into them). The wider ±3 window only
+                                            // follows once a row scroll has settled, so a single
+                                            // step never builds a new row in the frame its scroll
+                                            // animation starts.
+                                            let isNearFocusedRow = abs(index - focusedRowIndex) <= 1
+                                                || abs(index - mountedRowCenter) <= 3
                                             if isNearFocusedRow {
                                                 homeSectionRow(
                                                     index: index,
@@ -5232,6 +5246,9 @@ struct TVHomeView: View {
                                                 verticalScrollProxy.scrollTo(targetId, anchor: .top)
                                             }
                                         }
+                                    }
+                                    .onChange(of: focusedRowIndex) { oldRow, newRow in
+                                        updateMountedRowWindow(from: oldRow, to: newRow)
                                     }
                                     .onChange(of: overlayRestoreGeneration) { _, generation in
                                         guard let target = overlayRestoreCardID,
@@ -6832,6 +6849,8 @@ struct TVHomeView: View {
         guard sections.indices.contains(previousIndex) else { return }
         let previousSection = sections[previousIndex]
         let savedIndex = rowScrollStore.index(for: previousSection.id)
+        // Before the settle calls below, so the hero waits for this scroll.
+        markVerticalScroll()
 
         let targetCardKey: String?
         if !previousSection.collectionFolders.isEmpty {
@@ -6908,6 +6927,7 @@ struct TVHomeView: View {
                             ? TVHomeLayout.fastVerticalScrollAnimation
                             : TVHomeLayout.verticalScrollAnimation
                         TVHomeDebugTrace.log("🚀 [SCROLL_TO] section=\(section.id) anchor=top anim=\(isFastScrolling || fastNavigation ? "FAST" : "NORMAL")")
+                        markVerticalScroll()
                         withAnimation(animation) {
                             verticalScrollProxy.scrollTo(section.id, anchor: .top)
                         }
@@ -6978,6 +6998,7 @@ struct TVHomeView: View {
                                 ? TVHomeLayout.fastVerticalScrollAnimation
                                 : TVHomeLayout.verticalScrollAnimation
                             TVHomeDebugTrace.log("🚀 [SCROLL_TO] section=\(section.id) anchor=top anim=\(isFastScrolling || fastNavigation ? "FAST" : "NORMAL")")
+                            markVerticalScroll()
                             withAnimation(animation) {
                                 verticalScrollProxy.scrollTo(section.id, anchor: .top)
                             }
@@ -7071,8 +7092,9 @@ struct TVHomeView: View {
                                 ? TVHomeLayout.fastVerticalScrollAnimation
                                 : TVHomeLayout.verticalScrollAnimation
                             TVHomeDebugTrace.log(
-                                "🚀 [SCROLL_TO] section=\(section.id) anchor=top fromRow=\(focusedRowIndex) toRow=\(index) anim=\(isFastScrolling || fastNavigation ? "FAST(0.18s)" : "NORMAL(0.28s)")"
+                                "🚀 [SCROLL_TO] section=\(section.id) anchor=top fromRow=\(focusedRowIndex) toRow=\(index) anim=\(isFastScrolling || fastNavigation ? "FAST" : "NORMAL")"
                             )
+                            markVerticalScroll()
                             withAnimation(animation) {
                                 verticalScrollProxy.scrollTo(section.id, anchor: .top)
                             }
@@ -8191,7 +8213,10 @@ struct TVHomeView: View {
         let targetFolderId = focusWork.pendingFocusedFolder?.id
         let targetSectionId = focusWork.pendingSectionId
         let hasFolderPending = targetFolderId != nil
-        let delay = heroSettleNanoseconds
+        // After a row change, switch the hero only once the row scroll has
+        // settled; its crossfades landing mid-scroll made the motion hitch.
+        let remainingRowScroll = max(0, focusWork.verticalScrollEndTime - CACurrentMediaTime())
+        let delay = max(heroSettleNanoseconds, UInt64(remainingRowScroll * 1_000_000_000))
         TVHomeDebugTrace.log(
             "hero.schedule section=\(targetSectionId ?? "nil") meta=\(targetMetaId ?? "nil") "
                 + "folder=\(targetFolderId ?? "nil") delayMs=\(delay / 1_000_000)"
@@ -8690,6 +8715,39 @@ struct TVHomeView: View {
 
     /// Fast-scroll tracking (matching Android DpadFastScrollModifier):
     /// suppresses intermediate card focus oscillations during continuous remote holding or rapid swiping.
+    /// Moves the ±3 window of mounted rows. Building a row (cards, artwork)
+    /// in the same frame a row scroll starts was what made single steps
+    /// jerk, so for a one-row step the window follows only once the scroll
+    /// has settled; jumps and held-button scrolling move it at once.
+    private func updateMountedRowWindow(from oldRow: Int, to newRow: Int) {
+        focusWork.rowWindowTask?.cancel()
+        if abs(newRow - oldRow) > 1 || isFastScrolling || fastNavigation {
+            if mountedRowCenter != newRow { mountedRowCenter = newRow }
+            return
+        }
+        let remaining = max(0, focusWork.verticalScrollEndTime - CACurrentMediaTime())
+        // A little after the scroll settles, so it does not land in the same
+        // frame as the hero switch, which also waits for the scroll.
+        let wait = max(remaining, TVHomeLayout.verticalScrollSettleSeconds) + 0.35
+        focusWork.rowWindowTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+            guard !Task.isCancelled, mountedRowCenter != focusedRowIndex else { return }
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                mountedRowCenter = focusedRowIndex
+            }
+        }
+    }
+
+    /// Notes when the animated row scroll just started will have settled.
+    private func markVerticalScroll() {
+        let seconds = (isFastScrolling || fastNavigation)
+            ? TVHomeLayout.fastVerticalScrollSettleSeconds
+            : TVHomeLayout.verticalScrollSettleSeconds
+        focusWork.verticalScrollEndTime = CACurrentMediaTime() + seconds
+    }
+
     private func recordFocusTransition() {
         let now = CACurrentMediaTime()
         let delta = now - focusWork.lastFocusTransitionTime

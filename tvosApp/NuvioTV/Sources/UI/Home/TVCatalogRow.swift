@@ -24,10 +24,17 @@ enum TVHomeLayout {
 
     /// Horizontal strip motion preserving momentum across continuous remote presses.
     static let scrollAnimation = Animation.interactiveSpring(response: 0.24, dampingFraction: 0.86, blendDuration: 0.18)
-    /// Fluid vertical row transition preserving momentum with critically damped bounce-free settle.
-    static let verticalScrollAnimation = Animation.interactiveSpring(response: 0.28, dampingFraction: 1.0, blendDuration: 0.20)
-    /// High-speed vertical tracking curve when holding remote direction buttons to match key-repeat cadence.
-    static let fastVerticalScrollAnimation = Animation.interactiveSpring(response: 0.18, dampingFraction: 1.0, blendDuration: 0.12)
+    /// Vertical row transition: critically damped (no bounce) and long enough
+    /// to read as a glide with a soft landing. At 0.28 s a whole row in one
+    /// step looked like a jump.
+    static let verticalScrollAnimation = Animation.interactiveSpring(response: 0.42, dampingFraction: 1.0, blendDuration: 0.25)
+    /// Held direction buttons: faster, to keep up with the key-repeat cadence.
+    static let fastVerticalScrollAnimation = Animation.interactiveSpring(response: 0.22, dampingFraction: 1.0, blendDuration: 0.14)
+    /// When each of the above has visibly settled. The hero switch and the
+    /// mounting of rows further away wait for this, so they never land in
+    /// the middle of the scroll.
+    static let verticalScrollSettleSeconds: Double = 0.45
+    static let fastVerticalScrollSettleSeconds: Double = 0.24
 }
 
 enum TVLayout {
