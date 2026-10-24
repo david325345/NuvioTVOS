@@ -677,6 +677,107 @@ final class UsenetSourceTests: XCTestCase {
         XCTAssertEqual(later.take(1_000_000, now: start + .seconds(1)), .seconds(0.5))
     }
 
+    func testTokenBucketRefundsCancelledReadAhead() {
+        let start = ContinuousClock.Instant.now
+        var bucket = UsenetTokenBucket(megabitsPerSecond: 8, now: start) // 1 MB/s, 1 MiB burst
+        _ = bucket.take(1_048_576, now: start)
+        XCTAssertEqual(bucket.take(1_000_000, now: start), .seconds(1))
+        // The read-ahead was cancelled by a seek: the next request doesn't queue behind it.
+        bucket.refund(1_000_000)
+        XCTAssertEqual(bucket.take(1_000_000, now: start), .seconds(1))
+        // A refund never fills the bucket beyond its burst.
+        bucket.refund(10_000_000)
+        XCTAssertEqual(bucket.tokens, bucket.capacity)
+    }
+
+    func testWaitQueuePutsPlaybackFirst() {
+        var queue = UsenetWaitQueue<Int>()
+        XCTAssertTrue(queue.isEmpty)
+        queue.append(1, urgent: false)
+        queue.append(2, urgent: true)
+        queue.append(3, urgent: false)
+        queue.append(4, urgent: true)
+        XCTAssertEqual(queue.popFirst(), 2)
+        XCTAssertEqual(queue.popFirst(), 4)
+        XCTAssertEqual(queue.popFirst(), 1)
+        queue.append(5, urgent: true)
+        XCTAssertEqual(queue.removeAll(), [5, 3])
+        XCTAssertTrue(queue.isEmpty)
+        XCTAssertNil(queue.popFirst())
+    }
+
+    func testReadAheadNextToThePlayheadIsNotPaced() {
+        XCTAssertEqual(UsenetStreamSession.priority(of: 11, playhead: 10), .next)
+        XCTAssertEqual(UsenetStreamSession.priority(of: 10 + UsenetStreamSession.nextArticles, playhead: 10), .next)
+        XCTAssertEqual(UsenetStreamSession.priority(of: 11 + UsenetStreamSession.nextArticles, playhead: 10), .readAhead)
+        XCTAssertEqual(UsenetStreamSession.priority(of: 10, playhead: 10), .readAhead)
+        XCTAssertEqual(UsenetStreamSession.priority(of: 5, playhead: 10), .readAhead)
+    }
+
+    func testWaitLogMergesOverlappingWaits() {
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        var log = UsenetWaitLog()
+        log.begin(now: t0)
+        log.begin(now: t0 + 0.5)
+        log.end(now: t0 + 1)
+        log.end(now: t0 + 2)
+        XCTAssertEqual(log.intervals, [UsenetWaitLog.Interval(start: t0, end: t0 + 2)])
+        XCTAssertEqual(log.waited(from: t0 + 1, to: t0 + 5, now: t0 + 5), 1, accuracy: 0.001)
+        // A wait still running counts up to now.
+        log.begin(now: t0 + 10)
+        XCTAssertEqual(log.waited(from: t0 + 9, to: t0 + 20, now: t0 + 12), 2, accuracy: 0.001)
+        log.end(now: t0 + 13)
+        XCTAssertEqual(log.waited(from: t0, to: t0 + 20, now: t0 + 20), 5, accuracy: 0.001)
+        // Only the most recent waits are kept.
+        for step in 0..<(UsenetWaitLog.capacity + 10) {
+            let at = t0 + 100 + Double(step)
+            log.begin(now: at)
+            log.end(now: at + 0.1)
+        }
+        XCTAssertEqual(log.intervals.count, UsenetWaitLog.capacity)
+    }
+
+    func testSeekTimerMeasuresUntilPlaybackMoves() {
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        var timer = UsenetSeekTimer(target: 600, requestedAt: t0)
+        // The engine still reports the old position.
+        XCTAssertEqual(timer.observe(position: 300, playing: true, now: t0 + 0.1), .waiting)
+        XCTAssertNil(timer.anchor)
+        // Then the target, then the keyframe before it while loading.
+        XCTAssertEqual(timer.observe(position: 600, playing: false, now: t0 + 0.4), .waiting)
+        XCTAssertEqual(timer.observe(position: 596, playing: false, now: t0 + 0.7), .waiting)
+        XCTAssertEqual(timer.anchor, 596)
+        XCTAssertEqual(timer.observe(position: 596, playing: true, now: t0 + 1.6), .waiting)
+        // It has played 0.8 s since it started moving.
+        guard case .resumed(let resumedAt) = timer.observe(position: 596.8, playing: true, now: t0 + 2.4) else {
+            return XCTFail("expected the seek to be timed")
+        }
+        XCTAssertEqual(resumedAt.timeIntervalSince(t0), 1.6, accuracy: 0.01)
+
+        // A jump made while paused is timed from the play press.
+        var paused = UsenetSeekTimer(target: 600, requestedAt: t0)
+        XCTAssertEqual(paused.observe(position: 600, playing: false, now: t0 + 5), .waiting)
+        paused.restart(at: t0 + 10)
+        XCTAssertEqual(paused.observe(position: 600, playing: false, now: t0 + 10.5), .waiting)
+        guard case .resumed(let playedAt) = paused.observe(position: 600.5, playing: true, now: t0 + 11.5) else {
+            return XCTFail("expected the seek to be timed")
+        }
+        XCTAssertEqual(playedAt.timeIntervalSince(t0), 11, accuracy: 0.01)
+
+        var stuck = UsenetSeekTimer(target: 600, requestedAt: t0)
+        XCTAssertEqual(stuck.observe(position: 600, playing: false, now: t0 + 31), .cancelled)
+    }
+
+    func testSeekLineSplitsUsenetAndPlayer() {
+        var stats = UsenetStreamStats()
+        XCTAssertNil(stats.seekLine)
+        stats.lastSeekSeconds = 2.4
+        stats.lastSeekUsenetSeconds = 0.9
+        XCTAssertEqual(stats.seekLine, "2.4 s · Usenet 0.9 s · player 1.5 s")
+        stats.lastSeekUsenetSeconds = 5
+        XCTAssertEqual(stats.seekLine, "2.4 s · Usenet 2.4 s · player 0.0 s")
+    }
+
     func testSpeedLimitSetting() {
         let store = UserDefaults(suiteName: "usenet-speed-\(UUID().uuidString)")!
         XCTAssertEqual(UsenetSettings.speedLimitMbps(store: store), 0)

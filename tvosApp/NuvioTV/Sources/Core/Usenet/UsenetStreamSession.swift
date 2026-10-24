@@ -112,6 +112,45 @@ struct UsenetSessionStats: Equatable, Sendable {
     var cachedBytes = 0
 }
 
+/// When playback reads were waiting for articles, with overlapping waits
+/// merged, for timing seeks in the debug overlay.
+struct UsenetWaitLog: Sendable {
+    struct Interval: Sendable, Equatable {
+        let start: Date
+        let end: Date
+    }
+
+    static let capacity = 256
+
+    private(set) var intervals: [Interval] = []
+    private var waiting = 0
+    private var started: Date?
+
+    mutating func begin(now: Date) {
+        if waiting == 0 { started = now }
+        waiting += 1
+    }
+
+    mutating func end(now: Date) {
+        waiting = max(0, waiting - 1)
+        guard waiting == 0, let started else { return }
+        self.started = nil
+        intervals.append(Interval(start: started, end: max(started, now)))
+        if intervals.count > Self.capacity { intervals.removeFirst(intervals.count - Self.capacity) }
+    }
+
+    /// Seconds spent waiting between `start` and `end`.
+    func waited(from start: Date, to end: Date, now: Date) -> TimeInterval {
+        var all = intervals
+        if let started { all.append(Interval(start: started, end: max(started, now))) }
+        return all.reduce(0) { total, interval in
+            let lower = max(interval.start, start)
+            let upper = min(interval.end, end)
+            return total + max(0, upper.timeIntervalSince(lower))
+        }
+    }
+}
+
 /// Serves byte ranges of the played file to the local HTTP server, fetching
 /// and decoding articles on demand with read-ahead and an in-memory cache.
 ///
@@ -136,6 +175,21 @@ actor UsenetStreamSession {
     private var inflight: [Int: Task<Data, Error>] = [:]
     private var prefetching: Set<Int> = []
     private var playhead = 0
+    /// The articles holding the start and the end of the file (the MKV header
+    /// and its seek index): never evicted, as a player may read them again
+    /// on a seek.
+    private var pinned: Set<Int> = []
+    private var waits = UsenetWaitLog()
+    /// Fetches still waiting for the speed cap or a connection, by article:
+    /// one the player now needs sooner can be moved up.
+    private var queued: [Int: QueuedFetch] = [:]
+
+    private struct QueuedFetch {
+        let priority: UsenetConnectionPool.FetchPriority
+        let token: UUID
+        /// Still held back by the speed cap (read-ahead with a cap set).
+        var waitingForCap: Bool
+    }
 
     private var counters = UsenetSessionStats()
 
@@ -179,6 +233,10 @@ actor UsenetStreamSession {
         guard articleCount > 0, totalSize > 0, let first = source.extents.first, let last = source.extents.last else {
             throw UsenetError.noPlayableFile
         }
+        var ends: Set<Int> = []
+        if let start = globalIndex(at: 0) { ends.formUnion([start, start + 1]) }
+        if let end = globalIndex(at: totalSize - 1) { ends.formUnion([end - 1, end]) }
+        pinned = ends.filter { $0 >= 0 && $0 < articleCount }
         for volume in Set([first.volume, last.volume]) {
             store(bases[volume], source.firstArticles[volume].data)
             counters.downloadedBytes += Int64(source.firstArticles[volume].data.count)
@@ -207,13 +265,19 @@ actor UsenetStreamSession {
         let segmentCount = source.volumes[volume].segments.count
 
         var probe = layouts[volume].index(for: target)
+        let firstProbeCertain = probe.certain
         var hops = 0
         while true {
             let global = bases[volume] + probe.index
-            let data = try await article(global)
+            // The player's own article goes first in line, then the read-ahead
+            // moves: after a seek the next articles download together with it,
+            // not after it. A guessed position waits until it is confirmed.
+            let pending = demand(global)
+            if updatesPlayhead, hops == 0, firstProbeCertain { noteRead(global) }
+            let data = try await finish(global, pending)
             guard let range = layouts[volume].range(of: probe.index) else { throw UsenetError.noPlayableFile }
             if range.contains(target) {
-                if updatesPlayhead { noteRead(global) }
+                if updatesPlayhead, hops > 0 || !firstProbeCertain { noteRead(global) }
                 let start = Int(target - range.lowerBound)
                 let end = min(data.count, start + limit)
                 guard start < end else { return Data() }
@@ -241,9 +305,15 @@ actor UsenetStreamSession {
         return snapshot
     }
 
+    /// How long playback reads waited for articles between two moments.
+    func waitedSeconds(from start: Date, to end: Date) -> TimeInterval {
+        waits.waited(from: start, to: end, now: Date())
+    }
+
     func stop() async {
         inflight.values.forEach { $0.cancel() }
         inflight = [:]
+        queued = [:]
         cache = [:]
         cacheOrder = []
         cachedBytes = 0
@@ -273,32 +343,102 @@ actor UsenetStreamSession {
 
     // MARK: - Articles
 
-    private func article(_ index: Int) async throws -> Data {
+    private enum Demand {
+        case cached(Data)
+        case fetching(Task<Data, Error>)
+    }
+
+    /// The player's own article: from the cache, from a read-ahead fetch
+    /// already on its way (moved up if it still waits its turn), or from a
+    /// new fetch first in line at the server.
+    private func demand(_ index: Int) -> Demand {
         if let data = cache[index] {
             counters.cacheHits += 1
             touch(index)
-            return data
+            return .cached(data)
         }
         if let task = inflight[index] {
-            // A read-ahead fetch is already on its way: wait for it instead
-            // of fetching twice, and take over its bookkeeping.
+            // Take over the read-ahead instead of fetching twice.
             if prefetching.remove(index) != nil { counters.cacheHits += 1 }
-            defer { if inflight[index] == task { inflight[index] = nil } }
-            return try await task.value
+            return .fetching(promote(index, to: .playback, onlyWhileWaitingForCap: false) ?? task)
         }
         counters.cacheMisses += 1
-        let task = makeTask(index)
-        inflight[index] = task
-        defer { if inflight[index] == task { inflight[index] = nil } }
-        return try await task.value
+        return .fetching(startFetch(index, priority: .playback))
     }
 
-    private func makeTask(_ index: Int) -> Task<Data, Error> {
+    private func finish(_ index: Int, _ demand: Demand) async throws -> Data {
+        switch demand {
+        case .cached(let data):
+            return data
+        case .fetching(let task):
+            waits.begin(now: Date())
+            defer {
+                waits.end(now: Date())
+                if inflight[index] == task { clearInflight(index) }
+            }
+            return try await task.value
+        }
+    }
+
+    private func startFetch(_ index: Int, priority: UsenetConnectionPool.FetchPriority) -> Task<Data, Error> {
+        let token = UUID()
+        let task = makeTask(index, priority: priority, token: token)
+        inflight[index] = task
+        queued[index] = QueuedFetch(
+            priority: priority,
+            token: token,
+            waitingForCap: priority == .readAhead && pool.speedLimitMbps > 0
+        )
+        return task
+    }
+
+    private func fetchProgressed(_ index: Int, token: UUID, _ progress: UsenetConnectionPool.FetchProgress) {
+        guard queued[index]?.token == token else { return }
+        switch progress {
+        case .passedCap:
+            queued[index]?.waitingForCap = false
+        case .connected:
+            // Downloading (or opening a connection): restarting it would only lose time.
+            queued[index] = nil
+        }
+    }
+
+    /// Starts `index` again with a more urgent priority while its fetch still
+    /// waits (for the cap, or also for a connection); nil when it is already
+    /// downloading or urgent enough.
+    private func promote(_ index: Int, to priority: UsenetConnectionPool.FetchPriority,
+                         onlyWhileWaitingForCap: Bool) -> Task<Data, Error>? {
+        guard let entry = queued[index], Self.urgency(entry.priority) < Self.urgency(priority),
+              !onlyWhileWaitingForCap || entry.waitingForCap,
+              let old = inflight[index] else { return nil }
+        old.cancel()
+        return startFetch(index, priority: priority)
+    }
+
+    private static func urgency(_ priority: UsenetConnectionPool.FetchPriority) -> Int {
+        switch priority {
+        case .startup, .readAhead: return 0
+        case .next: return 1
+        case .playback: return 2
+        }
+    }
+
+    private func clearInflight(_ index: Int) {
+        inflight[index] = nil
+        queued[index] = nil
+    }
+
+    private func makeTask(_ index: Int, priority: UsenetConnectionPool.FetchPriority, token: UUID) -> Task<Data, Error> {
         let place = split(index)
         let segment = source.volumes[place.volume].segments[place.index]
         let pool = self.pool
         return Task {
-            let outcome = try await pool.fetch(messageID: segment.messageID, expectedBytes: segment.bytes, paced: true)
+            let outcome = try await pool.fetch(
+                messageID: segment.messageID,
+                expectedBytes: segment.bytes,
+                priority: priority,
+                onProgress: { progress in Task { await self.fetchProgressed(index, token: token, progress) } }
+            )
             switch outcome {
             case .body(let body):
                 let decoded = try await Self.decode(body)
@@ -370,6 +510,14 @@ actor UsenetStreamSession {
     /// isn't stuck behind read-ahead.
     private var prefetchSlots: Int { max(1, pool.totalConnections - 1) }
 
+    /// Read-ahead this close to the playhead is needed in a moment, so the
+    /// speed cap never holds it back.
+    static let nextArticles = 4
+
+    static func priority(of index: Int, playhead: Int) -> UsenetConnectionPool.FetchPriority {
+        index > playhead && index - playhead <= nextArticles ? .next : .readAhead
+    }
+
     private func noteRead(_ index: Int) {
         let jumped = abs(index - playhead) > 2
         playhead = index
@@ -378,8 +526,19 @@ actor UsenetStreamSession {
             let window = index...(index + readAheadSegments)
             for (pending, task) in inflight where prefetching.contains(pending) && !window.contains(pending) {
                 task.cancel()
-                inflight[pending] = nil
+                clearInflight(pending)
                 prefetching.remove(pending)
+            }
+            // Read-ahead kept for the next articles may still wait for the
+            // speed cap: they are needed now. (One already waiting for a
+            // connection keeps its place in line.)
+            let nextLast = min(articleCount - 1, index + Self.nextArticles)
+            if index + 1 <= nextLast {
+                for next in (index + 1)...nextLast where prefetching.contains(next) {
+                    if let promoted = promote(next, to: .next, onlyWhileWaitingForCap: true) {
+                        watchPrefetch(next, promoted)
+                    }
+                }
             }
         }
         prefetch(after: index)
@@ -396,18 +555,24 @@ actor UsenetStreamSession {
 
     private func startPrefetch(_ index: Int) {
         guard cache[index] == nil, inflight[index] == nil else { return }
-        let task = makeTask(index)
-        inflight[index] = task
+        let task = startFetch(index, priority: Self.priority(of: index, playhead: playhead))
         prefetching.insert(index)
+        watchPrefetch(index, task)
+    }
+
+    private func watchPrefetch(_ index: Int, _ task: Task<Data, Error>) {
         Task {
             _ = try? await task.value
-            self.prefetchFinished(index)
+            self.prefetchFinished(index, task)
         }
     }
 
-    private func prefetchFinished(_ index: Int) {
+    private func prefetchFinished(_ index: Int, _ task: Task<Data, Error>) {
+        // A cancelled read-ahead was already replaced, maybe by a newer fetch
+        // of the same article: leave that one's bookkeeping alone.
+        guard inflight[index] == task else { return }
+        clearInflight(index)
         guard prefetching.remove(index) != nil else { return }
-        inflight[index] = nil
         prefetch(after: playhead)
     }
 
@@ -417,7 +582,8 @@ actor UsenetStreamSession {
         if cache[index] == nil { cachedBytes += data.count }
         cache[index] = data
         touch(index)
-        while cachedBytes > profile.cacheBytes, let oldest = cacheOrder.first(where: { $0 != index }) {
+        while cachedBytes > profile.cacheBytes,
+              let oldest = cacheOrder.first(where: { $0 != index && !pinned.contains($0) }) {
             cacheOrder.removeAll { $0 == oldest }
             cachedBytes -= cache.removeValue(forKey: oldest)?.count ?? 0
         }

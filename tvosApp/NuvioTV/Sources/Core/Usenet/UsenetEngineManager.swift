@@ -16,6 +16,10 @@ struct UsenetStreamStats: Equatable, Sendable {
     var kind = ""
     var fileSize: Int64 = 0
     var speedLimitMbps = 0
+    /// The last timed seek: from the jump until the picture moved again,
+    /// and how much of it playback reads waited for Usenet articles.
+    var lastSeekSeconds: Double?
+    var lastSeekUsenetSeconds: Double?
 
     var downloadRateFormatted: String {
         ByteCountFormatter.string(fromByteCount: Int64(downloadRate), countStyle: .file) + "/s"
@@ -45,6 +49,74 @@ struct UsenetStreamStats: Equatable, Sendable {
     }
 
     var summary: String { connectionLine + " · " + cacheLine }
+
+    /// HUD line 3: the last timed seek, split into Usenet and the player.
+    var seekLine: String? {
+        guard let total = lastSeekSeconds else { return nil }
+        let usenet = min(total, max(0, lastSeekUsenetSeconds ?? 0))
+        return [
+            Self.seconds(total),
+            "Usenet " + Self.seconds(usenet),
+            "player " + Self.seconds(total - usenet),
+        ].joined(separator: " · ")
+    }
+
+    private static func seconds(_ value: Double) -> String {
+        String(format: "%.1f s", value)
+    }
+}
+
+/// Times a seek from the user's jump until the picture moves again.
+struct UsenetSeekTimer: Sendable, Equatable {
+    /// Short skips are usually served from the read-ahead, so only longer
+    /// jumps are timed.
+    static let minimumJump: Double = 30
+    static let timeout: TimeInterval = 30
+
+    let target: Double
+    /// From when playback was wanted at the new position: the jump, or the
+    /// play press after a jump made while paused.
+    private(set) var requestedAt: Date
+    /// Where the engine reported the new position before playing on.
+    private(set) var anchor: Double?
+
+    init(target: Double, requestedAt: Date) {
+        self.target = target
+        self.requestedAt = requestedAt
+    }
+
+    enum Outcome: Equatable {
+        case waiting
+        /// Never resumed: nothing to report.
+        case cancelled
+        /// Playback moved on again from this moment.
+        case resumed(Date)
+    }
+
+    /// Play pressed after a jump made while paused: time from now.
+    mutating func restart(at now: Date) {
+        requestedAt = now
+    }
+
+    /// `playing` means playing and not loading. Engines report a seek in
+    /// progress differently (MPV as idle), so a pause is reported separately
+    /// by the player and only the timeout ends a timing here.
+    mutating func observe(position: Double, playing: Bool, now: Date) -> Outcome {
+        guard now.timeIntervalSince(requestedAt) <= Self.timeout else { return .cancelled }
+        guard let anchor else {
+            // The engine reports the target, or the keyframe before it, first.
+            if position >= target - 15, position <= target + 2 { self.anchor = position }
+            return .waiting
+        }
+        if position < anchor - 0.5, position >= target - 15 {
+            // Snapped back to the keyframe: playback resumes from there.
+            self.anchor = position
+            return .waiting
+        }
+        guard playing, position >= anchor + 0.3, position <= anchor + 30 else { return .waiting }
+        // It has played (position - anchor) seconds since it started moving.
+        return .resumed(max(requestedAt, now.addingTimeInterval(-(position - anchor))))
+    }
 }
 
 /// Starts and stops the one active Usenet stream, the way
@@ -67,6 +139,9 @@ final class UsenetEngineManager: ObservableObject {
     private var statsTask: Task<Void, Never>?
     private(set) var activeStreamURL: URL?
     private var generation = 0
+    private var seekTimer: UsenetSeekTimer?
+    /// The user paused: a jump made meanwhile is timed from the play press.
+    private var playbackPaused = false
 
     private init() {}
 
@@ -168,12 +243,70 @@ final class UsenetEngineManager: ObservableObject {
         self.server = nil
         self.pool = nil
         activeStreamURL = nil
+        seekTimer = nil
+        playbackPaused = false
         isStreaming = false
         activeStats = UsenetStreamStats()
         damagedStreamURL = nil
         damagedGeneration = nil
         await server?.stop()
         await session?.stop()
+    }
+
+    // MARK: - Seek timing (debug overlay)
+
+    /// The player jumps on the playing Usenet stream: time it until the
+    /// picture moves again.
+    func beginSeekTiming(target: Double, from previous: Double, playbackURL: String?) {
+        guard session != nil, let activeStreamURL, playbackURL == activeStreamURL.absoluteString,
+              target.isFinite, previous.isFinite,
+              abs(target - previous) >= UsenetSeekTimer.minimumJump else {
+            seekTimer = nil
+            return
+        }
+        seekTimer = UsenetSeekTimer(target: target, requestedAt: Date())
+    }
+
+    /// The user paused: a running seek timing would measure the pause.
+    func cancelSeekTiming() {
+        seekTimer = nil
+        playbackPaused = true
+    }
+
+    /// The user pressed play: a jump made while paused is timed from now.
+    func restartSeekTiming() {
+        playbackPaused = false
+        seekTimer?.restart(at: Date())
+    }
+
+    /// A playback sample from the player; ends a running seek timing.
+    func observeSeekTiming(position: Double, playing: Bool) {
+        if playbackPaused {
+            // Playing again without a play press we saw (another resume path).
+            guard playing else { return }
+            restartSeekTiming()
+        }
+        guard var timer = seekTimer else { return }
+        switch timer.observe(position: position, playing: playing, now: Date()) {
+        case .waiting:
+            seekTimer = timer
+        case .cancelled:
+            seekTimer = nil
+        case .resumed(let resumedAt):
+            seekTimer = nil
+            guard let session else { return }
+            let requestedAt = timer.requestedAt
+            let total = max(0, resumedAt.timeIntervalSince(requestedAt))
+            let generation = self.generation
+            Task { [weak self] in
+                let waited = await session.waitedSeconds(from: requestedAt, to: resumedAt)
+                guard let self, self.generation == generation else { return }
+                var stats = self.activeStats
+                stats.lastSeekSeconds = total
+                stats.lastSeekUsenetSeconds = min(total, waited)
+                self.activeStats = stats
+            }
+        }
     }
 
     private func reportDamage(generation: Int) {

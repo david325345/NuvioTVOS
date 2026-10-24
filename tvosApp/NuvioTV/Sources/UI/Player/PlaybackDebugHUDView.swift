@@ -88,6 +88,9 @@ struct PlaybackDebugHUDView: View {
                     let usenet = UsenetEngineManager.shared.activeStats
                     hudRow(label: "Usenet", value: usenet.connectionLine)
                     hudRow(label: "NNTP cache", value: usenet.cacheLine)
+                    if let seek = usenet.seekLine {
+                        hudRow(label: "NNTP seek", value: seek)
+                    }
                 }
                 hudRow(label: "Server", value: info.server.isEmpty ? "--" : info.server)
                 fileRow

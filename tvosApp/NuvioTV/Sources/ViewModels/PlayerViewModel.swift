@@ -3179,6 +3179,10 @@ class PlayerViewModel: ObservableObject {
         let rawCurrent = Double(c.positionMs) / 1000.0
         let rawDuration = Double(c.durationMs) / 1000.0
         let latestTime = PlayerTime(current: rawCurrent, duration: rawDuration)
+        UsenetEngineManager.shared.observeSeekTiming(
+            position: rawCurrent,
+            playing: c.isPlayerPlaying && !c.isPlayerLoading
+        )
 
         // An unavailable duration is unknown, not evidence of a live stream.
         // Keep recognized channel/source hints, including a URL resolved after load.
@@ -3698,6 +3702,7 @@ class PlayerViewModel: ObservableObject {
             seek(to: 0)
         }
         engine.playPlayback()
+        UsenetEngineManager.shared.restartSeekTiming()
         status = .playing
         recordPlaybackResumeIfEligible()
         cancelPauseOverlaySchedule()
@@ -3742,6 +3747,7 @@ class PlayerViewModel: ObservableObject {
         screensaverDebugLog("[ScreensaverDebug][PlayerVM] pause(forBackground=\(forBackground)) called: currentStatus=\(status), time=\(time.current)/\(time.duration)")
         cancelControlsHideTimer()
         engine.pausePlayback()
+        UsenetEngineManager.shared.cancelSeekTiming()
         status = .paused
         saveProgress(force: true, eventAction: .pause)
         cancelPauseOverlaySchedule()
@@ -4299,6 +4305,7 @@ class PlayerViewModel: ObservableObject {
         let prevCurrent = time.current
         seekWatchdogLog("[SeekWatchdog][PlayerVM] 👆 User seek to \(String(format: "%.3f", seconds))s (target: \(String(format: "%.3f", target))s, current: \(String(format: "%.3f", time.current))s, duration: \(String(format: "%.3f", duration))s)")
         screensaverDebugLog("[ScreensaverDebug][PlayerVM] seek(to: \(seconds)) called: target=\(target), prevCurrent=\(time.current), duration=\(duration)")
+        UsenetEngineManager.shared.beginSeekTiming(target: target, from: prevCurrent, playbackURL: activeStreamURL)
         engine.seekToMs(Int64(target * 1000))
         recordCommittedSeek(to: target, previous: prevCurrent, duration: duration)
     }
