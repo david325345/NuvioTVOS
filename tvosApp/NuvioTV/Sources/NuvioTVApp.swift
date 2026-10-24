@@ -6987,7 +6987,7 @@ struct TVHomeView: View {
                     focusedSectionId = section.id
                     if changedRow {
                         focusedRowIndex = index
-                        if suppressReturnFocusAnimations || pendingInitialFocusCardKey != nil {
+                        if isFocusRestore(cardKey) {
                             var transaction = Transaction(animation: nil)
                             transaction.disablesAnimations = true
                             withTransaction(transaction) {
@@ -7081,7 +7081,7 @@ struct TVHomeView: View {
                     focusedSectionId = section.id
                     if changedRow {
                         focusedRowIndex = index
-                        if suppressReturnFocusAnimations || pendingInitialFocusCardKey != nil {
+                        if isFocusRestore(cardKey) {
                             var transaction = Transaction(animation: nil)
                             transaction.disablesAnimations = true
                             withTransaction(transaction) {
@@ -8740,6 +8740,18 @@ struct TVHomeView: View {
         }
     }
 
+    /// Whether a row-changing focus callback is Home putting focus back
+    /// (launch, return from Details or Settings) rather than the user moving.
+    /// Only a restore jumps without animation: the user's first move after
+    /// returning from Details used to fall inside the suppression window and
+    /// snap to the row instead of scrolling.
+    private func isFocusRestore(_ cardKey: String) -> Bool {
+        if pendingInitialFocusCardKey != nil { return true }
+        guard suppressReturnFocusAnimations else { return false }
+        let target = overlayRestoreCardID ?? store.lastFocusedCardID
+        return target == nil || target == cardKey
+    }
+
     /// Notes when the animated row scroll just started will have settled.
     private func markVerticalScroll() {
         let seconds = (isFastScrolling || fastNavigation)
@@ -9130,7 +9142,11 @@ struct TVHomeView: View {
     }
 
     private func refreshWatchedTitles() {
-        watchedTitleKeys = WatchedStore.visibleWholeTitleIdentityKeys()
+        // Write only on a real change: this runs after every return to Home
+        // (Trakt history sync), and the assignment alone redrew every row,
+        // often right as the first move after the return started.
+        let keys = WatchedStore.visibleWholeTitleIdentityKeys()
+        if keys != watchedTitleKeys { watchedTitleKeys = keys }
     }
 
     @MainActor
