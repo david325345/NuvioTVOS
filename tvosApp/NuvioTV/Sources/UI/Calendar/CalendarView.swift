@@ -360,15 +360,18 @@ struct CalendarView: View {
 
             Spacer()
 
+            // Short labels, one line each: the grid's column leaves the
+            // header little room.
             Button {
                 showingOptions = true
             } label: {
-                Label(
-                    filter.title,
-                    systemImage: filter == .all
-                        ? "line.3.horizontal.decrease.circle"
-                        : "line.3.horizontal.decrease.circle.fill"
-                )
+                if filter == .all {
+                    Image(systemName: "line.3.horizontal.decrease.circle")
+                        .accessibilityLabel(filter.title)
+                } else {
+                    Label(filter.shortTitle, systemImage: "line.3.horizontal.decrease.circle.fill")
+                        .calendarHeaderLabel()
+                }
             }
             .confirmationDialog(
                 L10n.string("calendar_options_title", fallback: "Show in the calendar"),
@@ -376,6 +379,11 @@ struct CalendarView: View {
                 titleVisibility: .visible
             ) {
                 optionButtons
+            } message: {
+                Text(L10n.format(
+                    "calendar_updated_at", fallback: "Updated %@",
+                    loadedAt.formatted(date: .omitted, time: .shortened)
+                ))
             }
 
             Button {
@@ -385,26 +393,26 @@ struct CalendarView: View {
                     L10n.string("calendar_add_shows", fallback: "Add shows"),
                     systemImage: "plus.rectangle.on.rectangle"
                 )
+                .calendarHeaderLabel()
             }
 
             if !result.skipped.isEmpty {
                 Button {
                     showingSkipped = true
                 } label: {
-                    Label(
-                        L10n.format("calendar_not_shown", fallback: "%d not shown", result.skipped.count),
-                        systemImage: "eye.slash"
-                    )
+                    Label("\(result.skipped.count)", systemImage: "eye.slash")
+                        .calendarHeaderLabel()
+                        .accessibilityLabel(L10n.format(
+                            "calendar_not_shown", fallback: "%d not shown", result.skipped.count
+                        ))
                 }
             }
 
             Button {
                 model.load()
             } label: {
-                Label(
-                    loadedAt.formatted(date: .omitted, time: .shortened),
-                    systemImage: "arrow.clockwise"
-                )
+                Image(systemName: "arrow.clockwise")
+                    .accessibilityLabel(L10n.string("calendar_refresh", fallback: "Refresh"))
             }
         }
         .font(.system(size: 24, weight: .semibold))
@@ -551,6 +559,13 @@ private struct CalendarStatusUpdates: ViewModifier {
                 }
             }
             .onDisappear { status.cancelAvailability() }
+    }
+}
+
+private extension View {
+    /// Header button text: one line, a little smaller rather than wrapped.
+    func calendarHeaderLabel() -> some View {
+        lineLimit(1).minimumScaleFactor(0.75)
     }
 }
 

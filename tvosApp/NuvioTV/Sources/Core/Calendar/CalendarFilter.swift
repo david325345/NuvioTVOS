@@ -41,6 +41,14 @@ enum CalendarFilter: String, CaseIterable, Identifiable, Sendable {
         case .movies: return L10n.string("calendar_filter_movies", fallback: "Movies")
         }
     }
+
+    /// One word for the header button; the menu shows `title`.
+    var shortTitle: String {
+        switch self {
+        case .premieres: return L10n.string("calendar_filter_premieres_short", fallback: "Premieres")
+        default: return title
+        }
+    }
 }
 
 /// The calendar's own options, chosen from its header. Like the app's other
