@@ -135,6 +135,11 @@ struct CalendarItem: Codable, Hashable, Identifiable, Sendable {
     }
 }
 
+enum CalendarTimeSource: String, Codable, Hashable, Sendable {
+    case anilist
+    case tvmaze
+}
+
 enum CalendarReleaseKind: String, Codable, Hashable, Sendable {
     case episode
     case seasonPremiere
@@ -164,8 +169,11 @@ struct CalendarEntry: Hashable, Identifiable, Sendable {
     let stillURL: URL?
     /// Japanese anime, eligible for broadcast times from AniList.
     var isAnime: Bool = false
-    /// Exact broadcast time when known (anime, from AniList).
+    /// Exact broadcast time when known (anime from AniList, other series
+    /// from TVmaze).
     var airTime: Date?
+    /// Where `airTime` came from, to credit it.
+    var airTimeSource: CalendarTimeSource?
 
     init(
         itemId: String,

@@ -15,6 +15,8 @@ final class CalendarViewModel: ObservableObject {
     @Published private(set) var state: State = .idle
     private var loadedSignature: String?
     private var loadTask: Task<Void, Never>?
+    private var airTimesTask: Task<Void, Never>?
+    private var loadGeneration = 0
 
     /// Reloads when the day, profile or TMDB settings changed, or after `maxAge`.
     func loadIfNeeded(maxAge: TimeInterval = 30 * 60) {
@@ -29,6 +31,9 @@ final class CalendarViewModel: ObservableObject {
 
     func load() {
         loadTask?.cancel()
+        airTimesTask?.cancel()
+        loadGeneration += 1
+        let generation = loadGeneration
         guard CalendarLibrarySource.isTmdbConfigured else {
             state = .notConfigured
             loadedSignature = nil
@@ -54,6 +59,7 @@ final class CalendarViewModel: ObservableObject {
                 guard !Task.isCancelled else { return }
                 self?.state = .loaded(result, loadedAt: Date())
                 self?.loadedSignature = signature
+                self?.addAirTimes(to: result, generation: generation)
             } catch CalendarLoadError.tmdbNotConfigured {
                 self?.state = .notConfigured
             } catch CalendarLoadError.invalidApiKey {
@@ -68,6 +74,61 @@ final class CalendarViewModel: ObservableObject {
         }
     }
 
+    /// The Exact air times switch: on adds times to what's shown; off loads
+    /// again for TMDB's own dates.
+    func airTimesChanged(enabled: Bool) {
+        switch state {
+        case .loaded(let result, _) where enabled:
+            loadedSignature = Self.signature()
+            addAirTimes(to: result, generation: loadGeneration)
+        case .loading:
+            // The running load reads the switch when it finishes.
+            break
+        default:
+            load()
+        }
+    }
+
+    /// Exact broadcast times for regular series (TVmaze), added once the
+    /// calendar is already on screen, a few shows at a time on the first
+    /// run; a newer load discards them.
+    private func addAirTimes(to result: CalendarResult, generation: Int) {
+        airTimesTask?.cancel()
+        guard CalendarOptions.tvmazeTimes(), result.allEntries.contains(where: CalendarTvmazeTimes.isEligible) else {
+            return
+        }
+        var ids: [Int: CalendarTvmazeTimes.ShowIds] = [:]
+        for (key, item) in result.libraryItems where item.kind == .series && item.id.hasPrefix("tt") {
+            guard key.hasPrefix("series:"), let tmdb = Int(key.dropFirst("series:".count)) else { continue }
+            ids[tmdb] = CalendarTvmazeTimes.ShowIds(imdb: String(item.id.prefix { $0 != ":" }))
+        }
+        let client = CalendarLibrarySource.makeClient()
+        airTimesTask = Task { [weak self] in
+            let entries = await CalendarTvmazeTimes().apply(
+                to: result.allEntries,
+                ids: ids,
+                externalIds: { tmdb in
+                    guard let external = try? await client.externalIds(tmdbId: tmdb, kind: .series) else { return nil }
+                    return CalendarTvmazeTimes.ShowIds(imdb: external.validImdbId, tvdb: external.tvdbId)
+                },
+                first: result.firstDay,
+                last: result.lastDay,
+                progress: { [weak self] partial in
+                    await self?.showAirTimes(partial, generation: generation)
+                }
+            )
+            guard !Task.isCancelled else { return }
+            self?.showAirTimes(entries, generation: generation)
+        }
+    }
+
+    private func showAirTimes(_ entries: [CalendarEntry], generation: Int) {
+        guard loadGeneration == generation,
+              case .loaded(let current, let loadedAt) = state,
+              Set(entries) != Set(current.allEntries) else { return }
+        state = .loaded(current.replacingEntries(entries), loadedAt: loadedAt)
+    }
+
     private static func signature() -> String {
         [
             CalendarDay(date: Date()).iso,
@@ -75,8 +136,16 @@ final class CalendarViewModel: ObservableObject {
             TraktSettingsStore.librarySourceMode.rawValue,
             TmdbDetailsService.currentApiKey ?? "",
             TmdbDetailsService.preferredLanguage,
+            CalendarOptions.tvmazeTimes() ? "tvmaze" : "",
         ].joined(separator: "|")
     }
+}
+
+/// Owns the status model without making the whole calendar observe it:
+/// only the day panel redraws when watched or availability change.
+@MainActor
+final class CalendarStatusHolder: ObservableObject {
+    let model = CalendarEntryStatusModel()
 }
 
 // MARK: - Screen
@@ -88,16 +157,24 @@ struct CalendarView: View {
     let onOpenSettings: () -> Void
 
     @StateObject private var model = CalendarViewModel()
+    @StateObject private var statusHolder = CalendarStatusHolder()
     @AppStorage(SettingsKey.amoled) private var amoled = false
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
     @AppStorage(SettingsKey.theme) private var theme = SettingsAccent.white.rawValue
+    @AppStorage(SettingsKey.calendarFilter) private var filterRaw = CalendarFilter.all.rawValue
+    @AppStorage(SettingsKey.calendarHideSpoilers) private var hideSpoilers = CalendarOptions.defaultHideSpoilers
+    @AppStorage(SettingsKey.calendarCheckAvailability) private var checkAvailability = CalendarOptions.defaultCheckAvailability
+    @AppStorage(SettingsKey.calendarTvmazeTimes) private var tvmazeTimes = CalendarOptions.defaultTvmazeTimes
 
     private var accent: Color { SettingsAccent.color(for: theme) }
+    private var filter: CalendarFilter { CalendarFilter(stored: filterRaw) }
+    private var status: CalendarEntryStatusModel { statusHolder.model }
 
     @State private var displayedMonth = CalendarDay(date: Date()).firstOfMonth
     @State private var selectedDay = CalendarDay(date: Date())
     @State private var showingSkipped = false
     @State private var showingSuggestions = false
+    @State private var showingOptions = false
     @State private var didFocusToday = false
     @FocusState private var focus: CalendarFocus?
 
@@ -191,38 +268,52 @@ struct CalendarView: View {
             )
 
         case .loaded(let result, let loadedAt):
-            HStack(alignment: .top, spacing: 40) {
-                VStack(alignment: .leading, spacing: 18) {
-                    header(result: result, loadedAt: loadedAt)
-                    monthGrid(result: result)
-                        .frame(maxHeight: .infinity, alignment: .top)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                CalendarDayPanel(
-                    result: result,
-                    month: displayedMonth,
-                    selectedDay: selectedDay,
-                    today: today,
-                    accent: accent,
-                    focus: $focus,
-                    onOpen: onOpenEntry
-                )
-                .frame(width: 610)
-            }
-            .frame(maxHeight: .infinity, alignment: .top)
-            // Use the screen's width: the system's side safe area (and the
-            // collapsed sidebar) left a wide empty band on the left.
-            .padding(.horizontal, 50)
-            .padding(.top, 30)
-            .padding(.bottom, 30)
-            .ignoresSafeArea(.container, edges: [.leading, .trailing])
-            .defaultFocus($focus, .day(today))
-            .onAppear(perform: focusTodayOnFirstOpen)
-            // Back from the episode list returns to the selected day instead
-            // of jumping to the sidebar (which slides the whole grid over).
-            // Elsewhere nil keeps the system's own Back.
-            .onExitCommand(perform: isFocusInPanel ? { focus = .day(selectedDay) } : nil)
+            loadedContent(result: result, loadedAt: loadedAt)
         }
+    }
+
+    private func loadedContent(result: CalendarResult, loadedAt: Date) -> some View {
+        let shown = result.filtered(filter)
+        return HStack(alignment: .top, spacing: 40) {
+            VStack(alignment: .leading, spacing: 18) {
+                header(result: result, loadedAt: loadedAt)
+                monthGrid(result: shown)
+                    .frame(maxHeight: .infinity, alignment: .top)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            CalendarDayPanel(
+                result: shown,
+                month: displayedMonth,
+                selectedDay: selectedDay,
+                today: today,
+                accent: accent,
+                hideSpoilers: hideSpoilers,
+                status: status,
+                focus: $focus,
+                onOpen: onOpenEntry
+            )
+            .frame(width: 610)
+        }
+        .modifier(CalendarStatusUpdates(
+            status: status,
+            monthEntries: shown.days.filter { $0.date.isSameMonth(as: displayedMonth) }.flatMap(\.entries),
+            dayEntries: shown.entries(on: selectedDay),
+            today: today,
+            checkAvailability: checkAvailability
+        ))
+        .frame(maxHeight: .infinity, alignment: .top)
+        // Use the screen's width: the system's side safe area (and the
+        // collapsed sidebar) left a wide empty band on the left.
+        .padding(.horizontal, 50)
+        .padding(.top, 30)
+        .padding(.bottom, 30)
+        .ignoresSafeArea(.container, edges: [.leading, .trailing])
+        .defaultFocus($focus, .day(today))
+        .onAppear(perform: focusTodayOnFirstOpen)
+        // Back from the episode list returns to the selected day instead
+        // of jumping to the sidebar (which slides the whole grid over).
+        // Elsewhere nil keeps the system's own Back.
+        .onExitCommand(perform: isFocusInPanel ? { focus = .day(selectedDay) } : nil)
     }
 
     /// The first time the calendar shows, start on today's cell.
@@ -270,6 +361,24 @@ struct CalendarView: View {
             Spacer()
 
             Button {
+                showingOptions = true
+            } label: {
+                Label(
+                    filter.title,
+                    systemImage: filter == .all
+                        ? "line.3.horizontal.decrease.circle"
+                        : "line.3.horizontal.decrease.circle.fill"
+                )
+            }
+            .confirmationDialog(
+                L10n.string("calendar_options_title", fallback: "Show in the calendar"),
+                isPresented: $showingOptions,
+                titleVisibility: .visible
+            ) {
+                optionButtons
+            }
+
+            Button {
                 showingSuggestions = true
             } label: {
                 Label(
@@ -299,6 +408,34 @@ struct CalendarView: View {
             }
         }
         .font(.system(size: 24, weight: .semibold))
+    }
+
+    /// The filter choices, then the switches (each press flips one and
+    /// closes the menu).
+    @ViewBuilder
+    private var optionButtons: some View {
+        ForEach(CalendarFilter.allCases) { option in
+            Button(option == filter ? "✓ " + option.title : option.title) {
+                filterRaw = option.rawValue
+            }
+        }
+        Button(CalendarFormat.option(
+            L10n.string("calendar_option_hide_spoilers", fallback: "Hide spoilers"), isOn: hideSpoilers
+        )) {
+            hideSpoilers.toggle()
+        }
+        Button(CalendarFormat.option(
+            L10n.string("calendar_option_availability", fallback: "Check availability"), isOn: checkAvailability
+        )) {
+            checkAvailability.toggle()
+        }
+        Button(CalendarFormat.option(
+            L10n.string("calendar_option_tvmaze", fallback: "Exact air times (TVmaze)"), isOn: tvmazeTimes
+        )) {
+            tvmazeTimes.toggle()
+            model.airTimesChanged(enabled: tvmazeTimes)
+        }
+        Button(L10n.string("calendar_cancel", fallback: "Cancel"), role: .cancel) {}
     }
 
     // MARK: Grid
@@ -384,6 +521,37 @@ enum CalendarFocus: Hashable {
     case nextMonth
     case day(CalendarDay)
     case entry(String)
+}
+
+/// Keeps the watched state and the add-on check in step with what the
+/// calendar shows.
+private struct CalendarStatusUpdates: ViewModifier {
+    let status: CalendarEntryStatusModel
+    /// Everything the panel lists for the displayed month.
+    let monthEntries: [CalendarEntry]
+    /// The selected day's entries.
+    let dayEntries: [CalendarEntry]
+    let today: CalendarDay
+    let checkAvailability: Bool
+
+    private struct AvailabilityRequest: Equatable {
+        let entries: [CalendarEntry]
+        let enabled: Bool
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .task(id: monthEntries) { status.updateWatched(for: monthEntries) }
+            // Asked once the cursor rests on the day (the model waits).
+            .task(id: AvailabilityRequest(entries: dayEntries, enabled: checkAvailability)) {
+                if checkAvailability {
+                    status.checkAvailability(for: dayEntries, today: today)
+                } else {
+                    status.clearAvailability()
+                }
+            }
+            .onDisappear { status.cancelAvailability() }
+    }
 }
 
 // MARK: - Day cell
@@ -615,11 +783,18 @@ private struct CalendarDayPanel: View {
     let selectedDay: CalendarDay
     let today: CalendarDay
     let accent: Color
+    let hideSpoilers: Bool
+    @ObservedObject var status: CalendarEntryStatusModel
     var focus: FocusState<CalendarFocus?>.Binding
     let onOpen: (CalendarEntry) -> Void
 
     private var sections: [CalendarDaySection] {
         result.days.filter { $0.date.isSameMonth(as: month) }
+    }
+
+    /// TVmaze's data has to be credited where its times are shown.
+    private var showsTvmazeTimes: Bool {
+        sections.contains { $0.entries.contains { $0.airTimeSource == .tvmaze } }
     }
 
     /// The section to bring into view: the selected day, or the next day
@@ -643,8 +818,17 @@ private struct CalendarDayPanel: View {
                                 .font(.system(size: 22, weight: section.date == today ? .heavy : .semibold))
                                 .foregroundColor(section.date == today ? accent : .white.opacity(section.date == selectedDay ? 1 : 0.7))
                             ForEach(section.entries) { entry in
+                                let watched = status.watched[entry.id]
                                 Button { onOpen(entry) } label: {
-                                    CalendarEntryCard(entry: entry, accent: accent)
+                                    CalendarEntryCard(
+                                        entry: entry,
+                                        accent: accent,
+                                        watched: watched,
+                                        availability: status.availability[entry.id],
+                                        hidesSpoilers: CalendarEntryRules.hidesSpoilers(
+                                            entry, hideSpoilers: hideSpoilers, watched: watched
+                                        )
+                                    )
                                 }
                                 .buttonStyle(PosterCardButtonStyle())
                                 .focusEffectDisabledIfAvailable()
@@ -661,6 +845,12 @@ private struct CalendarDayPanel: View {
                                 .strokeBorder(section.date == today ? accent.opacity(0.8) : Color.clear, lineWidth: 2)
                         )
                         .id(section.id)
+                    }
+                    if showsTvmazeTimes {
+                        Text(L10n.string("calendar_tvmaze_credit", fallback: "Series air times: TVmaze (CC BY-SA)"))
+                            .font(.system(size: 17))
+                            .foregroundColor(.white.opacity(0.5))
+                            .padding(.top, 6)
                     }
                 }
                 .padding(.vertical, 20)
@@ -685,12 +875,26 @@ private struct CalendarEntryCard: View {
     @Environment(\.isFocused) private var isFocused
     let entry: CalendarEntry
     let accent: Color
+    var watched: Bool? = nil
+    var availability: CalendarAvailability? = nil
+    /// Show the series poster and "Episode 5" instead of the episode's
+    /// picture and name.
+    var hidesSpoilers = false
+
+    private var imageURL: URL? {
+        hidesSpoilers ? entry.posterURL : (entry.stillURL ?? entry.posterURL)
+    }
+
+    private var subtitle: String? {
+        hidesSpoilers ? CalendarFormat.spoilerFreeSubtitle(entry) : CalendarFormat.subtitle(entry)
+    }
 
     var body: some View {
         HStack(spacing: 16) {
-            CalendarImage(url: entry.stillURL ?? entry.posterURL, symbol: entry.kind == .movie ? "film" : "tv")
+            CalendarImage(url: imageURL, symbol: entry.kind == .movie ? "film" : "tv")
                 .frame(width: 200, height: 112)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
+                .opacity(watched == true ? 0.6 : 1)
             VStack(alignment: .leading, spacing: 4) {
                 let time = entry.airTime.map(CalendarFormat.time)
                 if CalendarFormat.tag(entry) != nil || time != nil {
@@ -711,12 +915,13 @@ private struct CalendarEntryCard: View {
                     .font(.system(size: 26, weight: .bold))
                     .foregroundColor(.white)
                     .lineLimit(1)
-                if let subtitle = CalendarFormat.subtitle(entry) {
+                if let subtitle {
                     Text(subtitle)
                         .font(.system(size: 20))
                         .foregroundColor(.white.opacity(0.7))
                         .lineLimit(2)
                 }
+                CalendarEntryStatusLine(watched: watched == true, availability: availability, accent: accent)
             }
             Spacer(minLength: 0)
         }
@@ -731,6 +936,37 @@ private struct CalendarEntryCard: View {
         )
         .scaleEffect(isFocused ? 1.02 : 1)
         .animation(.easeOut(duration: 0.15), value: isFocused)
+    }
+}
+
+/// "Watched" and "Available" (or "Checking…") under an entry; nothing when
+/// there's nothing to say.
+private struct CalendarEntryStatusLine: View {
+    let watched: Bool
+    let availability: CalendarAvailability?
+    let accent: Color
+
+    var body: some View {
+        if watched || availability == .available || availability == .checking {
+            HStack(spacing: 14) {
+                if watched {
+                    Label(L10n.string("calendar_watched", fallback: "Watched"), systemImage: "checkmark.circle.fill")
+                        .foregroundColor(.white.opacity(0.8))
+                }
+                switch availability {
+                case .available:
+                    Label(L10n.string("calendar_available", fallback: "Available"), systemImage: "play.circle.fill")
+                        .foregroundColor(accent)
+                case .checking:
+                    Label(L10n.string("calendar_checking", fallback: "Checking…"), systemImage: "hourglass")
+                        .foregroundColor(.white.opacity(0.5))
+                case .unavailable, nil:
+                    EmptyView()
+                }
+            }
+            .font(.system(size: 18, weight: .semibold))
+            .lineLimit(1)
+        }
     }
 }
 
@@ -881,6 +1117,20 @@ enum CalendarFormat {
         case .series: return entry.episodeName
         case .movie: return L10n.string("calendar_movie", fallback: "Movie")
         }
+    }
+
+    /// The line under the title when the episode's name is a spoiler.
+    static func spoilerFreeSubtitle(_ entry: CalendarEntry) -> String? {
+        guard entry.kind == .series, let number = entry.episodeNumber else { return subtitle(entry) }
+        return L10n.format("calendar_episode_number", fallback: "Episode %d", number)
+    }
+
+    /// "Hide spoilers: On".
+    static func option(_ title: String, isOn: Bool) -> String {
+        let state = isOn
+            ? L10n.string("calendar_option_on", fallback: "On")
+            : L10n.string("calendar_option_off", fallback: "Off")
+        return "\(title): \(state)"
     }
 
     static func releaseLabel(_ kind: CalendarReleaseKind) -> String? {

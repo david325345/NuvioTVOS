@@ -184,6 +184,11 @@ enum SettingsKey {
     static let liquidGlassCards = "nuvio.tv.settings.layout.liquidGlassCards"
     /// Fork-only: kept out of `all`, so it is never sent with account settings.
     static let showCalendarTab = "nuvio.tv.settings.layout.showCalendarTab"
+    /// Calendar options from its header, per profile; fork-only, so out of `all`.
+    static let calendarFilter = "nuvio.tv.settings.calendar.filter"
+    static let calendarHideSpoilers = "nuvio.tv.settings.calendar.hideSpoilers"
+    static let calendarCheckAvailability = "nuvio.tv.settings.calendar.checkAvailability"
+    static let calendarTvmazeTimes = "nuvio.tv.settings.calendar.tvmazeTimes"
     static let hideUnreleased = "nuvio.tv.settings.layout.hideUnreleased"
     static let showFullDates = "nuvio.tv.settings.layout.showFullDates"
     static let detailsActionsBelowInfo = "nuvio.tv.settings.layout.detailsActionsBelowInfo"
@@ -9681,6 +9686,12 @@ private struct LicensesAttributionsSheet: View {
             title: L10n.string("tvos_settings_mdblist", fallback: "MDBList"),
             body: "Optional multi-source rating badges when an API key is configured.",
             license: "MDBList Terms"
+        ),
+        LicenseEntry(
+            id: "tvmaze",
+            title: "TVmaze",
+            body: "Broadcast times of series episodes in the calendar, when Exact air times is on. Data from tvmaze.com.",
+            license: "CC BY-SA 4.0"
         )
     ]
 

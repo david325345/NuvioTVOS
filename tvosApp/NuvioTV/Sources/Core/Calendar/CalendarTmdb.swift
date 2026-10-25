@@ -292,7 +292,19 @@ enum CalendarTmdb {
 
     struct ExternalIds: Decodable, Sendable {
         let imdbId: String?
-        enum CodingKeys: String, CodingKey { case imdbId = "imdb_id" }
+        let tvdbId: Int?
+        enum CodingKeys: String, CodingKey {
+            case imdbId = "imdb_id"
+            case tvdbId = "tvdb_id"
+        }
+
+        /// The IMDb id when it looks like one ("tt…").
+        var validImdbId: String? {
+            guard let imdb = imdbId?.trimmingCharacters(in: .whitespacesAndNewlines), imdb.hasPrefix("tt") else {
+                return nil
+            }
+            return imdb
+        }
     }
 
     struct Client: Sendable {
@@ -351,12 +363,12 @@ enum CalendarTmdb {
         }
 
         func imdbId(tmdbId: Int, kind: CalendarMediaKind) async throws -> String? {
+            try await externalIds(tmdbId: tmdbId, kind: kind).validImdbId
+        }
+
+        func externalIds(tmdbId: Int, kind: CalendarMediaKind) async throws -> ExternalIds {
             let media = kind == .series ? "tv" : "movie"
-            let ids: ExternalIds = try await get("\(media)/\(tmdbId)/external_ids")
-            guard let imdb = ids.imdbId?.trimmingCharacters(in: .whitespacesAndNewlines), imdb.hasPrefix("tt") else {
-                return nil
-            }
-            return imdb
+            return try await get("\(media)/\(tmdbId)/external_ids")
         }
 
         func get<T: Decodable>(_ path: String, query: [String: String] = [:], language: String? = nil) async throws -> T {

@@ -90,6 +90,7 @@ struct CalendarAnimeTimes: Sendable {
             used.insert(best)
             result[index].date = CalendarDay(date: best.at, timeZone: timeZone)
             result[index].airTime = best.at
+            result[index].airTimeSource = .anilist
         }
         return result
     }
