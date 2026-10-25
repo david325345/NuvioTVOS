@@ -151,7 +151,7 @@ enum CalendarReleaseKind: String, Codable, Hashable, Sendable {
     case release
 }
 
-struct CalendarEntry: Hashable, Identifiable, Sendable {
+struct CalendarEntry: Codable, Hashable, Identifiable, Sendable {
     let id: String
     let itemId: String
     let itemType: String
@@ -212,25 +212,25 @@ struct CalendarEntry: Hashable, Identifiable, Sendable {
     }
 }
 
-struct CalendarDaySection: Hashable, Identifiable, Sendable {
+struct CalendarDaySection: Codable, Hashable, Identifiable, Sendable {
     var id: String { date.iso }
     let date: CalendarDay
     let entries: [CalendarEntry]
 }
 
-enum CalendarSkipReason: Hashable, Sendable {
+enum CalendarSkipReason: Codable, Hashable, Sendable {
     /// The id has a format the calendar cannot turn into a TMDB id.
     case unsupportedId
     case failed(String)
 }
 
-struct CalendarSkippedItem: Hashable, Identifiable, Sendable {
+struct CalendarSkippedItem: Codable, Hashable, Identifiable, Sendable {
     var id: String { "\(item.kind.rawValue):\(item.id)" }
     let item: CalendarItem
     let reason: CalendarSkipReason
 }
 
-struct CalendarResult: Sendable {
+struct CalendarResult: Codable, Sendable {
     let firstDay: CalendarDay
     let lastDay: CalendarDay
     let days: [CalendarDaySection]

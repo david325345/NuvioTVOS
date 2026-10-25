@@ -290,6 +290,12 @@ enum CalendarTmdb {
         }
     }
 
+    struct FindResults: Decodable, Sendable {
+        struct Item: Decodable, Sendable { let id: Int }
+        let tvResults: [Item]?
+        enum CodingKeys: String, CodingKey { case tvResults = "tv_results" }
+    }
+
     struct ExternalIds: Decodable, Sendable {
         let imdbId: String?
         let tvdbId: Int?
@@ -364,6 +370,12 @@ enum CalendarTmdb {
 
         func imdbId(tmdbId: Int, kind: CalendarMediaKind) async throws -> String? {
             try await externalIds(tmdbId: tmdbId, kind: kind).validImdbId
+        }
+
+        /// The TMDB show a TheTVDB series id belongs to, if TMDB knows it.
+        func tvId(forTvdb tvdbId: Int) async throws -> Int? {
+            let found: FindResults = try await get("find/\(tvdbId)", query: ["external_source": "tvdb_id"])
+            return found.tvResults?.first?.id
         }
 
         func externalIds(tmdbId: Int, kind: CalendarMediaKind) async throws -> ExternalIds {

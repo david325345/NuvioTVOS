@@ -479,6 +479,212 @@ final class CalendarAnimeTodayTests: XCTestCase {
     }
 }
 
+// MARK: - Anime today: TMDB and IMDb ids
+
+private final class AnimeIdsMockHTTP: CalendarAnimeHTTPClient, @unchecked Sendable {
+    /// AniList id → arm-server (status, JSON); unknown ids answer "null".
+    var arm: [Int: (Int, String)] = [:]
+    /// AniList id → its relations as (relationType, id, format).
+    var relations: [Int: [(String, Int, String)]] = [:]
+    /// AniList id → Location header of the Simkl redirect.
+    var redirects: [Int: String] = [:]
+    /// Simkl path ("/anime/1") → details JSON.
+    var details: [String: String] = [:]
+    private let lock = NSLock()
+    private var calls: [String] = []
+
+    var log: [String] { lock.withLock { calls } }
+
+    private func record(_ call: String) {
+        lock.withLock { calls.append(call) }
+    }
+
+    private func query(_ name: String, in url: URL) -> Int? {
+        URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?.first { $0.name == name }?.value.flatMap(Int.init)
+    }
+
+    func post(_ url: URL, json: Data) async throws -> (Data, Int) {
+        let object = (try? JSONSerialization.jsonObject(with: json)) as? [String: Any]
+        let id = (object?["variables"] as? [String: Any])?["id"] as? Int ?? -1
+        record("relations:\(id)")
+        let edges = (relations[id] ?? []).map { relation in
+            #"{"relationType":"\#(relation.0)","node":{"id":\#(relation.1),"type":"ANIME","format":"\#(relation.2)"}}"#
+        }
+        let body = #"{"data":{"Media":{"relations":{"edges":[\#(edges.joined(separator: ","))]}}}}"#
+        return (Data(body.utf8), 200)
+    }
+
+    func getWithoutRedirect(_ url: URL, headers: [String: String]) async throws -> (Data, Int, String?) {
+        if url.path == "/api/v2/ids" {
+            let id = query("id", in: url) ?? -1
+            record("arm:\(id)")
+            if let answer = arm[id] { return (Data(answer.1.utf8), answer.0, nil) }
+            return (Data("null".utf8), 200, nil)
+        }
+        if url.path == "/redirect" {
+            let id = query("anilist", in: url) ?? -1
+            record("simkl:\(id)")
+            if let location = redirects[id] { return (Data(), 301, location) }
+            return (Data(), 404, nil)
+        }
+        if let body = details[url.path] { return (Data(body.utf8), 200, nil) }
+        return (Data(), 404, nil)
+    }
+}
+
+final class CalendarAnimeIdTests: XCTestCase {
+    private func airing(_ id: Int, prequels: [Int]? = [], isMovie: Bool = false) -> CalendarAnimeToday.Airing {
+        CalendarAnimeToday.Airing(
+            anilistId: id, title: "A\(id)", posterURL: nil, airingAt: Date(timeIntervalSince1970: 1_792_410_000),
+            episode: 1, year: 2026, isMovie: isMovie, prequelIds: prequels
+        )
+    }
+
+    private func resolver(
+        _ http: AnimeIdsMockHTTP,
+        clientID: String = "",
+        tmdb: CalendarTmdb.Client? = nil,
+        cache: CalendarAnimeToday.IdCache = CalendarAnimeToday.IdCache()
+    ) -> CalendarAnimeToday.Resolver {
+        CalendarAnimeToday.Resolver(http: http, clientID: clientID, tmdb: tmdb, cache: cache)
+    }
+
+    func testArmParseReadsTheTvdbId() {
+        XCTAssertEqual(
+            CalendarAnimeToday.Arm.parse(Data(#"{"anilist":1,"thetvdb":4242}"#.utf8)),
+            .init(tmdb: nil, imdb: nil, tvdb: 4242)
+        )
+        XCTAssertEqual(
+            CalendarAnimeToday.Arm.parse(Data(#"{"anilist":1,"thetvdb":"4242","themoviedb":9}"#.utf8)),
+            .init(tmdb: 9, imdb: nil, tvdb: 4242)
+        )
+    }
+
+    func testOnlyAnimeSeriesPrequelsCount() throws {
+        let json = #"""
+        {"edges":[
+          {"relationType":"PREQUEL","node":{"id":1,"type":"ANIME","format":"TV"}},
+          {"relationType":"PREQUEL","node":{"id":2,"type":"ANIME","format":"MOVIE"}},
+          {"relationType":"PREQUEL","node":{"id":3,"type":"MANGA","format":"MANGA"}},
+          {"relationType":"SEQUEL","node":{"id":4,"type":"ANIME","format":"TV"}},
+          {"relationType":"SIDE_STORY","node":{"id":5,"type":"ANIME","format":"ONA"}},
+          {"relationType":"PREQUEL","node":{"id":6,"type":"ANIME","format":"ONA"}},
+          {"relationType":"PREQUEL","node":{"id":7,"type":"ANIME","format":"TV_SHORT"}},
+          {"relationType":"PREQUEL","node":{"id":8,"type":"ANIME","format":"SPECIAL"}}
+        ]}
+        """#
+        let relations = try JSONDecoder().decode(CalendarAnimeToday.AniList.Relations.self, from: Data(json.utf8))
+        XCTAssertEqual(relations.prequelIds, [1, 6, 7])
+    }
+
+    func testTheTvdbIdIsTurnedIntoTheTmdbShow() async {
+        let http = AnimeIdsMockHTTP()
+        http.arm = [101: (200, #"{"anilist":101,"thetvdb":4242}"#)]
+        let tmdbHTTP = CalendarMockHTTP(["/find/4242": (200, #"{"tv_results":[{"id":777}],"movie_results":[]}"#)])
+        let tmdb = CalendarTmdb.Client(apiKey: "test", http: tmdbHTTP)
+        let resolution = await resolver(http, tmdb: tmdb).resolve(airing(101))
+        XCTAssertEqual(resolution, .init(ids: .init(tmdb: 777, imdb: nil, tvdb: 4242), isFinal: true))
+        // Found without asking for earlier seasons.
+        XCTAssertFalse(http.log.contains { $0.hasPrefix("relations:") })
+    }
+
+    func testNewSeasonTakesTheIdsOfAnEarlierOne() async {
+        let http = AnimeIdsMockHTTP()
+        // Season 3 (201) and season 2 (200) aren't on arm yet; season 1 (199) is.
+        http.relations = [200: [("PREQUEL", 199, "TV"), ("PREQUEL", 150, "MOVIE")]]
+        http.arm = [199: (200, #"{"anilist":199,"themoviedb":555,"imdb":"tt0555"}"#)]
+        let resolution = await resolver(http).resolve(airing(201, prequels: [200]))
+        XCTAssertEqual(resolution, .init(ids: .init(tmdb: 555, imdb: "tt0555"), isFinal: true))
+        XCTAssertEqual(http.log, ["arm:201", "arm:200", "relations:200", "arm:199"])
+    }
+
+    func testPrequelWalkStopsAfterThreeSeasons() async {
+        let http = AnimeIdsMockHTTP()
+        http.relations = [
+            304: [("PREQUEL", 303, "TV")],
+            303: [("PREQUEL", 302, "TV")],
+            302: [("PREQUEL", 301, "TV")],
+        ]
+        http.arm = [301: (200, #"{"anilist":301,"themoviedb":1}"#)]
+        let resolution = await resolver(http).resolve(airing(305, prequels: [304]))
+        XCTAssertEqual(resolution, .init(ids: .init(tmdb: nil, imdb: nil), isFinal: true))
+        XCTAssertEqual(http.log, ["arm:305", "arm:304", "relations:304", "arm:303", "relations:303", "arm:302"])
+    }
+
+    func testMoviesDontTakeAnEarlierSeasonsIds() async {
+        let http = AnimeIdsMockHTTP()
+        http.arm = [400: (200, #"{"anilist":400,"themoviedb":2}"#)]
+        let resolution = await resolver(http).resolve(airing(401, prequels: [400], isMovie: true))
+        XCTAssertEqual(resolution.ids, .init(tmdb: nil, imdb: nil))
+        XCTAssertEqual(http.log, ["arm:401"])
+    }
+
+    func testSimklIsAskedLast() async {
+        let http = AnimeIdsMockHTTP()
+        http.relations = [500: []]
+        http.redirects = [501: "https://simkl.com/anime/9/slug"]
+        http.details = ["/anime/9": #"{"ids":{"simkl":9,"imdb":"tt0009","tmdb":"99"}}"#]
+        let resolution = await resolver(http, clientID: "test").resolve(airing(501, prequels: [500]))
+        XCTAssertEqual(resolution.ids.tmdb, 99)
+        XCTAssertEqual(resolution.ids.imdb, "tt0009")
+        XCTAssertTrue(resolution.isFinal)
+        XCTAssertEqual(http.log, ["arm:501", "arm:500", "relations:500", "simkl:501"])
+    }
+
+    func testPrequelsAreAskedForWhenTheScheduleDidntBringThem() async {
+        let http = AnimeIdsMockHTTP()
+        http.relations = [801: [("PREQUEL", 800, "TV")]]
+        http.arm = [800: (200, #"{"anilist":800,"themoviedb":8}"#)]
+        let resolution = await resolver(http).resolve(airing(801, prequels: nil))
+        XCTAssertEqual(resolution.ids.tmdb, 8)
+        XCTAssertEqual(http.log, ["arm:801", "relations:801", "arm:800"])
+    }
+
+    func testAFilmsTheTvdbIdIsNotUsed() async {
+        let http = AnimeIdsMockHTTP()
+        http.arm = [901: (200, #"{"anilist":901,"thetvdb":4242}"#)]
+        let tmdbHTTP = CalendarMockHTTP(["/find/4242": (200, #"{"tv_results":[{"id":777}]}"#)])
+        let tmdb = CalendarTmdb.Client(apiKey: "test", http: tmdbHTTP)
+        let resolution = await resolver(http, tmdb: tmdb).resolve(airing(901, isMovie: true))
+        XCTAssertEqual(resolution, .init(ids: .init(tmdb: nil, imdb: nil), isFinal: true))
+        XCTAssertEqual(tmdbHTTP.count(containing: "/find"), 0)
+    }
+
+    func testTheTvdbIdWithoutTmdbIsAskedAgainLater() async {
+        let http = AnimeIdsMockHTTP()
+        http.arm = [902: (200, #"{"anilist":902,"thetvdb":4242}"#)]
+        let resolution = await resolver(http).resolve(airing(902))
+        XCTAssertFalse(resolution.isFinal)
+    }
+
+    func testAnAnswerAfterAFailureIsShownButNotRemembered() async {
+        let http = AnimeIdsMockHTTP()
+        http.arm = [701: (503, ""), 700: (200, #"{"anilist":700,"themoviedb":7}"#)]
+        let cache = CalendarAnimeToday.IdCache()
+        let ids = await resolver(http, cache: cache).ids(for: [airing(701, prequels: [700])])
+        XCTAssertEqual(ids[701]?.tmdb, 7)
+        let cached = await cache.get(701)
+        XCTAssertNil(cached)
+    }
+
+    func testFailedLookupIsNotRemembered() async {
+        let http = AnimeIdsMockHTTP()
+        http.arm = [601: (503, "")]
+        let cache = CalendarAnimeToday.IdCache()
+        let ids = await resolver(http, cache: cache).ids(for: [airing(601)])
+        XCTAssertNil(ids[601])
+        let cached = await cache.get(601)
+        XCTAssertNil(cached)
+
+        // A title no source knows is remembered as such.
+        let unknown = await resolver(http, cache: cache).ids(for: [airing(602)])
+        XCTAssertEqual(unknown[602], .init(tmdb: nil, imdb: nil))
+        let remembered = await cache.get(602)
+        XCTAssertEqual(remembered, .init(tmdb: nil, imdb: nil))
+    }
+}
+
 // MARK: - Anime broadcast times in the calendar
 
 private final class CalendarAnimeTimesMockHTTP: CalendarAnimeHTTPClient, @unchecked Sendable {

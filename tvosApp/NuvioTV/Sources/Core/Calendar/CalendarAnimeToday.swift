@@ -3,8 +3,11 @@ import Foundation
 /// "Anime today" built from AniList's airing schedule, which has exact
 /// broadcast times, so the list follows the Apple TV's own day instead of the
 /// Japanese date TMDB uses. TMDB and IMDb ids come from arm-server
-/// (arm.haglund.dev, no key) by AniList id, and from Simkl for titles arm
-/// doesn't map yet when a Simkl Client ID is set (no login needed).
+/// (arm.haglund.dev, no key) by AniList id; when arm only has a TheTVDB id it
+/// is turned into the TMDB id, and a new season arm doesn't know yet takes
+/// the ids of its previous season (TMDB lists the seasons under one show).
+/// Simkl is the last resort when a Simkl Client ID is set (no login needed).
+/// Ids only: titles are never looked up by name.
 enum CalendarAnimeToday {
     struct Airing: Hashable, Sendable {
         let anilistId: Int
@@ -14,11 +17,15 @@ enum CalendarAnimeToday {
         let episode: Int?
         let year: Int?
         let isMovie: Bool
+        /// The AniList entries this one is the next season of; nil = not
+        /// asked yet (AniList is asked only when arm doesn't know the title).
+        var prequelIds: [Int]? = nil
     }
 
     struct Ids: Hashable, Sendable {
         let tmdb: Int?
         let imdb: String?
+        var tvdb: Int? = nil
     }
 
     /// Start and end (exclusive) of the local day containing `date`.
@@ -36,12 +43,13 @@ enum CalendarAnimeToday {
         now: Date = Date(),
         timeZone: TimeZone = .current,
         http: CalendarAnimeHTTPClient = CalendarAnimeURLSessionClient(),
-        clientID: String = SimklConfig.clientID
+        clientID: String = SimklConfig.clientID,
+        tmdb: CalendarTmdb.Client? = CalendarLibrarySource.isTmdbConfigured ? CalendarLibrarySource.makeClient() : nil
     ) async throws -> [CalendarSuggestionItem] {
         let bounds = dayBounds(of: now, timeZone: timeZone)
         let airings = try await AniList(http: http).airings(from: bounds.start, to: bounds.end)
-        let resolver = Resolver(http: http, clientID: clientID)
-        let ids = await resolver.ids(for: airings.map(\.anilistId))
+        let resolver = Resolver(http: http, clientID: clientID, tmdb: tmdb)
+        let ids = await resolver.ids(for: airings)
         return items(airings, ids: ids, timeZone: timeZone)
     }
 
@@ -109,6 +117,17 @@ enum CalendarAnimeToday {
         }
         """
 
+        static let relationsQuery = """
+        query ($id: Int) {
+          Media(id: $id, type: ANIME) {
+            relations { edges { relationType node { id type format } } }
+          }
+        }
+        """
+
+        /// Formats a previous season can have (not films, specials or music).
+        static let seasonFormats: Set<String> = ["TV", "TV_SHORT", "ONA"]
+
         struct Response: Decodable {
             struct DataBlock: Decodable { let Page: PageBlock? }
             struct PageBlock: Decodable {
@@ -134,6 +153,46 @@ enum CalendarAnimeToday {
             struct Cover: Decodable { let large: String? }
             struct StartDate: Decodable { let year: Int? }
             let data: DataBlock?
+        }
+
+        struct Relations: Decodable {
+            struct Edge: Decodable {
+                struct Node: Decodable {
+                    let id: Int
+                    let type: String?
+                    let format: String?
+                }
+                let relationType: String?
+                let node: Node?
+            }
+            let edges: [Edge]?
+
+            /// The previous seasons: prequels that are anime series.
+            var prequelIds: [Int] {
+                (edges ?? []).compactMap { edge in
+                    guard edge.relationType == "PREQUEL", let node = edge.node, node.type == "ANIME",
+                          let format = node.format, AniList.seasonFormats.contains(format) else { return nil }
+                    return node.id
+                }
+            }
+        }
+
+        struct RelationsResponse: Decodable {
+            struct DataBlock: Decodable {
+                struct MediaBlock: Decodable { let relations: Relations? }
+                let Media: MediaBlock?
+            }
+            let data: DataBlock?
+        }
+
+        /// Previous seasons of an AniList entry; nil when AniList didn't answer.
+        func prequels(of id: Int) async -> [Int]? {
+            let payload: [String: Any] = ["query": Self.relationsQuery, "variables": ["id": id]]
+            guard let body = try? JSONSerialization.data(withJSONObject: payload),
+                  let (data, status) = try? await http.post(Self.endpoint, json: body),
+                  (200..<300).contains(status),
+                  let decoded = try? JSONDecoder().decode(RelationsResponse.self, from: data) else { return nil }
+            return decoded.data?.Media?.relations?.prequelIds ?? []
         }
 
         /// Japanese, non-adult titles airing in [from, to), one per title
@@ -190,34 +249,41 @@ enum CalendarAnimeToday {
     }
 
     /// arm first (no key, its TMDB ids match the entries TMDB lists episodes
-    /// under), then Simkl for what arm doesn't have.
+    /// under), with TheTVDB → TMDB when that's all arm has; then the previous
+    /// seasons; then Simkl for what is still missing.
     struct Resolver: Sendable {
         let http: CalendarAnimeHTTPClient
         let clientID: String
+        var tmdb: CalendarTmdb.Client? = nil
         var cache: IdCache = .shared
         static let maxConcurrent = 4
+        /// How many earlier seasons are tried.
+        static let maxPrequelSteps = 3
 
-        func ids(for anilistIds: [Int]) async -> [Int: Ids] {
+        func ids(for airings: [Airing]) async -> [Int: Ids] {
             var result: [Int: Ids] = [:]
-            var pending: [Int] = []
-            for id in anilistIds {
-                if let cached = await cache.get(id) { result[id] = cached } else { pending.append(id) }
+            var pending: [Airing] = []
+            for airing in airings {
+                if let cached = await cache.get(airing.anilistId) {
+                    result[airing.anilistId] = cached
+                } else {
+                    pending.append(airing)
+                }
             }
-            await withTaskGroup(of: (Int, Ids?).self) { group in
+            await withTaskGroup(of: (Int, Resolution).self) { group in
                 var index = 0
                 while index < min(Self.maxConcurrent, pending.count) {
-                    let id = pending[index]
-                    group.addTask { (id, await resolve(anilistId: id)) }
+                    let airing = pending[index]
+                    group.addTask { (airing.anilistId, await resolve(airing)) }
                     index += 1
                 }
                 while let pair = await group.next() {
-                    if let ids = pair.1 {
-                        result[pair.0] = ids
-                        await cache.set(pair.0, ids)
-                    }
+                    // Nothing found while a source failed: left unknown.
+                    if pair.1.hasIds || pair.1.isFinal { result[pair.0] = pair.1.ids }
+                    if pair.1.isFinal { await cache.set(pair.0, pair.1.ids) }
                     if index < pending.count {
-                        let id = pending[index]
-                        group.addTask { (id, await resolve(anilistId: id)) }
+                        let airing = pending[index]
+                        group.addTask { (airing.anilistId, await resolve(airing)) }
                         index += 1
                     }
                 }
@@ -225,13 +291,89 @@ enum CalendarAnimeToday {
             return result
         }
 
-        /// nil = every source failed to answer (try again next time).
-        func resolve(anilistId: Int) async -> Ids? {
-            let fromArm = await Arm(http: http).lookup(anilistId: anilistId)
-            if let fromArm, fromArm.tmdb != nil || fromArm.imdb != nil { return fromArm }
-            guard !clientID.isEmpty else { return fromArm }
-            let fromSimkl = await Simkl(http: http, clientID: clientID).lookup(anilistId: anilistId)
-            return fromSimkl ?? fromArm
+        enum Lookup: Equatable {
+            case found(Ids)
+            case none
+            /// No answer, or not answerable yet (TMDB not set up).
+            case failed
+        }
+
+        /// What `resolve` found, and whether it may be remembered: not when
+        /// a source failed to answer, so the title is asked about again
+        /// next time (the source may have the better answer).
+        struct Resolution: Equatable, Sendable {
+            /// Empty when nothing was found.
+            let ids: Ids
+            let isFinal: Bool
+
+            var hasIds: Bool { ids.tmdb != nil || ids.imdb != nil }
+        }
+
+        func resolve(_ airing: Airing) async -> Resolution {
+            var failed = false
+            switch await viaArm(airing.anilistId, allowsTvdb: !airing.isMovie) {
+            case .found(let ids): return Resolution(ids: ids, isFinal: true)
+            case .none: break
+            case .failed: failed = true
+            }
+
+            if !airing.isMovie {
+                var visited: Set<Int> = [airing.anilistId]
+                var candidates: [Int] = []
+                if let known = airing.prequelIds {
+                    candidates = known
+                } else if let asked = await AniList(http: http).prequels(of: airing.anilistId) {
+                    candidates = asked
+                } else {
+                    failed = true
+                }
+                var steps = 0
+                while steps < Self.maxPrequelSteps,
+                      let prequel = candidates.first(where: { !visited.contains($0) }) {
+                    visited.insert(prequel)
+                    steps += 1
+                    switch await viaArm(prequel, allowsTvdb: true) {
+                    case .found(let ids): return Resolution(ids: ids, isFinal: !failed)
+                    case .none: break
+                    case .failed: failed = true
+                    }
+                    guard steps < Self.maxPrequelSteps else { break }
+                    guard let earlier = await AniList(http: http).prequels(of: prequel) else {
+                        failed = true
+                        break
+                    }
+                    candidates = earlier
+                }
+            }
+
+            if !clientID.isEmpty {
+                if let fromSimkl = await Simkl(http: http, clientID: clientID).lookup(anilistId: airing.anilistId) {
+                    if fromSimkl.tmdb != nil || fromSimkl.imdb != nil {
+                        return Resolution(ids: fromSimkl, isFinal: !failed)
+                    }
+                } else {
+                    failed = true
+                }
+            }
+            return Resolution(ids: Ids(tmdb: nil, imdb: nil), isFinal: !failed)
+        }
+
+        /// arm's ids for one AniList entry; a TheTVDB id alone is turned into
+        /// the TMDB show it belongs to.
+        func viaArm(_ anilistId: Int, allowsTvdb: Bool) async -> Lookup {
+            guard let arm = await Arm(http: http).lookup(anilistId: anilistId) else { return .failed }
+            if arm.tmdb != nil || arm.imdb != nil { return .found(arm) }
+            // TheTVDB → TMDB finds shows only, never a film.
+            guard allowsTvdb, let tvdb = arm.tvdb else { return .none }
+            guard let tmdb else { return .failed }
+            do {
+                guard let id = try await tmdb.tvId(forTvdb: tvdb) else { return .none }
+                return .found(Ids(tmdb: id, imdb: nil, tvdb: tvdb))
+            } catch CalendarTmdbError.notFound {
+                return .none
+            } catch {
+                return .failed
+            }
         }
     }
 
@@ -271,7 +413,15 @@ enum CalendarAnimeToday {
                 tmdb = nil
             }
             let imdb = (dict["imdb"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-            return Ids(tmdb: tmdb, imdb: (imdb?.hasPrefix("tt") ?? false) ? imdb : nil)
+            let tvdb: Int?
+            if let number = dict["thetvdb"] as? Int {
+                tvdb = number
+            } else if let text = dict["thetvdb"] as? String {
+                tvdb = Int(text)
+            } else {
+                tvdb = nil
+            }
+            return Ids(tmdb: tmdb, imdb: (imdb?.hasPrefix("tt") ?? false) ? imdb : nil, tvdb: tvdb)
         }
     }
 

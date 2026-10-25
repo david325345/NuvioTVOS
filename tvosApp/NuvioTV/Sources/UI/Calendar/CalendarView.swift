@@ -2,8 +2,12 @@ import SwiftUI
 
 // MARK: - View model
 
+/// The calendar shared by the Calendar tab and Home's Today row. The last
+/// one is kept on disk, so both open with it while a newer one loads.
 @MainActor
 final class CalendarViewModel: ObservableObject {
+    static let shared = CalendarViewModel()
+
     enum State {
         case idle
         case loading
@@ -12,39 +16,93 @@ final class CalendarViewModel: ObservableObject {
         case failed(String)
     }
 
+    /// What a calendar is made with: the day and the profile's settings.
+    private struct Inputs: Equatable, Sendable {
+        let day: CalendarDay
+        let settings: String
+    }
+
     @Published private(set) var state: State = .idle
-    private var loadedSignature: String?
+    /// A newer calendar is loading while the last one stays on screen.
+    @Published private(set) var isRefreshing = false
+    /// The inputs of the calendar shown, and of the one on its way.
+    private var loaded: Inputs?
+    private var pending: Inputs?
     private var loadTask: Task<Void, Never>?
     private var airTimesTask: Task<Void, Never>?
     private var loadGeneration = 0
+    private var restoreTask: Task<Void, Never>?
+    private var didRestore = false
+    /// Asked for while the saved calendar was being read.
+    private var loadAfterRestore: TimeInterval?
+    private var snapshotSequence = 0
+    private let snapshots: CalendarSnapshotStore
 
-    /// Reloads when the day, profile or TMDB settings changed, or after `maxAge`.
+    init(snapshots: CalendarSnapshotStore = .shared) {
+        self.snapshots = snapshots
+    }
+
+    /// Shows the saved calendar, if any, without loading a new one.
+    func showSaved() {
+        restoreIfNeeded()
+    }
+
+    /// Shows the saved calendar first, then loads a new one when the day,
+    /// profile or settings changed, or after `maxAge`.
     func loadIfNeeded(maxAge: TimeInterval = 30 * 60) {
-        if case .loading = state { return }
-        if case .loaded(_, let loadedAt) = state,
-           loadedSignature == Self.signature(),
+        if restoreIfNeeded() || restoreTask != nil {
+            loadAfterRestore = min(loadAfterRestore ?? maxAge, maxAge)
+            return
+        }
+        let inputs = Self.currentInputs()
+        // The same calendar is on its way already.
+        if loadTask != nil, pending == inputs { return }
+        if case .loaded(_, let loadedAt) = state, loaded == inputs,
            Date().timeIntervalSince(loadedAt) < maxAge {
             return
         }
         load()
     }
 
+    /// The shown calendar when it was made for the current profile and
+    /// settings: right after a profile switch the last profile's calendar is
+    /// still there until the new one loads.
+    func currentResult(from state: State) -> CalendarResult? {
+        guard case .loaded(let result, _) = state, loaded?.settings == Self.settingsSignature() else { return nil }
+        return result
+    }
+
     func load() {
+        restoreTask?.cancel()
+        restoreTask = nil
+        loadAfterRestore = nil
+        didRestore = true
         loadTask?.cancel()
         airTimesTask?.cancel()
         loadGeneration += 1
         let generation = loadGeneration
         guard CalendarLibrarySource.isTmdbConfigured else {
+            finish(generation)
+            loaded = nil
             state = .notConfigured
-            loadedSignature = nil
             return
         }
-        state = .loading
-        let signature = Self.signature()
+        let inputs = Self.currentInputs()
+        // Same profile and settings: the calendar stays on screen while the
+        // new one loads (a new day, a refresh).
+        let keepsShown: Bool
+        if case .loaded = state, loaded?.settings == inputs.settings {
+            keepsShown = true
+            isRefreshing = true
+        } else {
+            keepsShown = false
+            isRefreshing = false
+            state = .loading
+        }
+        pending = inputs
         loadTask = Task { [weak self] in
             guard let metas = await CalendarLibrarySource.libraryMetas() else {
-                guard !Task.isCancelled else { return }
-                self?.state = .failed(L10n.string(
+                self?.failed(generation, keepsShown: keepsShown, message: L10n.string(
                     "calendar_error_library",
                     fallback: "Couldn't load your library. Check the library source in Settings and try again."
                 ))
@@ -52,24 +110,33 @@ final class CalendarViewModel: ObservableObject {
             }
             guard !Task.isCancelled else { return }
             let items = metas.map(CalendarLibrarySource.item(for:))
-            let period = CalendarBuilder.period(today: CalendarDay(date: Date()))
+            let period = CalendarBuilder.period(today: inputs.day)
             let service = CalendarLibrarySource.makeService(metas: metas)
             do {
                 let result = try await service.load(items: items, first: period.first, last: period.last)
-                guard !Task.isCancelled else { return }
-                self?.state = .loaded(result, loadedAt: Date())
-                self?.loadedSignature = signature
-                self?.addAirTimes(to: result, generation: generation)
+                guard let self, !Task.isCancelled, self.loadGeneration == generation else { return }
+                let loadedAt = Date()
+                // The settings may have changed while it loaded (the TVmaze switch).
+                let madeWith = self.pending ?? inputs
+                self.finish(generation)
+                // Before the state: Home reads `loaded` when the state changes.
+                self.loaded = madeWith
+                self.state = .loaded(result, loadedAt: loadedAt)
+                self.saveSnapshot(result, loadedAt: loadedAt)
+                self.addAirTimes(to: result, generation: generation)
             } catch CalendarLoadError.tmdbNotConfigured {
-                self?.state = .notConfigured
+                guard let self, self.loadGeneration == generation else { return }
+                self.finish(generation)
+                self.loaded = nil
+                self.state = .notConfigured
             } catch CalendarLoadError.invalidApiKey {
-                self?.state = .failed(L10n.string(
+                self?.failed(generation, keepsShown: false, message: L10n.string(
                     "calendar_error_tmdb_key",
                     fallback: "TMDB rejected the API key. Check it in Settings → Integrations → TMDB."
                 ))
             } catch {
                 guard !Task.isCancelled else { return }
-                self?.state = .failed(error.localizedDescription)
+                self?.failed(generation, keepsShown: keepsShown, message: error.localizedDescription)
             }
         }
     }
@@ -77,9 +144,19 @@ final class CalendarViewModel: ObservableObject {
     /// The Exact air times switch: on adds times to what's shown; off loads
     /// again for TMDB's own dates.
     func airTimesChanged(enabled: Bool) {
+        let settings = Self.settingsSignature()
+        if loadTask != nil {
+            // The running load reads the switch when it finishes; what is on
+            // screen until then stays the current calendar.
+            pending = pending.map { Inputs(day: $0.day, settings: settings) }
+            loaded = loaded.map { Inputs(day: $0.day, settings: settings) }
+            return
+        }
         switch state {
-        case .loaded(let result, _) where enabled:
-            loadedSignature = Self.signature()
+        case .loaded(let result, let loadedAt) where enabled:
+            loaded = loaded.map { Inputs(day: $0.day, settings: settings) }
+            // Under the new settings, also when no show gets a time.
+            saveSnapshot(result, loadedAt: loadedAt)
             addAirTimes(to: result, generation: loadGeneration)
         case .loading:
             // The running load reads the switch when it finishes.
@@ -87,6 +164,51 @@ final class CalendarViewModel: ObservableObject {
         default:
             load()
         }
+    }
+
+    /// Starts reading the saved calendar the first time anything asks for
+    /// one; true when it did.
+    @discardableResult
+    private func restoreIfNeeded() -> Bool {
+        guard !didRestore, case .idle = state else { return false }
+        didRestore = true
+        guard CalendarLibrarySource.isTmdbConfigured else { return false }
+        let settings = Self.settingsSignature()
+        let snapshots = self.snapshots
+        state = .loading
+        restoreTask = Task { [weak self] in
+            let snapshot = await snapshots.read()
+            guard let self, !Task.isCancelled else { return }
+            self.restoreTask = nil
+            if let snapshot, snapshot.isUsable(settings: settings, now: Date()) {
+                self.loaded = Inputs(day: snapshot.day, settings: settings)
+                self.state = .loaded(snapshot.result, loadedAt: snapshot.loadedAt)
+            } else {
+                self.state = .idle
+            }
+            if let maxAge = self.loadAfterRestore {
+                self.loadAfterRestore = nil
+                self.loadIfNeeded(maxAge: maxAge)
+            }
+        }
+        return true
+    }
+
+    /// The load is over, whatever its outcome.
+    private func finish(_ generation: Int) {
+        guard generation == loadGeneration else { return }
+        loadTask = nil
+        pending = nil
+        isRefreshing = false
+    }
+
+    private func failed(_ generation: Int, keepsShown: Bool, message: String) {
+        guard generation == loadGeneration else { return }
+        finish(generation)
+        // A failed refresh leaves the calendar on screen; the next visit tries again.
+        guard !keepsShown else { return }
+        loaded = nil
+        state = .failed(message)
     }
 
     /// Exact broadcast times for regular series (TVmaze), added once the
@@ -118,22 +240,40 @@ final class CalendarViewModel: ObservableObject {
                 }
             )
             guard !Task.isCancelled else { return }
-            self?.showAirTimes(entries, generation: generation)
+            self?.showAirTimes(entries, generation: generation, isFinal: true)
         }
     }
 
-    private func showAirTimes(_ entries: [CalendarEntry], generation: Int) {
-        guard loadGeneration == generation,
-              case .loaded(let current, let loadedAt) = state,
-              Set(entries) != Set(current.allEntries) else { return }
-        state = .loaded(current.replacingEntries(entries), loadedAt: loadedAt)
+    private func showAirTimes(_ entries: [CalendarEntry], generation: Int, isFinal: Bool = false) {
+        guard loadGeneration == generation, case .loaded(let current, let loadedAt) = state else { return }
+        var shown = current
+        if Set(entries) != Set(current.allEntries) {
+            shown = current.replacingEntries(entries)
+            state = .loaded(shown, loadedAt: loadedAt)
+        }
+        // With the times, so the next start shows them at once.
+        if isFinal { saveSnapshot(shown, loadedAt: loadedAt) }
     }
 
-    private static func signature() -> String {
+    private func saveSnapshot(_ result: CalendarResult, loadedAt: Date) {
+        guard let loaded else { return }
+        snapshotSequence += 1
+        let sequence = snapshotSequence
+        let snapshot = CalendarSnapshot(settings: loaded.settings, day: loaded.day, loadedAt: loadedAt, result: result)
+        let snapshots = self.snapshots
+        Task { await snapshots.write(snapshot, sequence: sequence) }
+    }
+
+    private static func currentInputs() -> Inputs {
+        Inputs(day: CalendarDay(date: Date()), settings: settingsSignature())
+    }
+
+    /// Everything besides the day that changes what the calendar holds.
+    private static func settingsSignature() -> String {
         [
-            CalendarDay(date: Date()).iso,
             LibraryStore.activeProfileId ?? "",
             TraktSettingsStore.librarySourceMode.rawValue,
+            CalendarLibrarySource.isTmdbConfigured ? "tmdb" : "",
             TmdbDetailsService.currentApiKey ?? "",
             TmdbDetailsService.preferredLanguage,
             CalendarOptions.tvmazeTimes() ? "tvmaze" : "",
@@ -156,7 +296,7 @@ struct CalendarView: View {
     let onOpenEntry: (CalendarEntry) -> Void
     let onOpenSettings: () -> Void
 
-    @StateObject private var model = CalendarViewModel()
+    @ObservedObject private var model = CalendarViewModel.shared
     @StateObject private var statusHolder = CalendarStatusHolder()
     @AppStorage(SettingsKey.amoled) private var amoled = false
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
@@ -268,7 +408,13 @@ struct CalendarView: View {
             )
 
         case .loaded(let result, let loadedAt):
-            loadedContent(result: result, loadedAt: loadedAt)
+            // Right after a profile switch the last profile's calendar is
+            // still there until the new one starts loading.
+            if model.currentResult(from: model.state) != nil {
+                loadedContent(result: result, loadedAt: loadedAt)
+            } else {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
     }
 
@@ -382,7 +528,9 @@ struct CalendarView: View {
             } message: {
                 Text(L10n.format(
                     "calendar_updated_at", fallback: "Updated %@",
-                    loadedAt.formatted(date: .omitted, time: .shortened)
+                    Calendar.current.isDateInToday(loadedAt)
+                        ? loadedAt.formatted(date: .omitted, time: .shortened)
+                        : loadedAt.formatted(date: .abbreviated, time: .shortened)
                 ))
             }
 
@@ -411,7 +559,8 @@ struct CalendarView: View {
             Button {
                 model.load()
             } label: {
-                Image(systemName: "arrow.clockwise")
+                // The calendar stays on screen while a newer one loads.
+                Image(systemName: model.isRefreshing ? "hourglass" : "arrow.clockwise")
                     .accessibilityLabel(L10n.string("calendar_refresh", fallback: "Refresh"))
             }
         }

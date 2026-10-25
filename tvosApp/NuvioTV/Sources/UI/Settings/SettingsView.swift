@@ -189,6 +189,8 @@ enum SettingsKey {
     static let calendarHideSpoilers = "nuvio.tv.settings.calendar.hideSpoilers"
     static let calendarCheckAvailability = "nuvio.tv.settings.calendar.checkAvailability"
     static let calendarTvmazeTimes = "nuvio.tv.settings.calendar.tvmazeTimes"
+    /// Fork-only: Home's Today row from the calendar; out of `all`.
+    static let homeCalendarToday = "nuvio.tv.settings.layout.homeCalendarToday"
     static let hideUnreleased = "nuvio.tv.settings.layout.hideUnreleased"
     static let showFullDates = "nuvio.tv.settings.layout.showFullDates"
     static let detailsActionsBelowInfo = "nuvio.tv.settings.layout.detailsActionsBelowInfo"
@@ -3110,6 +3112,7 @@ private struct LayoutDiscoverySettingsView: View {
     @AppStorage(SettingsKey.continueWatchingSort) private var continueWatchingSort = "Default"
     @AppStorage(SettingsKey.upNextFromFurthestEpisode) private var upNextFromFurthestEpisode = true
     @AppStorage(SettingsKey.showUnairedNextUp) private var showUnairedNextUp = true
+    @AppStorage(SettingsKey.homeCalendarToday) private var homeCalendarToday = true
     @AppStorage(SettingsKey.hideUnreleased) private var hideUnreleased = false
     @AppStorage(SettingsKey.showFullDates) private var showFullDates = true
     @AppStorage(SettingsKey.focusedPosterBackdropEnabled) private var focusedPosterBackdropEnabled = true
@@ -3404,6 +3407,24 @@ private struct LayoutDiscoverySettingsView: View {
                 )
                 .opacity(continueWatchingVisible ? 1 : 0.46)
                 .disabled(!continueWatchingVisible)
+            }
+
+            SettingsGroup(
+                title: L10n.string("nav_calendar", fallback: "Calendar"),
+                subtitle: L10n.string(
+                    "settings_calendar_home_subtitle",
+                    fallback: "Rows on the Home screen from your calendar"
+                )
+            ) {
+                SettingsToggleRow(
+                    title: L10n.string("settings_calendar_today_row", fallback: "Today Row"),
+                    subtitle: L10n.string(
+                        "settings_calendar_today_row_subtitle",
+                        fallback: "Episodes, anime and movies from your library that come out today. Uses TMDB."
+                    ),
+                    isOn: $homeCalendarToday,
+                    accentColor: accentColor
+                )
             }
 
             SettingsGroup(
