@@ -37,8 +37,17 @@ public struct Tuning: Codable, Equatable, Sendable {
     public var tapMaxDuration: Double = 0.40
     /// …and moves less than this (UIKit points).
     public var tapMaxMovePoints: Double = 60
-    /// Taps farther from the middle than this are on an edge (left, right, top, bottom).
+    /// Touches farther from the middle than this are in one of the directions.
     public var sideThreshold: Double = 0.30
+    /// Corners (left top, right bottom…) as well as the four sides.
+    public var cornerTouches: Bool = true
+    /// How wide a corner is, in degrees around the diagonal; the rest goes
+    /// to the nearest side.
+    public var cornerWidth: Double = 40
+    /// A still finger this long (without a click) is a hold.
+    public var holdMinDuration: Double = 0.50
+    /// How far the finger may wander during a hold (pad units).
+    public var holdMaxSpread: Double = 0.30
     /// Turn needed for a circle, in degrees.
     public var circleDegrees: Double = 300
     /// The finger must stay at least this far from the middle while circling.
@@ -62,6 +71,7 @@ public struct Tuning: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case doubleWindow, longPress, swipeMinPoints, swipeLongPoints, swipeMaxDuration
         case tapMaxDuration, tapMaxMovePoints, sideThreshold, circleDegrees, circleMinRadius
+        case cornerTouches, cornerWidth, holdMinDuration, holdMaxSpread
         case clickGuard, liftTrim, drawingMode, drawArmWindow, strokeGap, digitMinScore
     }
 
@@ -81,6 +91,10 @@ public struct Tuning: Codable, Equatable, Sendable {
         tapMaxDuration = read(.tapMaxDuration, tapMaxDuration)
         tapMaxMovePoints = read(.tapMaxMovePoints, tapMaxMovePoints)
         sideThreshold = read(.sideThreshold, sideThreshold)
+        cornerWidth = read(.cornerWidth, cornerWidth)
+        holdMinDuration = read(.holdMinDuration, holdMinDuration)
+        holdMaxSpread = read(.holdMaxSpread, holdMaxSpread)
+        cornerTouches = (try? c.decodeIfPresent(Bool.self, forKey: .cornerTouches)) ?? cornerTouches
         circleDegrees = read(.circleDegrees, circleDegrees)
         circleMinRadius = read(.circleMinRadius, circleMinRadius)
         clickGuard = read(.clickGuard, clickGuard)

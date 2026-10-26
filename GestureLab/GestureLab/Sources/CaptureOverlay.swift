@@ -100,6 +100,20 @@ private struct PadView: View {
             let topLeft = point(PadPoint(x: -side, y: side))
             let middle = CGRect(x: topLeft.x, y: topLeft.y, width: side * w, height: side * h)
             context.stroke(Path(middle), with: .color(.white.opacity(0.12)), style: StrokeStyle(lineWidth: 2, dash: [6, 10]))
+            // Corner zones: lines at the diagonal ± half the corner width.
+            if model.tuning.cornerTouches {
+                let half = model.tuning.cornerWidth / 2
+                for quadrant in 0..<4 {
+                    for offset in [-half, half] {
+                        let radians = (45 + offset + Double(quadrant) * 90) * .pi / 180
+                        var line = Path()
+                        line.move(to: point(PadPoint(x: cos(radians) * side * 1.2, y: sin(radians) * side * 1.2)))
+                        line.addLine(to: point(PadPoint(x: cos(radians) * 1.3, y: sin(radians) * 1.3)))
+                        context.stroke(line, with: .color(.white.opacity(0.12)),
+                                       style: StrokeStyle(lineWidth: 2, dash: [6, 10]))
+                    }
+                }
+            }
 
             // Pressed buttons light up where they are.
             let marks: [(RemoteButton, PadPoint)] = [

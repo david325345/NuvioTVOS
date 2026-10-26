@@ -114,6 +114,8 @@ final class BindingTests: XCTestCase {
         XCTAssertEqual(RemoteGesture.swipe(.left, long: true).title, "Dlouhý tah doleva")
         XCTAssertEqual(RemoteGesture.tap(.left, double: true).title, "Dvojí dotyk vlevo")
         XCTAssertEqual(RemoteGesture.digit(3).title, "Číslice 3")
+        XCTAssertEqual(RemoteGesture.hold(.bottomLeft).title, "Přidržení vlevo dole")
+        XCTAssertEqual(RemoteGesture.tap(.topRight, double: true).title, "Dvojí dotyk vpravo nahoře")
     }
 }
 

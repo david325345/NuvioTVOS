@@ -42,9 +42,10 @@ public struct TouchSummary: Equatable, Sendable {
     public let duration: TimeInterval
     /// Nil when the system reported no movement at all.
     public let movement: TouchMovement?
-    /// Cleaned pad positions: first and last.
+    /// Cleaned pad positions: first and last, and all of them (to draw).
     public let padStart: PadPoint?
     public let padEnd: PadPoint?
+    public let points: [PadPoint]
     /// A click came with the touch, so it is no swipe or tap.
     public let withClick: Bool
 }
@@ -63,10 +64,11 @@ public enum RecognizerOutput: Equatable, Sendable {
 /// every event to `handle` and act on what it returns.
 ///
 /// What the Siri Remote does that this has to cope with (seen on a device):
-/// the first pad position of a touch has y exactly 0 (x arrives first); when
-/// the finger lifts, positions slide towards the middle and (0, 0) may come
-/// before the touch ends; a click on the edge makes the position jump to the
-/// edge, and the system may end the touch around the click.
+/// the pad reports where the finger landed about 20 ms before the system
+/// says a touch began, and a finger that stays still reports nothing more;
+/// that first position has y exactly 0 (x arrives first); when the finger
+/// lifts, positions slide towards the middle and (0, 0) may come before the
+/// touch ends; the system may end the touch around a click.
 public final class GestureRecognizer {
     public var tuning: Tuning
     public var digits: DigitRecognizer
@@ -89,16 +91,24 @@ public final class GestureRecognizer {
     private var samples: [Sample] = []
     /// The pad reported (0, 0): later positions of this touch are noise.
     private var padLiftTime: TimeInterval?
+    /// Positions that came before the system reported the touch.
+    private var preSamples: [Sample] = []
+    /// How long before the touch's start such a position still belongs to it.
+    static let preTouchWindow: TimeInterval = 0.10
     private var movement: TouchMovement?
     /// When the current drawing stroke started collecting positions.
     private var strokeStart: TimeInterval?
     private var pressDuringTouch = false
     private var lastPressEvent: TimeInterval = -.infinity
+    private var lastTouchEnd: TimeInterval = -.infinity
+    /// Positions this soon after a lift are the pad settling, not the next touch.
+    static let liftSettleTime: TimeInterval = 0.08
 
     /// A finished touch waiting `clickGuard` in case a click turns up.
     private enum TouchKind {
         case swipe(SwipeDirection, long: Bool)
         case tap(PadSide)
+        case hold(PadSide)
         case circle(clockwise: Bool)
     }
     private var pendingTouch: (kind: TouchKind, start: TimeInterval, end: TimeInterval)?
@@ -134,6 +144,7 @@ public final class GestureRecognizer {
     public func reset() {
         touchActive = false
         samples = []
+        preSamples = []
         padLiftTime = nil
         movement = nil
         pendingTouch = nil
@@ -178,18 +189,20 @@ public final class GestureRecognizer {
     private func beginTouch(at time: TimeInterval) -> [RecognizerOutput] {
         touchActive = true
         touchStart = time
-        samples = []
+        // Where the finger landed came just before the system's touch.
+        samples = preSamples.filter { $0.time >= time - Self.preTouchWindow }
+        preSamples = []
         padLiftTime = nil
         movement = nil
         pressDuringTouch = !pressDown.isEmpty
         switch drawState {
         case .armed, .strokes:
             drawState = .strokes(lastEnd: nil)
-            currentStroke = []
-            strokeStart = time
+            currentStroke = samples.map(\.point)
+            strokeStart = samples.first?.time ?? time
         case .holding:
-            currentStroke = []
-            strokeStart = time
+            currentStroke = samples.map(\.point)
+            strokeStart = samples.first?.time ?? time
         case .idle:
             strokeStart = nil
         }
@@ -197,13 +210,20 @@ public final class GestureRecognizer {
     }
 
     private func move(to point: PadPoint, at time: TimeInterval) -> [RecognizerOutput] {
-        guard touchActive, padLiftTime == nil else { return [] }
         if point.x == 0, point.y == 0 {
-            padLiftTime = time
+            if touchActive, padLiftTime == nil { padLiftTime = time }
+            preSamples = []
             return []
         }
-        // The first position has only x: skip it until y arrives too.
-        if samples.isEmpty, point.x == 0 || point.y == 0 { return [] }
+        guard touchActive else {
+            // Kept for the touch the system is about to report, unless it is
+            // the previous touch's lift still settling.
+            guard time - lastTouchEnd >= Self.liftSettleTime else { return [] }
+            preSamples.append(Sample(time: time, point: point))
+            preSamples.removeAll { time - $0.time > 0.5 }
+            return []
+        }
+        guard padLiftTime == nil else { return [] }
         samples.append(Sample(time: time, point: point))
         if isDrawing, drawState != .idle {
             if case .armed = drawState { drawState = .strokes(lastEnd: nil) }
@@ -213,10 +233,16 @@ public final class GestureRecognizer {
         return []
     }
 
-    /// Positions of the touch without the lift slide, from `from` on.
+    /// Positions of the touch without the half first one and the lift slide,
+    /// from `from` on.
     private func cleanedPoints(liftAt lift: TimeInterval, from: TimeInterval = -.infinity) -> [PadPoint] {
+        var range = samples.filter { $0.time >= from }
+        // The first position has only x (y still 0) when y follows; alone it
+        // is all there is, so it stays.
+        if range.count > 1, let first = range.first?.point, (first.x == 0) != (first.y == 0) {
+            range.removeFirst()
+        }
         let cutoff = min(lift, padLiftTime ?? lift) - tuning.liftTrim
-        let range = samples.filter { $0.time >= from }
         let kept = range.filter { $0.time <= cutoff }.map(\.point)
         // A very short touch may have nothing left: keep its first position.
         return kept.isEmpty ? Array(range.prefix(1).map(\.point)) : kept
@@ -225,6 +251,8 @@ public final class GestureRecognizer {
     private func endTouch(at time: TimeInterval) -> [RecognizerOutput] {
         guard touchActive else { return [] }
         touchActive = false
+        preSamples = []
+        lastTouchEnd = time
         let duration = time - touchStart
         let points = cleanedPoints(liftAt: time)
 
@@ -242,7 +270,7 @@ public final class GestureRecognizer {
         let withClick = pressDuringTouch || !pressDown.isEmpty || touchStart - lastPressEvent < tuning.clickGuard
         var outputs: [RecognizerOutput] = [.touchSummary(TouchSummary(
             duration: duration, movement: movement,
-            padStart: points.first, padEnd: points.last, withClick: withClick))]
+            padStart: points.first, padEnd: points.last, points: points, withClick: withClick))]
         guard !withClick, let kind = classify(duration: duration, points: points) else { return outputs }
         // A quick second touch: the first one goes out now.
         if let previous = pendingTouch {
@@ -267,7 +295,18 @@ public final class GestureRecognizer {
         if duration <= tuning.tapMaxDuration, major <= tuning.tapMaxMovePoints {
             return .tap(side(of: points))
         }
+        if duration >= tuning.holdMinDuration, !points.isEmpty, Self.spread(of: points) <= tuning.holdMaxSpread {
+            return .hold(side(of: points))
+        }
         return nil
+    }
+
+    /// How far the positions wander from their middle (largest distance from the median).
+    static func spread(of points: [PadPoint]) -> Double {
+        guard !points.isEmpty else { return 0 }
+        let xs = points.map(\.x).sorted(), ys = points.map(\.y).sorted()
+        let median = PadPoint(x: xs[xs.count / 2], y: ys[ys.count / 2])
+        return points.map { $0.distance(to: median) }.max() ?? 0
     }
 
     /// Without any system movement: the pad's own, at a rough 500 points per pad unit.
@@ -276,19 +315,31 @@ public final class GestureRecognizer {
         return TouchMovement(dx: (last.x - first.x) * 500, dy: (last.y - first.y) * 500)
     }
 
-    /// The edge nearest to where the finger rested, or the middle when it
-    /// stayed within `sideThreshold` of it both ways.
-    static func side(of points: [PadPoint], threshold: Double) -> PadSide {
+    /// The direction of where the finger rested, or the middle when it stayed
+    /// within `threshold` of it both ways. With corners, a touch within
+    /// `cornerWidth / 2` degrees of a diagonal is that corner.
+    static func side(of points: [PadPoint], threshold: Double,
+                     corners: Bool = false, cornerWidth: Double = 40) -> PadSide {
         guard !points.isEmpty else { return .center }
         let xs = points.map(\.x).sorted(), ys = points.map(\.y).sorted()
         let x = xs[xs.count / 2], y = ys[ys.count / 2]
         guard max(abs(x), abs(y)) > threshold else { return .center }
+        let degrees = atan2(abs(y), abs(x)) * 180 / .pi
+        if corners, abs(degrees - 45) <= cornerWidth / 2 {
+            switch (x < 0, y > 0) {
+            case (true, true): return .topLeft
+            case (false, true): return .topRight
+            case (true, false): return .bottomLeft
+            case (false, false): return .bottomRight
+            }
+        }
         if abs(y) > abs(x) { return y > 0 ? .top : .bottom }
         return x < 0 ? .left : .right
     }
 
     private func side(of points: [PadPoint]) -> PadSide {
-        Self.side(of: points, threshold: tuning.sideThreshold)
+        Self.side(of: points, threshold: tuning.sideThreshold,
+                  corners: tuning.cornerTouches, cornerWidth: tuning.cornerWidth)
     }
 
     /// Clockwise or not, when the finger went far enough round the middle.
@@ -320,6 +371,8 @@ public final class GestureRecognizer {
             return [.gesture(.swipe(direction, long: long), inputTime: end, decidedTime: time)]
         case let .circle(clockwise):
             return [.gesture(.circle(clockwise: clockwise), inputTime: end, decidedTime: time)]
+        case let .hold(side):
+            return [.gesture(.hold(side), inputTime: end, decidedTime: time)]
         case let .tap(side):
             return tap(side, start: start, end: end, at: time)
         }

@@ -258,8 +258,10 @@ final class LabModel: ObservableObject {
                 padTouchStart = time
                 addLog(String(format: "plocha: první bod (%.2f, %.2f)", x, y), .raw)
             }
-            // The dot and its path only while the system reports a touch.
-            if uikitTouchStart != nil {
+            // The dot and its path only while the system reports a touch, and
+            // not the first half position (y still 0) that draws a line from the middle.
+            let halfPosition = (x == 0) != (y == 0)
+            if uikitTouchStart != nil, !(trail.isEmpty && halfPosition) {
                 fingerPoint = point
                 trail.append(point)
                 if trail.count > 240 { trail.removeFirst(trail.count - 240) }
@@ -303,6 +305,8 @@ final class LabModel: ObservableObject {
             handle(gesture, delay: delay)
         case let .touchSummary(summary):
             addLog(describe(summary), .raw)
+            // Show the touch as it was read: without the lift slide.
+            trail = summary.points
         case .drawingStarted:
             isDrawing = true
             liveStrokes = []

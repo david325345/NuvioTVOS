@@ -53,9 +53,10 @@ public enum SwipeDirection: String, Codable, CaseIterable, Sendable {
     }
 }
 
-/// Where a light tap (no click) landed: the edge it is nearest to, or the middle.
+/// Where a touch rested: one of eight directions from the middle, or the middle.
 public enum PadSide: String, Codable, CaseIterable, Sendable {
     case left, center, right, top, bottom
+    case topLeft, topRight, bottomLeft, bottomRight
 
     public var title: String {
         switch self {
@@ -64,6 +65,10 @@ public enum PadSide: String, Codable, CaseIterable, Sendable {
         case .right: return "vpravo"
         case .top: return "nahoře"
         case .bottom: return "dole"
+        case .topLeft: return "vlevo nahoře"
+        case .topRight: return "vpravo nahoře"
+        case .bottomLeft: return "vlevo dole"
+        case .bottomRight: return "vpravo dole"
         }
     }
 }
@@ -73,6 +78,8 @@ public enum RemoteGesture: Hashable, Codable, Sendable {
     case click(RemoteButton, ClickKind)
     case swipe(SwipeDirection, long: Bool)
     case tap(PadSide, double: Bool)
+    /// A finger resting still (no click) for a while.
+    case hold(PadSide)
     case circle(clockwise: Bool)
     case digit(Int)
 
@@ -88,6 +95,8 @@ public enum RemoteGesture: Hashable, Codable, Sendable {
             return (long ? "Dlouhý tah " : "Tah ") + direction.title
         case let .tap(side, double):
             return (double ? "Dvojí dotyk " : "Dotyk ") + side.title
+        case let .hold(side):
+            return "Přidržení " + side.title
         case let .circle(clockwise):
             return clockwise ? "Kroužek po směru hodin" : "Kroužek proti směru hodin"
         case let .digit(value):

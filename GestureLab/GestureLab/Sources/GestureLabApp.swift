@@ -216,6 +216,12 @@ struct TuningView: View {
                   keyPath: \.liftTrim, step: 0.01, range: 0...0.2, format: TuningView.seconds),
         Parameter(id: "side", title: "Hranice od středu", hint: "Dotyk dál od středu je vlevo, vpravo, nahoře nebo dole",
                   keyPath: \.sideThreshold, step: 0.05, range: 0.1...0.8, format: TuningView.units),
+        Parameter(id: "cornerWidth", title: "Šířka rohů", hint: "Úhel kolem úhlopříčky, který patří rohu",
+                  keyPath: \.cornerWidth, step: 5, range: 10...80, format: { String(format: "%.0f°", $0) }),
+        Parameter(id: "holdMin", title: "Přidržení od", hint: "Jak dlouho musí prst ležet bez cvaknutí",
+                  keyPath: \.holdMinDuration, step: 0.1, range: 0.3...2.0, format: TuningView.seconds),
+        Parameter(id: "holdSpread", title: "Přidržení: povolený pohyb", hint: "Jak daleko se smí prst při přidržení posunout",
+                  keyPath: \.holdMaxSpread, step: 0.05, range: 0.05...0.8, format: TuningView.units),
         Parameter(id: "circle", title: "Kroužek", hint: "Kolik stupňů je potřeba otočit",
                   keyPath: \.circleDegrees, step: 30, range: 180...720, format: { String(format: "%.0f°", $0) }),
         Parameter(id: "circleRadius", title: "Kroužek od okraje", hint: "Jak daleko od středu se musí kroužit",
@@ -238,6 +244,11 @@ struct TuningView: View {
                     model.cycleDrawingMode()
                 } label: {
                     ValueRow(title: "Kreslení číslic", value: model.tuning.drawingMode.title)
+                }
+                Button {
+                    model.tuning.cornerTouches.toggle()
+                } label: {
+                    ValueRow(title: "Dotyky v rozích", value: model.tuning.cornerTouches ? "zapnuté" : "vypnuté")
                 }
 
                 ForEach(parameters) { parameter in

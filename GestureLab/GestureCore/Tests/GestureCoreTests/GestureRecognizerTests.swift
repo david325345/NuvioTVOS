@@ -208,6 +208,73 @@ final class GestureRecognizerTests: XCTestCase {
         XCTAssertEqual(GestureRecognizer.side(of: [], threshold: 0.3), .center)
     }
 
+    func testCornersWhenTurnedOn() {
+        // Points from the device video: about 35° off the horizontal.
+        XCTAssertEqual(GestureRecognizer.side(of: [PadPoint(x: -0.67, y: -0.43)], threshold: 0.3,
+                                              corners: true, cornerWidth: 40), .bottomLeft)
+        XCTAssertEqual(GestureRecognizer.side(of: [PadPoint(x: 0.66, y: 0.45)], threshold: 0.3,
+                                              corners: true, cornerWidth: 40), .topRight)
+        XCTAssertEqual(GestureRecognizer.side(of: [PadPoint(x: -0.8, y: 0.1)], threshold: 0.3,
+                                              corners: true, cornerWidth: 40), .left)
+        XCTAssertEqual(GestureRecognizer.side(of: [PadPoint(x: 0.05, y: 0.8)], threshold: 0.3,
+                                              corners: true, cornerWidth: 40), .top)
+        XCTAssertEqual(GestureRecognizer.side(of: [PadPoint(x: -0.67, y: -0.43)], threshold: 0.3,
+                                              corners: false), .left)
+    }
+
+    /// Seen on the device: the pad reports the landing ~20 ms before the
+    /// system's touch, half first (y = 0), and a still finger sends no more.
+    func testStillTapUsesThePositionFromJustBeforeTheTouch() {
+        let recognizer = GestureRecognizer(waitsForDouble: { _ in false })
+        let outputs = run(recognizer, [
+            .touchMoved(0.000, PadPoint(x: -0.71, y: 0)),
+            .touchMoved(0.004, PadPoint(x: -0.71, y: -0.43)),
+            .touchBegan(0.02),
+            .touchEnded(0.2), .tick(0.5),
+        ])
+        XCTAssertEqual(gestures(outputs), [.tap(.bottomLeft, double: false)])
+    }
+
+    func testAHalfPositionAloneStillCounts() {
+        let recognizer = GestureRecognizer(waitsForDouble: { _ in false })
+        let outputs = run(recognizer, [
+            .touchMoved(0, PadPoint(x: -0.8, y: 0)), .touchBegan(0.02), .touchEnded(0.15), .tick(0.4),
+        ])
+        XCTAssertEqual(gestures(outputs), [.tap(.left, double: false)])
+    }
+
+    func testOldPositionsDontBelongToTheNextTouch() {
+        let recognizer = GestureRecognizer(waitsForDouble: { _ in false })
+        let outputs = run(recognizer, [
+            .touchMoved(0, PadPoint(x: 0.8, y: 0.05)),
+            .touchMoved(0.05, PadPoint(x: 0, y: 0)),
+            .touchBegan(0.5), .touchEnded(0.6), .tick(0.9),
+        ])
+        XCTAssertEqual(gestures(outputs), [.tap(.center, double: false)])
+    }
+
+    func testStillFingerIsAHold() {
+        let recognizer = GestureRecognizer()
+        var events: [InputEvent] = [.touchMoved(0, PadPoint(x: 0.66, y: 0.45)), .touchBegan(0.02)]
+        for step in 1...16 {
+            let wobble = Double(step % 3) * 0.02
+            events.append(.touchMoved(0.02 + Double(step) * 0.05, PadPoint(x: 0.66 + wobble, y: 0.45 - wobble)))
+        }
+        events += [.touchTranslation(0.8, dx: -60, dy: 20), .touchEnded(0.9), .tick(1.2)]
+        XCTAssertEqual(gestures(run(recognizer, events)), [.hold(.topRight)])
+    }
+
+    func testWanderingFingerIsNoHold() {
+        let recognizer = GestureRecognizer()
+        var events: [InputEvent] = [.touchBegan(0)]
+        for step in 0...16 {
+            let t = Double(step) / 16
+            events.append(.touchMoved(0.05 * Double(step), PadPoint(x: 0.6 - 0.9 * t, y: 0.4 - 0.6 * t)))
+        }
+        events += [.touchTranslation(0.8, dx: -200, dy: -120), .touchEnded(0.9), .tick(1.3)]
+        XCTAssertTrue(gestures(run(recognizer, events)).isEmpty)
+    }
+
     func testPadPositionsAloneNeverStartATouch() {
         let recognizer = GestureRecognizer()
         XCTAssertTrue(run(recognizer, [
