@@ -24,21 +24,6 @@ public enum LabAction: String, Codable, CaseIterable, Sendable {
     }
 }
 
-/// What a drawn digit does.
-public enum DigitMode: String, Codable, CaseIterable, Sendable {
-    /// 3 → chapter 3.
-    case chapter
-    /// 3 → 30 % of the video.
-    case percent
-
-    public var title: String {
-        switch self {
-        case .chapter: return "Číslice = kapitola"
-        case .percent: return "Číslice = desítky procent"
-        }
-    }
-}
-
 public struct GestureBinding: Codable, Hashable, Sendable {
     public var gesture: RemoteGesture
     public var action: LabAction
@@ -50,14 +35,12 @@ public struct GestureBinding: Codable, Hashable, Sendable {
 }
 
 /// Which gesture does which action: one gesture per action and one action per
-/// gesture. Digits are not bound one by one; `digitMode` says what they do.
+/// gesture.
 public struct GestureBindings: Codable, Equatable, Sendable {
     public private(set) var bindings: [GestureBinding]
-    public var digitMode: DigitMode
 
-    public init(bindings: [GestureBinding], digitMode: DigitMode = .chapter) {
+    public init(bindings: [GestureBinding]) {
         self.bindings = bindings
-        self.digitMode = digitMode
     }
 
     /// Long swipes jump chapters (the first proposal); the usual clicks keep
@@ -84,10 +67,9 @@ public struct GestureBindings: Codable, Equatable, Sendable {
     }
 
     /// Gives `action` this gesture. The action that had it before loses it and
-    /// is returned. Digits can't be bound (see `digitMode`).
+    /// is returned.
     @discardableResult
     public mutating func bind(_ gesture: RemoteGesture, to action: LabAction) -> LabAction? {
-        if case .digit = gesture { return nil }
         let previous = conflict(for: gesture, action: action)
         bindings.removeAll { $0.action == action || $0.gesture == gesture }
         bindings.append(GestureBinding(gesture: gesture, action: action))

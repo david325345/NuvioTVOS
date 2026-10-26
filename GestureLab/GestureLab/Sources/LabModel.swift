@@ -9,14 +9,11 @@ enum CaptureMode: Equatable {
     case test
     /// Do the gesture for this action; Play/Pause saves it.
     case record(LabAction)
-    /// Draw this digit; every drawing is saved as an own sample.
-    case trainDigit(Int)
 
     var title: String {
         switch self {
         case .test: return "Test gest"
         case let .record(action): return "Nahrát gesto: \(action.title)"
-        case let .trainDigit(digit): return "Vzor číslice \(digit)"
         }
     }
 }
@@ -28,8 +25,8 @@ struct LogLine: Identifiable {
     let kind: Kind
 }
 
-/// Everything Gesture Lab shows and keeps: settings, bindings, own digit
-/// samples, and the live state of the capture screen.
+/// Everything Gesture Lab shows and keeps: settings, bindings, and the live
+/// state of the capture screen.
 @MainActor
 final class LabModel: ObservableObject {
     // MARK: Saved
@@ -45,18 +42,6 @@ final class LabModel: ObservableObject {
             updateDoublePolicy()
         }
     }
-    @Published private(set) var digitTemplates: [DigitTemplate] {
-        didSet {
-            save(digitTemplates, as: Keys.templates)
-            rebuildDigits()
-        }
-    }
-    @Published var useBuiltInDigits: Bool {
-        didSet {
-            UserDefaults.standard.set(useBuiltInDigits, forKey: Keys.builtInDigits)
-            rebuildDigits()
-        }
-    }
 
     // MARK: Capture screen
     @Published private(set) var mode: CaptureMode = .test
@@ -64,9 +49,6 @@ final class LabModel: ObservableObject {
     @Published private(set) var trail: [PadPoint] = []
     @Published private(set) var fingerPoint: PadPoint?
     @Published private(set) var pressed: Set<RemoteButton> = []
-    @Published private(set) var isDrawing = false
-    @Published private(set) var liveStrokes: [[PadPoint]] = []
-    @Published private(set) var lastDrawing: [[PadPoint]] = []
     @Published private(set) var headline = ""
     @Published private(set) var detail = ""
     @Published private(set) var timeline = LabTimeline()
@@ -86,17 +68,15 @@ final class LabModel: ObservableObject {
     private enum Keys {
         static let tuning = "lab.tuning"
         static let bindings = "lab.bindings"
-        static let templates = "lab.templates"
-        static let builtInDigits = "lab.builtInDigits"
+        /// Saved by older builds (digit drawing), no longer used.
+        static let gone = ["lab.templates", "lab.builtInDigits"]
     }
 
     init() {
         tuning = Self.load(Tuning.self, Keys.tuning) ?? Tuning()
         bindings = Self.load(GestureBindings.self, Keys.bindings) ?? .defaults
-        digitTemplates = Self.load([DigitTemplate].self, Keys.templates) ?? []
-        useBuiltInDigits = UserDefaults.standard.object(forKey: Keys.builtInDigits) as? Bool ?? true
+        Keys.gone.forEach { UserDefaults.standard.removeObject(forKey: $0) }
         recognizer.tuning = tuning
-        rebuildDigits()
         updateDoublePolicy()
         startControllerMonitoring()
     }
@@ -108,20 +88,8 @@ final class LabModel: ObservableObject {
         tuning[keyPath: keyPath] = min(max((value * 1000).rounded() / 1000, range.lowerBound), range.upperBound)
     }
 
-    func cycleDrawingMode() {
-        let all = DrawingMode.allCases
-        let index = all.firstIndex(of: tuning.drawingMode) ?? 0
-        tuning.drawingMode = all[(index + 1) % all.count]
-    }
-
     func resetTuning() {
         tuning = Tuning()
-    }
-
-    func toggleDigitMode() {
-        let all = DigitMode.allCases
-        let index = all.firstIndex(of: bindings.digitMode) ?? 0
-        bindings.digitMode = all[(index + 1) % all.count]
     }
 
     func resetBindings() {
@@ -130,18 +98,6 @@ final class LabModel: ObservableObject {
 
     func unbind(_ action: LabAction) {
         bindings.unbind(action)
-    }
-
-    func sampleCount(for digit: Int) -> Int {
-        digitTemplates.filter { $0.digit == digit }.count
-    }
-
-    func deleteSamples(for digit: Int? = nil) {
-        if let digit {
-            digitTemplates.removeAll { $0.digit == digit }
-        } else {
-            digitTemplates = []
-        }
     }
 
     // MARK: - Capture screen
@@ -154,30 +110,16 @@ final class LabModel: ObservableObject {
         trail = []
         fingerPoint = nil
         pressed = []
-        liveStrokes = []
-        lastDrawing = []
-        isDrawing = false
         recordCandidate = nil
         timeline = LabTimeline()
-        // Drawing samples must work even with drawing turned off in Tuning.
-        var effective = tuning
-        if case .trainDigit = mode, effective.drawingMode == .off {
-            effective.drawingMode = .longPressThenDraw
-        }
-        recognizer.tuning = effective
+        recognizer.tuning = tuning
         switch mode {
         case .test:
             headline = "Zkus gesto"
             detail = "Přiřazená gesta se projeví na časové ose dole. Menu = zpět."
-            if tuning.drawingMode == .off {
-                detail += " Kreslení číslic je vypnuté (Ladění)."
-            }
         case let .record(action):
             headline = "Udělej gesto pro „\(action.title)“"
             detail = "Play/Pause = uložit, další gesto = zkusit znovu, Menu = zrušit."
-        case let .trainDigit(digit):
-            headline = "Nakresli \(digit)"
-            detail = "Podrž střed, až naskočí „Kresli…“, pusť a nakresli \(digit). Po chvíli bez dotyku se uloží. Menu = zpět."
         }
         updateDoublePolicy()
 
@@ -216,7 +158,6 @@ final class LabModel: ObservableObject {
         uikitTouchStart = time
         trail = []
         fingerPoint = nil
-        lastDrawing = isDrawing ? lastDrawing : []
         addLog("dotyk začal (UIKit)", .raw)
         feed(.touchBegan(time))
     }
@@ -225,7 +166,6 @@ final class LabModel: ObservableObject {
         uikitTouchStart = nil
         fingerPoint = nil
         if cancelled { addLog("dotyk zrušen systémem", .raw) }
-        if isDrawing { addLog("tah kresby hotov", .raw) }
         feed(.touchEnded(time))
     }
 
@@ -271,9 +211,6 @@ final class LabModel: ObservableObject {
             sampleRate = Double(sampleTimes.count)
         }
         feed(.touchMoved(time, point))
-        if isDrawing {
-            liveStrokes = recognizer.drawingStrokes + [recognizer.currentStroke]
-        }
     }
 
     private func tick() {
@@ -307,27 +244,6 @@ final class LabModel: ObservableObject {
             addLog(describe(summary), .raw)
             // Show the touch as it was read: without the lift slide.
             trail = summary.points
-        case .drawingStarted:
-            isDrawing = true
-            liveStrokes = []
-            lastDrawing = []
-            headline = "Kresli…"
-            detail = tuning.drawingMode == .holdSelect
-                ? "Drž střed a kresli, puštěním skončíš."
-                : "Kresli, chvíle bez dotyku kreslení ukončí."
-            addLog("kreslení začalo", .info)
-        case let .drawingFinished(result):
-            isDrawing = false
-            liveStrokes = []
-            lastDrawing = result.strokes
-            addLog("kreslení skončilo: \(result.strokes.count) tah(y)", .info)
-            handle(result)
-        case .drawingCancelled:
-            isDrawing = false
-            liveStrokes = []
-            headline = "Kreslení zrušeno"
-            detail = "Nic nenakresleno."
-            addLog("kreslení zrušeno", .info)
         }
     }
 
@@ -358,31 +274,6 @@ final class LabModel: ObservableObject {
             } else {
                 detail = "Play/Pause = uložit, další gesto = zkusit znovu, Menu = zrušit." + wait
             }
-        case .trainDigit:
-            headline = gesture.title
-            detail = "Tady se kreslí číslice (\(tuning.drawingMode.title))."
-        }
-    }
-
-    private func handle(_ result: DrawingResult) {
-        let best = result.best.map { describe($0) } ?? "nic podobného"
-        switch mode {
-        case .test:
-            if let digit = result.digit {
-                let effect = timeline.jump(toDigit: digit, mode: bindings.digitMode)
-                headline = "Číslice \(digit)"
-                detail = "\(effect) · \(best)"
-            } else {
-                headline = "Nepoznáno"
-                detail = "\(best) · hranice \(format(tuning.digitMinScore))"
-            }
-        case .record:
-            headline = "Číslice se nepřiřazují"
-            detail = "Co dělají, nastavíš v Přiřazení gest (kapitola / procenta)."
-        case let .trainDigit(digit):
-            digitTemplates.append(DigitTemplate(digit: digit, strokes: result.strokes))
-            headline = "Vzor \(digit) uložen (\(sampleCount(for: digit)))"
-            detail = "Před uložením: \(best)"
         }
     }
 
@@ -400,18 +291,6 @@ final class LabModel: ObservableObject {
         return text
     }
 
-    private func describe(_ match: DigitMatch) -> String {
-        var text = "nejblíž \(match.digit) (\(format(match.score)))"
-        if let second = match.runnerUp, let score = match.runnerUpScore {
-            text += ", pak \(second) (\(format(score)))"
-        }
-        return text
-    }
-
-    private func format(_ value: Double) -> String {
-        String(format: "%.2f", value)
-    }
-
     private func addLog(_ text: String, _ kind: LogLine.Kind) {
         let stamp = String(format: "%.3f", ProcessInfo.processInfo.systemUptime.truncatingRemainder(dividingBy: 1000))
         logCounter += 1
@@ -426,13 +305,9 @@ final class LabModel: ObservableObject {
             let bindings = self.bindings
             recognizer.waitsForDouble = { bindings.waitsForDouble($0) }
         } else {
-            // Recording and training: every double must be recognizable.
+            // Recording: every double must be recognizable.
             recognizer.waitsForDouble = { _ in true }
         }
-    }
-
-    private func rebuildDigits() {
-        recognizer.digits = DigitRecognizer(userTemplates: digitTemplates, includeDefaults: useBuiltInDigits)
     }
 
     // MARK: - GameController

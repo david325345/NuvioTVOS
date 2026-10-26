@@ -59,15 +59,12 @@ struct CaptureOverlay: View {
         case let .record(action):
             Text(model.recordCandidate.map { "\(action.title) ← \($0.title)" } ?? "\(action.title) ← zatím nic")
                 .font(.system(size: 30, weight: .semibold))
-        case let .trainDigit(digit):
-            Text("Číslice \(digit): uložených vzorů \(model.sampleCount(for: digit))")
-                .font(.system(size: 30, weight: .semibold))
         }
     }
 }
 
 /// The touch surface, drawn as a square from −1 to 1 (y up): side-tap
-/// lines, the circle zone, lit presses, the finger, its path and drawings.
+/// lines, the circle zone, lit presses, the finger and its path.
 private struct PadView: View {
     @ObservedObject var model: LabModel
 
@@ -137,19 +134,9 @@ private struct PadView: View {
                              at: CGPoint(x: w / 2, y: h - 30))
             }
 
-            // Finished drawing, live drawing, finger path, finger.
-            for stroke in model.lastDrawing {
-                context.stroke(path(stroke), with: .color(.yellow.opacity(0.45)),
-                               style: StrokeStyle(lineWidth: 8, lineCap: .round, lineJoin: .round))
-            }
-            for stroke in model.liveStrokes {
-                context.stroke(path(stroke), with: .color(.yellow),
-                               style: StrokeStyle(lineWidth: 8, lineCap: .round, lineJoin: .round))
-            }
-            if !model.isDrawing {
-                context.stroke(path(model.trail), with: .color(.cyan.opacity(0.55)),
-                               style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
-            }
+            // Finger path, finger.
+            context.stroke(path(model.trail), with: .color(.cyan.opacity(0.55)),
+                           style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
             if let finger = model.fingerPoint {
                 let c = point(finger)
                 context.fill(Path(ellipseIn: CGRect(x: c.x - 18, y: c.y - 18, width: 36, height: 36)),

@@ -18,14 +18,6 @@ public enum InputEvent: Equatable, Sendable {
     case tick(TimeInterval)
 }
 
-public struct DrawingResult: Equatable, Sendable {
-    public let strokes: [[PadPoint]]
-    /// The best match, whatever its score.
-    public let best: DigitMatch?
-    /// The digit, when the best match reaches `Tuning.digitMinScore`.
-    public let digit: Int?
-}
-
 /// The system's movement of a touch, in points, y up.
 public struct TouchMovement: Equatable, Sendable {
     public let dx: Double
@@ -55,9 +47,6 @@ public enum RecognizerOutput: Equatable, Sendable {
     /// `decidedTime - inputTime` is the delay the recognizer added.
     case gesture(RemoteGesture, inputTime: TimeInterval, decidedTime: TimeInterval)
     case touchSummary(TouchSummary)
-    case drawingStarted
-    case drawingFinished(DrawingResult)
-    case drawingCancelled
 }
 
 /// Turns raw remote input into gestures. One instance per test screen; feed
@@ -71,15 +60,9 @@ public enum RecognizerOutput: Equatable, Sendable {
 /// touch ends; the system may end the touch around a click.
 public final class GestureRecognizer {
     public var tuning: Tuning
-    public var digits: DigitRecognizer
     /// Whether a single click or tap has to wait `doubleWindow` for a second
     /// one: true when its double is in use. Otherwise singles come at once.
     public var waitsForDouble: (RemoteGesture) -> Bool
-
-    public private(set) var isDrawing = false
-    /// Strokes of the drawing in progress (finished ones, then the current one).
-    public private(set) var drawingStrokes: [[PadPoint]] = []
-    public private(set) var currentStroke: [PadPoint] = []
 
     // Touch
     private struct Sample {
@@ -96,8 +79,6 @@ public final class GestureRecognizer {
     /// How long before the touch's start such a position still belongs to it.
     static let preTouchWindow: TimeInterval = 0.10
     private var movement: TouchMovement?
-    /// When the current drawing stroke started collecting positions.
-    private var strokeStart: TimeInterval?
     private var pressDuringTouch = false
     private var lastPressEvent: TimeInterval = -.infinity
     private var lastTouchEnd: TimeInterval = -.infinity
@@ -107,6 +88,7 @@ public final class GestureRecognizer {
     /// A finished touch waiting `clickGuard` in case a click turns up.
     private enum TouchKind {
         case swipe(SwipeDirection, long: Bool)
+        case swipeBack(SwipeDirection)
         case tap(PadSide)
         case hold(PadSide)
         case circle(clockwise: Bool)
@@ -121,22 +103,8 @@ public final class GestureRecognizer {
     /// A single tap waiting for a possible second one; `time` is its lift.
     private var pendingTap: (side: PadSide, time: TimeInterval)?
 
-    // Drawing
-    private enum DrawState: Equatable {
-        case idle
-        /// Long press done; waiting for the first stroke until `until` (nil while still held).
-        case armed(until: TimeInterval?)
-        /// Strokes coming in; ends `strokeGap` after the last one.
-        case strokes(lastEnd: TimeInterval?)
-        /// Hold-to-draw: ends when the centre is released.
-        case holding
-    }
-    private var drawState: DrawState = .idle
-
-    public init(tuning: Tuning = Tuning(), digits: DigitRecognizer = DigitRecognizer(),
-                waitsForDouble: @escaping (RemoteGesture) -> Bool = { _ in true }) {
+    public init(tuning: Tuning = Tuning(), waitsForDouble: @escaping (RemoteGesture) -> Bool = { _ in true }) {
         self.tuning = tuning
-        self.digits = digits
         self.waitsForDouble = waitsForDouble
     }
 
@@ -152,10 +120,6 @@ public final class GestureRecognizer {
         longHandled = []
         pendingClick = nil
         pendingTap = nil
-        drawState = .idle
-        isDrawing = false
-        drawingStrokes = []
-        currentStroke = []
     }
 
     public func handle(_ event: InputEvent) -> [RecognizerOutput] {
@@ -195,17 +159,6 @@ public final class GestureRecognizer {
         padLiftTime = nil
         movement = nil
         pressDuringTouch = !pressDown.isEmpty
-        switch drawState {
-        case .armed, .strokes:
-            drawState = .strokes(lastEnd: nil)
-            currentStroke = samples.map(\.point)
-            strokeStart = samples.first?.time ?? time
-        case .holding:
-            currentStroke = samples.map(\.point)
-            strokeStart = samples.first?.time ?? time
-        case .idle:
-            strokeStart = nil
-        }
         return []
     }
 
@@ -225,27 +178,21 @@ public final class GestureRecognizer {
         }
         guard padLiftTime == nil else { return [] }
         samples.append(Sample(time: time, point: point))
-        if isDrawing, drawState != .idle {
-            if case .armed = drawState { drawState = .strokes(lastEnd: nil) }
-            if strokeStart == nil { strokeStart = time }
-            currentStroke.append(point)
-        }
         return []
     }
 
-    /// Positions of the touch without the half first one and the lift slide,
-    /// from `from` on.
-    private func cleanedPoints(liftAt lift: TimeInterval, from: TimeInterval = -.infinity) -> [PadPoint] {
-        var range = samples.filter { $0.time >= from }
+    /// Positions of the touch without the half first one and the lift slide.
+    private func cleanedSamples(liftAt lift: TimeInterval) -> [Sample] {
+        var range = samples
         // The first position has only x (y still 0) when y follows; alone it
         // is all there is, so it stays.
         if range.count > 1, let first = range.first?.point, (first.x == 0) != (first.y == 0) {
             range.removeFirst()
         }
         let cutoff = min(lift, padLiftTime ?? lift) - tuning.liftTrim
-        let kept = range.filter { $0.time <= cutoff }.map(\.point)
+        let kept = range.filter { $0.time <= cutoff }
         // A very short touch may have nothing left: keep its first position.
-        return kept.isEmpty ? Array(range.prefix(1).map(\.point)) : kept
+        return kept.isEmpty ? Array(range.prefix(1)) : kept
     }
 
     private func endTouch(at time: TimeInterval) -> [RecognizerOutput] {
@@ -254,24 +201,14 @@ public final class GestureRecognizer {
         preSamples = []
         lastTouchEnd = time
         let duration = time - touchStart
-        let points = cleanedPoints(liftAt: time)
-
-        if isDrawing {
-            if let strokeStart {
-                let stroke = cleanedPoints(liftAt: time, from: strokeStart)
-                if stroke.count >= 2 { drawingStrokes.append(stroke) }
-            }
-            currentStroke = []
-            strokeStart = nil
-            if case .strokes = drawState { drawState = .strokes(lastEnd: time) }
-            return []
-        }
+        let kept = cleanedSamples(liftAt: time)
+        let points = kept.map(\.point)
 
         let withClick = pressDuringTouch || !pressDown.isEmpty || touchStart - lastPressEvent < tuning.clickGuard
         var outputs: [RecognizerOutput] = [.touchSummary(TouchSummary(
             duration: duration, movement: movement,
             padStart: points.first, padEnd: points.last, points: points, withClick: withClick))]
-        guard !withClick, let kind = classify(duration: duration, points: points) else { return outputs }
+        guard !withClick, let kind = classify(duration: duration, samples: kept) else { return outputs }
         // A quick second touch: the first one goes out now.
         if let previous = pendingTouch {
             outputs += emitTouch(previous.kind, start: previous.start, end: previous.end, at: time)
@@ -280,8 +217,12 @@ public final class GestureRecognizer {
         return outputs
     }
 
-    private func classify(duration: TimeInterval, points: [PadPoint]) -> TouchKind? {
+    private func classify(duration: TimeInterval, samples: [Sample]) -> TouchKind? {
+        let points = samples.map(\.point)
         if let clockwise = circle(points) { return .circle(clockwise: clockwise) }
+        if duration <= tuning.swipeBackMaxDuration, let direction = thereAndBack(samples) {
+            return .swipeBack(direction)
+        }
 
         let moved = movement ?? padMovement(points)
         let dx = moved.dx, dy = moved.dy
@@ -299,6 +240,34 @@ public final class GestureRecognizer {
             return .hold(side(of: points))
         }
         return nil
+    }
+
+    /// The way back must be at least this part of the way out…
+    static let swipeBackReturn = 0.5
+    /// …take at least this long (the lift slide is quicker)…
+    static let swipeBackMinReturnTime: TimeInterval = 0.12
+    /// …and point the other way (cosine of the angle between the two).
+    static let swipeBackMaxCosine = -0.85
+
+    /// Out along one axis and back: the turn is the position farthest from
+    /// both ends together; the way out decides the direction.
+    private func thereAndBack(_ samples: [Sample]) -> SwipeDirection? {
+        guard let first = samples.first, let last = samples.last else { return nil }
+        func reach(_ sample: Sample) -> Double {
+            sample.point.distance(to: first.point) + sample.point.distance(to: last.point)
+        }
+        guard let turn = samples.max(by: { reach($0) < reach($1) }) else { return nil }
+        let outX = turn.point.x - first.point.x, outY = turn.point.y - first.point.y
+        let backX = last.point.x - turn.point.x, backY = last.point.y - turn.point.y
+        let out = (outX * outX + outY * outY).squareRoot()
+        let back = (backX * backX + backY * backY).squareRoot()
+        guard out >= tuning.swipeBackMinLength, out > 0,
+              back >= out * Self.swipeBackReturn, back > 0,
+              last.time - turn.time >= Self.swipeBackMinReturnTime,
+              max(abs(outX), abs(outY)) >= min(abs(outX), abs(outY)) * 1.5,
+              (outX * backX + outY * backY) / (out * back) <= Self.swipeBackMaxCosine
+        else { return nil }
+        return abs(outX) >= abs(outY) ? (outX > 0 ? .right : .left) : (outY > 0 ? .up : .down)
     }
 
     /// How far the positions wander from their middle (largest distance from the median).
@@ -369,6 +338,8 @@ public final class GestureRecognizer {
         switch kind {
         case let .swipe(direction, long):
             return [.gesture(.swipe(direction, long: long), inputTime: end, decidedTime: time)]
+        case let .swipeBack(direction):
+            return [.gesture(.swipeBack(direction), inputTime: end, decidedTime: time)]
         case let .circle(clockwise):
             return [.gesture(.circle(clockwise: clockwise), inputTime: end, decidedTime: time)]
         case let .hold(side):
@@ -401,21 +372,8 @@ public final class GestureRecognizer {
 
     private func endPress(_ button: RemoteButton, at time: TimeInterval) -> [RecognizerOutput] {
         guard let down = pressDown.removeValue(forKey: button) else { return [] }
-        if longHandled.remove(button) != nil {
-            if button == .select {
-                switch drawState {
-                case .holding:
-                    return finishDrawing()
-                case .armed(until: .none):
-                    drawState = .armed(until: time + tuning.drawArmWindow)
-                default:
-                    break
-                }
-            }
-            return []
-        }
-        // Clicks don't count while a drawing is under way.
-        guard !isDrawing else { return [] }
+        // A long press went out while it was held.
+        if longHandled.remove(button) != nil { return [] }
 
         var outputs: [RecognizerOutput] = []
         if let pending = pendingClick {
@@ -443,17 +401,7 @@ public final class GestureRecognizer {
 
         for (button, down) in pressDown where !longHandled.contains(button) && time - down >= tuning.longPress {
             longHandled.insert(button)
-            if button == .select, tuning.drawingMode != .off, !isDrawing {
-                isDrawing = true
-                drawingStrokes = []
-                currentStroke = []
-                strokeStart = touchActive ? time : nil
-                pendingClick = nil
-                drawState = tuning.drawingMode == .holdSelect ? .holding : .armed(until: nil)
-                outputs.append(.drawingStarted)
-            } else if !isDrawing {
-                outputs.append(.gesture(.click(button, .long), inputTime: down + tuning.longPress, decidedTime: time))
-            }
+            outputs.append(.gesture(.click(button, .long), inputTime: down + tuning.longPress, decidedTime: time))
         }
 
         if let pending = pendingTouch, time - pending.end >= tuning.clickGuard {
@@ -479,40 +427,6 @@ public final class GestureRecognizer {
             }
         }
 
-        switch drawState {
-        case let .armed(until?) where time > until:
-            outputs += cancelDrawing()
-        case let .strokes(lastEnd?) where !touchActive && time - lastEnd >= tuning.strokeGap:
-            outputs += finishDrawing()
-        default:
-            break
-        }
         return outputs
-    }
-
-    // MARK: - Drawing
-
-    private func finishDrawing() -> [RecognizerOutput] {
-        // Hold-to-draw ends with the finger still down: the stroke so far counts.
-        if currentStroke.count >= 2 { drawingStrokes.append(currentStroke) }
-        currentStroke = []
-        strokeStart = nil
-        let strokes = drawingStrokes.filter { $0.count >= 2 }
-        isDrawing = false
-        drawState = .idle
-        drawingStrokes = []
-        guard !strokes.isEmpty else { return [.drawingCancelled] }
-        let best = digits.recognize(strokes)
-        let digit = best.flatMap { $0.score >= tuning.digitMinScore ? $0.digit : nil }
-        return [.drawingFinished(DrawingResult(strokes: strokes, best: best, digit: digit))]
-    }
-
-    private func cancelDrawing() -> [RecognizerOutput] {
-        strokeStart = nil
-        isDrawing = false
-        drawState = .idle
-        drawingStrokes = []
-        currentStroke = []
-        return [.drawingCancelled]
     }
 }

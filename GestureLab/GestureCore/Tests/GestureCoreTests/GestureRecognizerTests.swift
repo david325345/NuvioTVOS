@@ -73,9 +73,7 @@ final class GestureRecognizerTests: XCTestCase {
     }
 
     func testLongPressFiresWhileHeldAndNotAgainOnRelease() {
-        var tuning = Tuning()
-        tuning.drawingMode = .off
-        let recognizer = GestureRecognizer(tuning: tuning)
+        let recognizer = GestureRecognizer()
         XCTAssertTrue(run(recognizer, [.pressBegan(0, .up), .tick(0.3)]).isEmpty)
         XCTAssertEqual(gestures(run(recognizer, [.tick(0.55)])), [.click(.up, .long)])
         XCTAssertTrue(gestures(run(recognizer, [.pressEnded(1.0, .up), .tick(1.5)])).isEmpty)
@@ -303,77 +301,99 @@ final class GestureRecognizerTests: XCTestCase {
         XCTAssertEqual(gestures(run(recognizer, clockwise)), [.circle(clockwise: true)])
     }
 
-    // MARK: - Drawing
+    func testLongPressOnTheCentre() {
+        let recognizer = GestureRecognizer()
+        XCTAssertEqual(gestures(run(recognizer, [.pressBegan(0, .select), .tick(0.6)])), [.click(.select, .long)])
+        XCTAssertTrue(gestures(run(recognizer, [.pressEnded(0.9, .select), .tick(1.5)])).isEmpty)
+    }
 
-    private func digitStrokeEvents(_ template: DigitTemplate, start: TimeInterval) -> [InputEvent] {
-        var events: [InputEvent] = []
-        var time = start
-        for stroke in template.strokes {
-            events.append(.touchBegan(time))
-            for point in stroke {
-                time += 0.03
-                events.append(.touchMoved(time, PadPoint(x: point.x + 0.011, y: point.y + 0.013)))
-            }
-            time += 0.1
-            events.append(.touchEnded(time))
-            time += 0.2
+    // MARK: - There and back
+
+    /// A finger following `path` (straight between its points) over
+    /// `duration`, with the system's net movement at the end.
+    private func path(_ path: [PadPoint], start: TimeInterval, duration: TimeInterval,
+                      movement: (dx: Double, dy: Double), steps: Int = 60) -> [InputEvent] {
+        var events: [InputEvent] = [.touchBegan(start)]
+        let legs = path.count - 1
+        for step in 0...steps {
+            let position = Double(step) / Double(steps) * Double(legs)
+            let leg = min(Int(position), legs - 1)
+            let t = position - Double(leg)
+            let a = path[leg], b = path[leg + 1]
+            events.append(.touchMoved(start + duration * Double(step) / Double(steps),
+                                      PadPoint(x: a.x + (b.x - a.x) * t + 0.011, y: a.y + (b.y - a.y) * t + 0.013)))
         }
+        events.append(.touchTranslation(start + duration, dx: movement.dx, dy: movement.dy))
+        events.append(.touchEnded(start + duration + 0.1))
         return events
     }
 
-    private func endTime(_ events: [InputEvent]) -> TimeInterval {
-        for event in events.reversed() {
-            if case let .touchEnded(time) = event { return time }
-        }
-        return 0
-    }
-
-    func testLongPressThenDrawRecognizesTheDigit() {
-        var tuning = Tuning()
-        tuning.drawingMode = .longPressThenDraw
-        let recognizer = GestureRecognizer(tuning: tuning)
-        var outputs = run(recognizer, [.pressBegan(0, .select), .tick(0.6)])
-        XCTAssertEqual(outputs, [.drawingStarted])
-        XCTAssertTrue(recognizer.isDrawing)
-        outputs = run(recognizer, [.pressEnded(0.8, .select)])
-        XCTAssertTrue(outputs.isEmpty)
-
-        let seven = DigitRecognizer.defaultTemplates.first { $0.digit == 7 }!
-        let drawing = digitStrokeEvents(seven, start: 1.0)
-        outputs = run(recognizer, drawing)
-        XCTAssertTrue(outputs.isEmpty)
-        outputs = run(recognizer, [.tick(endTime(drawing) + 0.9)])
-        guard case let .drawingFinished(result) = outputs.first else {
-            return XCTFail("expected a finished drawing, got \(outputs)")
-        }
-        XCTAssertEqual(result.digit, 7)
-        XCTAssertFalse(recognizer.isDrawing)
-    }
-
-    func testArmedDrawingWithoutStrokesCancels() {
+    /// From the device video: slow, 1.4–1.8 s, the way back a little past the start.
+    func testThereAndBackInFourDirections() {
         let recognizer = GestureRecognizer()
-        _ = run(recognizer, [.pressBegan(0, .select), .tick(0.6), .pressEnded(0.7, .select)])
-        XCTAssertEqual(run(recognizer, [.tick(3.0)]), [.drawingCancelled])
+        var outputs = run(recognizer, path([PadPoint(x: -0.5, y: -0.2), PadPoint(x: 0.85, y: -0.05),
+                                            PadPoint(x: -0.75, y: -0.2)],
+                                           start: 0, duration: 1.5, movement: (-6, 100)))
+        outputs += run(recognizer, [.tick(2.0)])
+        XCTAssertEqual(gestures(outputs), [.swipeBack(.right)])
+
+        outputs = run(recognizer, path([PadPoint(x: 0.89, y: 0.1), PadPoint(x: -0.6, y: 0.0),
+                                        PadPoint(x: 0.85, y: 0.05)],
+                                       start: 3, duration: 1.6, movement: (-12, -155)))
+        outputs += run(recognizer, [.tick(5.0)])
+        XCTAssertEqual(gestures(outputs), [.swipeBack(.left)])
+
+        outputs = run(recognizer, path([PadPoint(x: 0.17, y: -0.75), PadPoint(x: 0.05, y: 0.85),
+                                        PadPoint(x: 0.1, y: -0.8)],
+                                       start: 6, duration: 1.6, movement: (24, -373)))
+        outputs += run(recognizer, [.tick(8.0)])
+        XCTAssertEqual(gestures(outputs), [.swipeBack(.up)])
+
+        outputs = run(recognizer, path([PadPoint(x: 0.01, y: 0.69), PadPoint(x: 0.0, y: -0.85),
+                                        PadPoint(x: 0.02, y: 0.8)],
+                                       start: 9, duration: 1.4, movement: (-32, -142)))
+        outputs += run(recognizer, [.tick(11.0)])
+        XCTAssertEqual(gestures(outputs), [.swipeBack(.down)])
     }
 
-    func testHoldToDrawFinishesOnRelease() {
-        var tuning = Tuning()
-        tuning.drawingMode = .holdSelect
-        let recognizer = GestureRecognizer(tuning: tuning)
-        XCTAssertEqual(run(recognizer, [.pressBegan(0, .select), .tick(0.6)]), [.drawingStarted])
-        let one = DigitRecognizer.defaultTemplates.first { $0.digit == 1 }!
-        _ = run(recognizer, digitStrokeEvents(one, start: 0.7))
-        let outputs = run(recognizer, [.pressEnded(2.0, .select)])
-        guard case let .drawingFinished(result) = outputs.first else {
-            return XCTFail("expected a finished drawing, got \(outputs)")
+    func testQuickThereAndBackPastTheMiddle() {
+        let recognizer = GestureRecognizer()
+        var outputs = run(recognizer, path([PadPoint(x: 0, y: 0), PadPoint(x: 0.8, y: 0.05),
+                                            PadPoint(x: -0.9, y: 0)],
+                                           start: 0, duration: 0.5, movement: (-450, 0)))
+        outputs += run(recognizer, [.tick(1.0)])
+        XCTAssertEqual(gestures(outputs), [.swipeBack(.right)])
+    }
+
+    /// The arcs from the device video are no there and back.
+    func testArcIsNoThereAndBack() {
+        let recognizer = GestureRecognizer()
+        let arc = stride(from: 150.0, through: 300.0, by: 15).map { degrees -> PadPoint in
+            let angle = degrees * .pi / 180
+            return PadPoint(x: 0.75 * cos(angle), y: 0.75 * sin(angle))
         }
-        XCTAssertEqual(result.digit, 1)
+        var outputs = run(recognizer, path(arc, start: 0, duration: 1.05, movement: (1076, -1003)))
+        outputs += run(recognizer, [.tick(1.6)])
+        XCTAssertTrue(gestures(outputs).isEmpty, "\(gestures(outputs))")
     }
 
-    func testDrawingOffMakesALongPress() {
-        var tuning = Tuning()
-        tuning.drawingMode = .off
-        let recognizer = GestureRecognizer(tuning: tuning)
-        XCTAssertEqual(gestures(run(recognizer, [.pressBegan(0, .select), .tick(0.6)])), [.click(.select, .long)])
+    func testShortWayBackIsAnOrdinarySwipe() {
+        let recognizer = GestureRecognizer()
+        var outputs = run(recognizer, path([PadPoint(x: -0.7, y: 0), PadPoint(x: 0.8, y: 0.05),
+                                            PadPoint(x: 0.5, y: 0.05)],
+                                           start: 0, duration: 0.4, movement: (700, 10)))
+        outputs += run(recognizer, [.tick(1.0)])
+        XCTAssertEqual(gestures(outputs), [.swipe(.right, long: false)])
+    }
+
+    func testLiftSlideAfterASwipeIsNoWayBack() {
+        let recognizer = GestureRecognizer()
+        var events = path([PadPoint(x: -0.7, y: 0), PadPoint(x: 0.85, y: 0.02)],
+                          start: 0, duration: 0.3, movement: (750, 5))
+        events.removeLast()
+        // The finger comes off: positions slide to the middle within ~60 ms.
+        events += [.touchMoved(0.33, PadPoint(x: 0.6, y: 0.01)), .touchMoved(0.35, PadPoint(x: 0.2, y: 0)),
+                   .touchMoved(0.36, PadPoint(x: 0, y: 0)), .touchEnded(0.37), .tick(1.0)]
+        XCTAssertEqual(gestures(run(recognizer, events)), [.swipe(.right, long: false)])
     }
 }

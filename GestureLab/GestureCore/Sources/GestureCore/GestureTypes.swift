@@ -77,11 +77,12 @@ public enum PadSide: String, Codable, CaseIterable, Sendable {
 public enum RemoteGesture: Hashable, Codable, Sendable {
     case click(RemoteButton, ClickKind)
     case swipe(SwipeDirection, long: Bool)
+    /// Out in one direction and back again (left–right or up–down).
+    case swipeBack(SwipeDirection)
     case tap(PadSide, double: Bool)
     /// A finger resting still (no click) for a while.
     case hold(PadSide)
     case circle(clockwise: Bool)
-    case digit(Int)
 
     public var title: String {
         switch self {
@@ -93,14 +94,14 @@ public enum RemoteGesture: Hashable, Codable, Sendable {
             }
         case let .swipe(direction, long):
             return (long ? "Dlouhý tah " : "Tah ") + direction.title
+        case let .swipeBack(direction):
+            return "Tah \(direction.title) a zpět"
         case let .tap(side, double):
             return (double ? "Dvojí dotyk " : "Dotyk ") + side.title
         case let .hold(side):
             return "Přidržení " + side.title
         case let .circle(clockwise):
             return clockwise ? "Kroužek po směru hodin" : "Kroužek proti směru hodin"
-        case let .digit(value):
-            return "Číslice \(value)"
         }
     }
 

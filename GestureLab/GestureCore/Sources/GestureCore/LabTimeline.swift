@@ -101,20 +101,6 @@ public struct LabTimeline: Equatable, Sendable {
         }
     }
 
-    /// Drawn digit: chapter N, or N × 10 % of the video.
-    @discardableResult
-    public mutating func jump(toDigit digit: Int, mode: DigitMode) -> String {
-        switch mode {
-        case .chapter:
-            guard digit >= 1, digit <= chapters.count else { return "Kapitola \(digit) neexistuje" }
-            position = chapters[digit - 1].start
-            return "Kapitola \(digit): \(chapters[digit - 1].name)"
-        case .percent:
-            position = duration * Double(digit) / 10
-            return "\(digit * 10) % (\(Self.format(time: position)))"
-        }
-    }
-
     private mutating func seek(by seconds: Double) -> String {
         position = min(max(0, position + seconds), duration)
         return (seconds > 0 ? "+" : "−") + "\(Int(abs(seconds))) s → " + Self.format(time: position)

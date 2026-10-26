@@ -37,14 +37,9 @@ struct HomeView: View {
                     MenuRow(title: "Přiřazení gest", detail: "Akce a jejich gesta, nahrání nového gesta")
                 }
                 NavigationLink {
-                    DigitsView(model: model)
-                } label: {
-                    MenuRow(title: "Kreslení číslic", detail: "Vlastní vzory číslic 0–9")
-                }
-                NavigationLink {
                     TuningView(model: model)
                 } label: {
-                    MenuRow(title: "Ladění", detail: "Časy, délky, citlivost, způsob kreslení")
+                    MenuRow(title: "Ladění", detail: "Časy, délky, citlivost")
                 }
             }
             .padding(80)
@@ -113,61 +108,12 @@ struct BindingsView: View {
                     }
                 }
 
-                Button {
-                    model.toggleDigitMode()
-                } label: {
-                    ValueRow(title: "Nakreslená číslice", value: model.bindings.digitMode.title)
-                }
                 Button(role: .destructive) {
                     model.resetBindings()
                 } label: {
                     ValueRow(title: "Obnovit výchozí", value: "")
                 }
                 Text("Podržením tlačítka na akci gesto odebereš.")
-                    .font(.system(size: 22))
-                    .foregroundStyle(.secondary)
-            }
-            .padding(80)
-        }
-    }
-}
-
-// MARK: - Digits
-
-struct DigitsView: View {
-    @ObservedObject var model: LabModel
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                Text("Kreslení číslic")
-                    .font(.system(size: 52, weight: .heavy))
-                Text("Vyber číslici a nakresli ji 2–3×, každá kresba se uloží jako tvůj vzor. Kreslení začíná: \(model.tuning.drawingMode.title) (změníš v Ladění). V Testu gest se pak ukáže, co rozpoznání poznalo a s jakým skóre.")
-                    .font(.system(size: 24))
-                    .foregroundStyle(.secondary)
-
-                ForEach(0..<10, id: \.self) { digit in
-                    Button {
-                        model.startCapture(.trainDigit(digit))
-                    } label: {
-                        ValueRow(title: "Číslice \(digit)", value: "vzorů: \(model.sampleCount(for: digit))")
-                    }
-                    .contextMenu {
-                        Button("Smazat vzory \(digit)", role: .destructive) { model.deleteSamples(for: digit) }
-                    }
-                }
-
-                Button {
-                    model.useBuiltInDigits.toggle()
-                } label: {
-                    ValueRow(title: "Vestavěné tvary číslic", value: model.useBuiltInDigits ? "používat" : "jen moje vzory")
-                }
-                Button(role: .destructive) {
-                    model.deleteSamples()
-                } label: {
-                    ValueRow(title: "Smazat všechny moje vzory", value: "")
-                }
-                Text("Podržením tlačítka u číslice smažeš jen její vzory.")
                     .font(.system(size: 22))
                     .foregroundStyle(.secondary)
             }
@@ -206,6 +152,10 @@ struct TuningView: View {
                   keyPath: \.swipeLongPoints, step: 50, range: 200...3000, format: TuningView.points),
         Parameter(id: "swipeTime", title: "Nejpomalejší tah", hint: "Pomalejší pohyb už není tah",
                   keyPath: \.swipeMaxDuration, step: 0.1, range: 0.3...2.0, format: TuningView.seconds),
+        Parameter(id: "backLength", title: "Tam a zpět: nejkratší cesta", hint: "Cesta tam na ploše (celá plocha je 2), zpět aspoň polovina",
+                  keyPath: \.swipeBackMinLength, step: 0.05, range: 0.2...1.6, format: TuningView.units),
+        Parameter(id: "backTime", title: "Tam a zpět nejdéle", hint: "Pomalejší pohyb už není tah tam a zpět",
+                  keyPath: \.swipeBackMaxDuration, step: 0.25, range: 0.5...4.0, format: TuningView.seconds),
         Parameter(id: "tapTime", title: "Dotyk nejdéle", hint: "Delší dotyk není ťuknutí",
                   keyPath: \.tapMaxDuration, step: 0.05, range: 0.1...0.6, format: TuningView.seconds),
         Parameter(id: "tapMove", title: "Dotyk se smí posunout", hint: "Posun UIKit v bodech, víc už není ťuknutí",
@@ -214,7 +164,7 @@ struct TuningView: View {
                   keyPath: \.clickGuard, step: 0.05, range: 0...0.5, format: TuningView.seconds),
         Parameter(id: "liftTrim", title: "Ořez při zvednutí prstu", hint: "Polohy těsně před zvednutím se zahodí",
                   keyPath: \.liftTrim, step: 0.01, range: 0...0.2, format: TuningView.seconds),
-        Parameter(id: "side", title: "Hranice od středu", hint: "Dotyk dál od středu je vlevo, vpravo, nahoře nebo dole",
+        Parameter(id: "side", title: "Velikost středu", hint: "Dotyk dál od středu je vlevo, vpravo, nahoře, dole (nebo v rohu)",
                   keyPath: \.sideThreshold, step: 0.05, range: 0.1...0.8, format: TuningView.units),
         Parameter(id: "cornerWidth", title: "Šířka rohů", hint: "Úhel kolem úhlopříčky, který patří rohu",
                   keyPath: \.cornerWidth, step: 5, range: 10...80, format: { String(format: "%.0f°", $0) }),
@@ -226,12 +176,6 @@ struct TuningView: View {
                   keyPath: \.circleDegrees, step: 30, range: 180...720, format: { String(format: "%.0f°", $0) }),
         Parameter(id: "circleRadius", title: "Kroužek od okraje", hint: "Jak daleko od středu se musí kroužit",
                   keyPath: \.circleMinRadius, step: 0.05, range: 0.2...0.9, format: TuningView.units),
-        Parameter(id: "arm", title: "Kreslení: čekání na první tah", hint: "Po dlouhém stisku",
-                  keyPath: \.drawArmWindow, step: 0.5, range: 1...5, format: TuningView.seconds),
-        Parameter(id: "gap", title: "Kreslení: konec po pauze", hint: "Pauza bez dotyku, která kreslení ukončí",
-                  keyPath: \.strokeGap, step: 0.1, range: 0.3...2.0, format: TuningView.seconds),
-        Parameter(id: "score", title: "Přísnost číslic", hint: "Nejnižší skóre (0–1), které se počítá",
-                  keyPath: \.digitMinScore, step: 0.05, range: 0.2...0.95, format: TuningView.units),
     ]
 
     var body: some View {
@@ -240,11 +184,6 @@ struct TuningView: View {
                 Text("Ladění")
                     .font(.system(size: 52, weight: .heavy))
 
-                Button {
-                    model.cycleDrawingMode()
-                } label: {
-                    ValueRow(title: "Kreslení číslic", value: model.tuning.drawingMode.title)
-                }
                 Button {
                     model.tuning.cornerTouches.toggle()
                 } label: {
