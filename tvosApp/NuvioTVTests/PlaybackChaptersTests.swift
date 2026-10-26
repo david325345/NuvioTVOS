@@ -1,0 +1,97 @@
+import XCTest
+@testable import NuvioTV
+
+final class PlaybackChaptersTests: XCTestCase {
+    private func chapter(_ id: Int, _ name: String, _ start: Double, _ end: Double) -> PlaybackChapter {
+        PlaybackChapter(id: id, name: name, startSeconds: start, endSeconds: end)
+    }
+
+    func testChaptersAreSortedAndEndWhereTheNextStarts() {
+        let chapters = PlaybackChapters.chapters(
+            from: [
+                (id: 2, name: "Part B", start: 600, duration: 0),
+                (id: 0, name: "Opening", start: 0, duration: 90),
+                (id: 1, name: "Part A", start: 90, duration: 0),
+            ],
+            totalDuration: 1420
+        )
+        XCTAssertEqual(chapters.map(\.id), [0, 1, 2])
+        XCTAssertEqual(chapters.map(\.endSeconds), [90, 600, 1420])
+        // A length past the next chapter is cut at it.
+        let overlapping = PlaybackChapters.chapters(
+            from: [(id: 0, name: "", start: 0, duration: 200), (id: 1, name: "", start: 120, duration: 0)],
+            totalDuration: 300
+        )
+        XCTAssertEqual(overlapping.map(\.endSeconds), [120, 300])
+    }
+
+    func testGenericNamesBecomeChapterNumbers() {
+        XCTAssertEqual(PlaybackChapters.displayName(chapter(0, "Opening", 0, 90), index: 0), "Opening")
+        XCTAssertEqual(PlaybackChapters.displayName(chapter(1, "Chapter 03", 90, 200), index: 2), "Chapter 3")
+        XCTAssertEqual(PlaybackChapters.displayName(chapter(2, "  ", 90, 200), index: 4), "Chapter 5")
+        XCTAssertEqual(PlaybackChapters.displayName(chapter(3, "00:12:30.000", 750, 900), index: 1), "Chapter 2")
+    }
+
+    func testChapterAtThePlayhead() {
+        let chapters = [chapter(0, "A", 0, 90), chapter(1, "B", 90, 600), chapter(2, "C", 600, 1420)]
+        XCTAssertEqual(PlaybackChapters.index(at: 0, in: chapters), 0)
+        XCTAssertEqual(PlaybackChapters.index(at: 89.5, in: chapters), 0)
+        XCTAssertEqual(PlaybackChapters.index(at: 300, in: chapters), 1)
+        XCTAssertEqual(PlaybackChapters.index(at: 1500, in: chapters), 2)
+        XCTAssertNil(PlaybackChapters.index(at: 10, in: []))
+    }
+
+    func testMarkersLeaveOutTheFirstChapter() {
+        let chapters = [chapter(0, "A", 0, 90), chapter(1, "B", 90, 600), chapter(2, "C", 600, 1200)]
+        XCTAssertEqual(PlaybackChapters.markers(chapters, duration: 1200), [0.075, 0.5])
+        XCTAssertEqual(PlaybackChapters.markers([chapter(0, "A", 0, 1200)], duration: 1200), [])
+        XCTAssertEqual(PlaybackChapters.markers(chapters, duration: 0), [])
+    }
+
+    func testChapterNamesForOpeningAndEnding() {
+        for name in ["Opening", "OP", "OP2", "op 2", "Intro", "Opening Credits", "Opening Song", "OP - 1"] {
+            XCTAssertEqual(PlaybackChapters.kind(ofName: name), .opening, name)
+        }
+        for name in ["Ending", "ED", "ED1", "Credits", "End Credits", "Outro", "Ending Song"] {
+            XCTAssertEqual(PlaybackChapters.kind(ofName: name), .ending, name)
+        }
+        for name in ["Part A", "Prologue", "Preview", "Chapter 3", "Opera", "Edge", "Intro Scene", "Avant", ""] {
+            XCTAssertNil(PlaybackChapters.kind(ofName: name), name)
+        }
+    }
+
+    func testSkipOnlyFromShortNamedChapters() {
+        let anime = [
+            chapter(0, "Prologue", 0, 75),
+            chapter(1, "Opening", 75, 165),
+            chapter(2, "Part A", 165, 700),
+            chapter(3, "Ending", 1290, 1380),
+            chapter(4, "Preview", 1380, 1420),
+        ]
+        let intervals = PlaybackChapters.skipIntervals(from: anime)
+        XCTAssertEqual(intervals.count, 2)
+        XCTAssertTrue(intervals[0].isIntro)
+        XCTAssertEqual(intervals[0].startTime, 75)
+        XCTAssertEqual(intervals[0].endTime, 165)
+        XCTAssertTrue(intervals[1].isEnding)
+        XCTAssertEqual(intervals[1].startTime, 1290)
+        XCTAssertEqual(intervals[1].provider, "chapters")
+
+        // Too long to be an opening, or too short to be one: no button.
+        XCTAssertTrue(PlaybackChapters.skipIntervals(from: [chapter(0, "Intro", 0, 600)]).isEmpty)
+        XCTAssertTrue(PlaybackChapters.skipIntervals(from: [chapter(0, "OP", 0, 5)]).isEmpty)
+    }
+
+    func testIntroDBComesFirstAndChaptersFillTheRest() {
+        let introDB = [SkipInterval(startTime: 80, endTime: 168, type: "intro", provider: "introdb")]
+        let fromChapters = [
+            SkipInterval(startTime: 75, endTime: 165, type: "intro", provider: "chapters"),
+            SkipInterval(startTime: 1290, endTime: 1380, type: "outro", provider: "chapters"),
+        ]
+        let merged = PlaybackChapters.merged(introDB: introDB, chapters: fromChapters)
+        XCTAssertEqual(merged.map(\.provider), ["introdb", "chapters"])
+        XCTAssertEqual(merged.map(\.startTime), [80, 1290])
+        XCTAssertEqual(PlaybackChapters.merged(introDB: [], chapters: fromChapters), fromChapters)
+        XCTAssertEqual(PlaybackChapters.merged(introDB: introDB, chapters: []), introDB)
+    }
+}

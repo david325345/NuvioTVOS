@@ -16,6 +16,8 @@ struct PlayerProgressTrack: View {
     var emphasized: Bool = false
     /// When true, the track is a frosted glass capsule (one bar, not glassEffect).
     var glassTrack: Bool = false
+    /// Chapter starts as fractions of the track, drawn as thin gaps.
+    var markers: [Double] = []
 
     @State private var animatedBuffered: Double = 0
 
@@ -57,6 +59,14 @@ struct PlayerProgressTrack: View {
                             .fill(Color.white)
                             .frame(width: 2, height: h)
                             .position(x: min(max(w * p - 1, 1), w - 1), y: h / 2)
+                    }
+
+                    // Chapter marks: thin gaps through the track.
+                    ForEach(Array(markers.enumerated()), id: \.offset) { _, marker in
+                        Rectangle()
+                            .fill(Color.black.opacity(0.55))
+                            .frame(width: 2, height: h)
+                            .position(x: w * CGFloat(min(max(marker, 0), 1)), y: h / 2)
                     }
                 }
                 .frame(height: h)

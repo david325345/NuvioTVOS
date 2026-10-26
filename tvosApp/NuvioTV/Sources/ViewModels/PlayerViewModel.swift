@@ -206,6 +206,8 @@ class PlayerViewModel: ObservableObject {
     let clock = PlaybackClock()
     @Published var subtitles: [SubtitleTrack] = []
     @Published var audioTracks: [AudioTrack] = []
+    /// Container chapters of the playing file (empty when it has none).
+    @Published var chapters: [PlaybackChapter] = []
     @Published var playbackSpeed: PlaybackSpeed = .normal
     @Published var seekStepSeconds: Int = PlayerSeekSettings.current
     @Published var qualities: [QualityOption] = [.auto]
@@ -502,6 +504,14 @@ class PlayerViewModel: ObservableObject {
     private static let traktProgressReportInterval: TimeInterval = 30
     private(set) var controlsAutoHideSuspended = false
     private var skipIntervals: [SkipInterval] = []
+    /// Skip Intro / Skip Ending from chapter names ("Opening", "ED"…), used
+    /// only for what IntroDB doesn't have.
+    private var chapterSkipIntervals: [SkipInterval] = []
+    /// IntroDB's segments, completed from the chapters. The IntroDB season
+    /// template keeps learning from `skipIntervals` alone.
+    private var effectiveSkipIntervals: [SkipInterval] {
+        PlaybackChapters.merged(introDB: skipIntervals, chapters: chapterSkipIntervals)
+    }
     private var autoHiddenSkipIntervalId: String?
     /// Segments the user skipped during this playback item. Keep these hidden
     /// even while the asynchronous seek is still reporting the old position.
@@ -844,6 +854,8 @@ class PlayerViewModel: ObservableObject {
             self.didAddExternalSubtitles = true
             self.audioTracks = []
             self.subtitles = []
+            self.chapters = []
+            self.chapterSkipIntervals = []
         }
     }
 
@@ -1547,6 +1559,7 @@ class PlayerViewModel: ObservableObject {
             self.audioAmplificationDb = 0
         }
         self.skipIntervals = []
+        self.chapterSkipIntervals = []
         self.didSeedIntroDBSeasonTemplate = false
         self.didRefreshIntroDBForKnownDuration = false
         self.activeSkipInterval = nil
@@ -2016,7 +2029,7 @@ class PlayerViewModel: ObservableObject {
               time.current / time.duration >= 0.5 else {
             return false
         }
-        if let ending = skipIntervals.first(where: \.isEnding) {
+        if let ending = effectiveSkipIntervals.first(where: \.isEnding) {
             return time.current >= max(ending.startTime - Self.skipSegmentStartLead, 0)
         }
         return time.remaining <= Self.nextCardLeadSeconds
@@ -2153,7 +2166,8 @@ class PlayerViewModel: ObservableObject {
             )
             didSeedIntroDBSeasonTemplate = true
         }
-        guard !skipIntervals.isEmpty,
+        let segments = effectiveSkipIntervals
+        guard !segments.isEmpty,
               time.current > 0,
               status != .ended,
               !isStandalonePlaybackSession,
@@ -2169,7 +2183,7 @@ class PlayerViewModel: ObservableObject {
         }
 
         let current = time.current
-        for segment in skipIntervals {
+        for segment in segments {
             if current < max(segment.startTime - 0.35, 0) {
                 dismissedSkipIntervalIds.remove(segment.id)
                 autoSkippedIntervalIds.remove(segment.id)
@@ -2179,7 +2193,7 @@ class PlayerViewModel: ObservableObject {
             }
         }
 
-        let interval = skipIntervals.first { segment in
+        let interval = segments.first { segment in
             current >= max(segment.startTime - 0.35, 0) && current < segment.endTime - 0.25
         }
 
@@ -3600,7 +3614,7 @@ class PlayerViewModel: ObservableObject {
         if !isStandalonePlaybackSession && !isLiveStream && watchPartyPlayerBridge == nil {
             let postPlayEnabled = ProfileSettings.current.object(forKey: SettingsKey.postPlayRecommendationsEnabled) as? Bool ?? true
             let hasBlockingOverlay = showSettingsPanel || showScenePanel || isSceneDetailVisible || sidePanel != nil || isScrubbing || showPauseOverlay
-            let endingStartTime = skipIntervals.first(where: \.isEnding)?.startTime
+            let endingStartTime = effectiveSkipIntervals.first(where: \.isEnding)?.startTime
             postPlayController.updateTimeline(
                 position: time.current,
                 duration: time.duration,
@@ -3640,6 +3654,12 @@ class PlayerViewModel: ObservableObject {
                        languageName: $0.languageName, detail: $0.detail)
         }
         if audioTracks != latestAudioTracks { audioTracks = latestAudioTracks }
+
+        let latestChapters = c.chapters
+        if chapters != latestChapters {
+            chapters = latestChapters
+            chapterSkipIntervals = PlaybackChapters.skipIntervals(from: latestChapters)
+        }
 
         var subs = c.subtitleTracks.map { track in
             let externalSubtitle = availableExternalSubtitles.first {
@@ -4291,6 +4311,15 @@ class PlayerViewModel: ObservableObject {
         }
     }
 
+    /// The chapter at the playhead, for the chapter list and the timeline.
+    var currentChapterIndex: Int? {
+        PlaybackChapters.index(at: time.current, in: chapters)
+    }
+
+    func seekToChapter(_ chapter: PlaybackChapter) {
+        seek(to: chapter.startSeconds)
+    }
+
     func seek(to seconds: Double) {
         guard !isLiveStream, seconds.isFinite else { return }
         recordWatchPartyTransportIntent()
@@ -4406,7 +4435,7 @@ class PlayerViewModel: ObservableObject {
             autoSkippedIntervalIds.removeAll()
         }
         // Reset auto-hidden or dismissed skip intervals only when rewinding before their start
-        for segment in skipIntervals {
+        for segment in effectiveSkipIntervals {
             if target < max(segment.startTime - 0.35, 0) {
                 dismissedSkipIntervalIds.remove(segment.id)
                 autoSkippedIntervalIds.remove(segment.id)
@@ -7491,7 +7520,7 @@ class PlayerViewModel: ObservableObject {
               playbackTime.current / playbackTime.duration >= 0.5 else {
             return false
         }
-        if let ending = skipIntervals.first(where: \.isEnding),
+        if let ending = effectiveSkipIntervals.first(where: \.isEnding),
            playbackTime.current >= max(ending.startTime - Self.skipSegmentStartLead, 0) {
             print("[ContinueWatching][Player] shouldMarkAsWatched=true due to ending skip interval at \(ending.startTime)s")
             return true

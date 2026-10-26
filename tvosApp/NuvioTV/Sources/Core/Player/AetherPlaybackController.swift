@@ -2585,6 +2585,16 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
     }
     private(set) var audioTracks: [PlaybackTrackInfo] = []
     private(set) var subtitleTracks: [PlaybackTrackInfo] = []
+    /// Matroska / MP4 chapters, already on the playback axis (`seek(to:)`).
+    var chapters: [PlaybackChapter] {
+        guard !isAwaitingEngineLoad else { return [] }
+        return PlaybackChapters.chapters(
+            from: engine.mediaChapters.map {
+                (id: $0.id, name: $0.name, start: $0.startSeconds, duration: $0.durationSeconds)
+            },
+            totalDuration: engine.duration
+        )
+    }
     private(set) var isPlayerLoading = true
     private(set) var isPlayerPlaying = false
     var isTransportPlaying: Bool {

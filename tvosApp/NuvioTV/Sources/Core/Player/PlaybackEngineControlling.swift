@@ -213,6 +213,8 @@ protocol PlaybackEngineControlling: AnyObject {
 
     var audioTracks: [PlaybackTrackInfo] { get }
     var subtitleTracks: [PlaybackTrackInfo] { get }
+    /// Container chapters of the playing file, empty when it has none.
+    var chapters: [PlaybackChapter] { get }
 
     var isPlayerLoading: Bool { get }
     var isPlayerPlaying: Bool { get }
@@ -255,6 +257,8 @@ protocol PlaybackEngineControlling: AnyObject {
 extension PlaybackEngineControlling {
     var engineVersion: String? { nil }
     func setAudioProcessing(dialogue: EnhanceDialogueMode, reduceLoud: Bool) {}
+    /// Engines that don't read container chapters report none.
+    var chapters: [PlaybackChapter] { [] }
 }
 
 enum PlaybackToggleDirection: Equatable {

@@ -686,7 +686,8 @@ struct PlayerControls: View {
             isHoldingSeek: viewModel.isHoldingSeek,
             pendingSeekDelta: viewModel.pendingSeekDelta,
             speedMultiplier: viewModel.seekSpeedMultiplier,
-            seekStepSeconds: viewModel.seekStepSeconds
+            seekStepSeconds: viewModel.seekStepSeconds,
+            chapters: viewModel.chapters
         )
         .overlay(alignment: .top) {
             // Keep the geometry mounted even while a still is unavailable so
@@ -1052,9 +1053,17 @@ private struct PlayerTimelineBar: View {
     let pendingSeekDelta: Double
     var speedMultiplier: Int? = nil
     var seekStepSeconds: Int = PlayerSeekSettings.defaultStep
+    /// Chapters of the file: marks on the track and the chapter's name by the time.
+    var chapters: [PlaybackChapter] = []
 
     private var duration: Double {
         max(clock.duration, 0.001)
+    }
+
+    /// The name of the chapter at `seconds`, if the file has chapters.
+    private func chapterName(at seconds: Double) -> String? {
+        guard let index = PlaybackChapters.index(at: seconds, in: chapters) else { return nil }
+        return PlaybackChapters.displayName(chapters[index], index: index)
     }
 
     private var skipIconName: String {
@@ -1101,7 +1110,8 @@ private struct PlayerTimelineBar: View {
                         height: trackHeight,
                         showThumb: false,
                         emphasized: isTimelineFocused || isSeekingOrScrubbing,
-                        glassTrack: true
+                        glassTrack: true,
+                        markers: PlaybackChapters.markers(chapters, duration: clock.duration)
                     )
 
                     if isScrubbing || isHoldingSeek {
@@ -1128,11 +1138,21 @@ private struct PlayerTimelineBar: View {
             if isSeekingOrScrubbing {
                 GeometryReader { geo in
                     let w = geo.size.width
-                    let targetX = min(max(w * progress, 60), w - 60)
+                    let targetChapter = chapterName(at: targetPosition)
+                    let margin: CGFloat = targetChapter == nil ? 60 : 240
+                    let targetX = min(max(w * progress, margin), max(margin, w - margin))
                     HStack(spacing: 8) {
                         Text(PlayerTime.formatted(time: targetPosition))
                             .font(.system(size: 26, weight: .bold).monospacedDigit())
                             .foregroundColor(.white)
+                        if let targetChapter {
+                            Text("· " + targetChapter)
+                                .font(.system(size: 22, weight: .semibold))
+                                .foregroundColor(.white.opacity(0.85))
+                                .lineLimit(1)
+                                .frame(maxWidth: 320)
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
 
                         if isHoldingSeek || speedMultiplier != nil {
                             let isForward = pendingSeekDelta >= 0
@@ -1161,6 +1181,11 @@ private struct PlayerTimelineBar: View {
                 HStack(spacing: 10) {
                     Text(PlayerTime.formatted(time: targetPosition))
                     Spacer()
+                    if let name = chapterName(at: targetPosition) {
+                        Text(name)
+                            .lineLimit(1)
+                        Spacer()
+                    }
                     Text("-" + PlayerTime.formatted(time: max(0, duration - targetPosition)))
                 }
                 .font(.system(size: 22, weight: .bold))
@@ -1647,6 +1672,7 @@ struct PlayerSettingsPanel: View {
     var onClose: () -> Void
 
     private enum Tab: String, CaseIterable, Hashable {
+        case chapters = "Chapters"
         case subtitles = "Subtitles"
         case audio = "Audio"
         case speed = "Speed"
@@ -1675,6 +1701,7 @@ struct PlayerSettingsPanel: View {
 
     private enum Focus: Hashable {
         case tab(Tab)
+        case chapter(Int)
         case noneRow
         case language(String)
         case option(String)
@@ -1699,7 +1726,19 @@ struct PlayerSettingsPanel: View {
     @FocusState private var focus: Focus?
 
     private var visibleTabs: [Tab] {
-        didReportPlaybackStarted ? Tab.allCases : [.logs]
+        guard didReportPlaybackStarted else { return [.logs] }
+        var tabs: [Tab] = []
+        // Only files with chapters get the tab.
+        if !viewModel.chapters.isEmpty { tabs.append(.chapters) }
+        tabs.append(contentsOf: [.subtitles, .audio, .speed, .picture, .logs])
+        return tabs
+    }
+
+    /// The chapter to focus when the Chapters tab opens: the one playing.
+    private var focusedChapterOnOpen: Int? {
+        let chapters = viewModel.chapters
+        guard !chapters.isEmpty else { return nil }
+        return chapters[viewModel.currentChapterIndex ?? 0].id
     }
 
     private var activeTab: Tab {
@@ -1719,6 +1758,7 @@ struct PlayerSettingsPanel: View {
                 tabBar
 
                 switch activeTab {
+                case .chapters: chaptersPage
                 case .subtitles: subtitlesPage
                 case .audio: audioPage
                 case .speed: speedPage
@@ -1758,6 +1798,8 @@ struct PlayerSettingsPanel: View {
         .onChange(of: tab) { _, newTab in
             if newTab == .audio && orderedAudioTracks.isEmpty {
                 focus = .audioControl(.delayMinus)
+            } else if newTab == .chapters, let id = focusedChapterOnOpen {
+                focus = .chapter(id)
             }
         }
         .onChange(of: didReportPlaybackStarted) { _, isReady in
@@ -1786,6 +1828,8 @@ struct PlayerSettingsPanel: View {
                     tab = item
                     if item == .audio && orderedAudioTracks.isEmpty {
                         focus = .audioControl(.delayMinus)
+                    } else if item == .chapters, let id = focusedChapterOnOpen {
+                        focus = .chapter(id)
                     }
                 } label: {
                     Text(item.rawValue)
@@ -1810,6 +1854,76 @@ struct PlayerSettingsPanel: View {
             Spacer()
         }
         .focusSection()
+    }
+
+    // MARK: Chapters page
+
+    private var chaptersPage: some View {
+        let current = viewModel.currentChapterIndex
+        return VStack(alignment: .leading, spacing: 18) {
+            columnHeader(L10n.string("player_chapters", fallback: "Chapters"))
+            ScrollViewReader { proxy in
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 14) {
+                        ForEach(Array(viewModel.chapters.enumerated()), id: \.element.id) { index, chapter in
+                            chapterCard(chapter, index: index, isCurrent: index == current)
+                                .id(chapter.id)
+                        }
+                    }
+                    .padding(.vertical, 6)
+                }
+                .onAppear {
+                    if let id = focusedChapterOnOpen { proxy.scrollTo(id, anchor: .center) }
+                }
+            }
+            .focusSection()
+        }
+        .frame(width: 840, alignment: .leading)
+    }
+
+    private func chapterCard(_ chapter: PlaybackChapter, index: Int, isCurrent: Bool) -> some View {
+        let isFocused = focus == .chapter(chapter.id)
+        let start = PlayerTimeFormat.clock(chapter.startSeconds)
+        let length = chapter.durationSeconds > 0 ? PlayerTimeFormat.clock(chapter.durationSeconds) : ""
+        let detail = [start, length].filter { !$0.isEmpty }.joined(separator: " • ")
+
+        return Button {
+            viewModel.seekToChapter(chapter)
+            onClose()
+        } label: {
+            HStack(spacing: 18) {
+                Text("\(index + 1)")
+                    .font(.system(size: 24, weight: .bold).monospacedDigit())
+                    .foregroundColor(isFocused ? .black.opacity(0.55) : .white.opacity(0.45))
+                    .frame(width: 44, alignment: .trailing)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(PlaybackChapters.displayName(chapter, index: index))
+                        .font(.system(size: 27, weight: .semibold))
+                        .foregroundColor(isFocused ? .black : .white)
+                        .lineLimit(1)
+                    Text(detail)
+                        .font(.system(size: 20, weight: .medium).monospacedDigit())
+                        .foregroundColor(isFocused ? .black.opacity(0.58) : .white.opacity(0.6))
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                if isCurrent {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 22, weight: .bold))
+                        .foregroundColor(isFocused ? .black : .white)
+                }
+            }
+            .padding(.horizontal, 26)
+            .padding(.vertical, 16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(isFocused ? Color.white : Color.white.opacity(0.07))
+            )
+        }
+        .buttonStyle(PosterCardButtonStyle())
+        .focused($focus, equals: .chapter(chapter.id))
+        .focusEffectDisabledIfAvailable()
     }
 
     // MARK: Subtitles page

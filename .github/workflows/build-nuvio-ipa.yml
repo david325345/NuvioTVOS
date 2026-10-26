@@ -72,6 +72,7 @@ jobs:
             -only-testing:NuvioTVTests/UsenetFormatTests \
             -only-testing:NuvioTVTests/UsenetSourceTests \
             -only-testing:NuvioTVTests/UsenetPoolTests \
+            -only-testing:NuvioTVTests/PlaybackChaptersTests \
             -only-testing:NuvioTVTests/CalendarDayTests \
             -only-testing:NuvioTVTests/CalendarBuilderTests \
             -only-testing:NuvioTVTests/CalendarServiceTests \
