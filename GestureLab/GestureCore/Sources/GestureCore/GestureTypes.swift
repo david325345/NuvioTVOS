@@ -53,15 +53,17 @@ public enum SwipeDirection: String, Codable, CaseIterable, Sendable {
     }
 }
 
-/// Where a light tap (no click) landed.
+/// Where a light tap (no click) landed: the edge it is nearest to, or the middle.
 public enum PadSide: String, Codable, CaseIterable, Sendable {
-    case left, center, right
+    case left, center, right, top, bottom
 
     public var title: String {
         switch self {
         case .left: return "vlevo"
         case .center: return "uprostřed"
         case .right: return "vpravo"
+        case .top: return "nahoře"
+        case .bottom: return "dole"
         }
     }
 }

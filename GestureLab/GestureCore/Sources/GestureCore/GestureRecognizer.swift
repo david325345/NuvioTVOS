@@ -276,13 +276,19 @@ public final class GestureRecognizer {
         return TouchMovement(dx: (last.x - first.x) * 500, dy: (last.y - first.y) * 500)
     }
 
+    /// The edge nearest to where the finger rested, or the middle when it
+    /// stayed within `sideThreshold` of it both ways.
+    static func side(of points: [PadPoint], threshold: Double) -> PadSide {
+        guard !points.isEmpty else { return .center }
+        let xs = points.map(\.x).sorted(), ys = points.map(\.y).sorted()
+        let x = xs[xs.count / 2], y = ys[ys.count / 2]
+        guard max(abs(x), abs(y)) > threshold else { return .center }
+        if abs(y) > abs(x) { return y > 0 ? .top : .bottom }
+        return x < 0 ? .left : .right
+    }
+
     private func side(of points: [PadPoint]) -> PadSide {
-        let xs = points.map(\.x).sorted()
-        guard !xs.isEmpty else { return .center }
-        let x = xs[xs.count / 2]
-        if x < -tuning.sideThreshold { return .left }
-        if x > tuning.sideThreshold { return .right }
-        return .center
+        Self.side(of: points, threshold: tuning.sideThreshold)
     }
 
     /// Clockwise or not, when the finger went far enough round the middle.

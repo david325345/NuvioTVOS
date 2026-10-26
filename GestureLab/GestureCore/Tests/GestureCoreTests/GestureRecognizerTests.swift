@@ -188,6 +188,26 @@ final class GestureRecognizerTests: XCTestCase {
         XCTAssertEqual(summary?.padEnd, PadPoint(x: -0.85, y: 0.01))
     }
 
+    func testTapsOnTheTopAndBottomEdge() {
+        let recognizer = GestureRecognizer(waitsForDouble: { _ in false })
+        let bottom = run(recognizer, [.touchBegan(0), .touchMoved(0.02, PadPoint(x: 0.08, y: -0.82)),
+                                      .touchEnded(0.12), .tick(0.4)])
+        XCTAssertEqual(gestures(bottom), [.tap(.bottom, double: false)])
+        let top = run(recognizer, [.touchBegan(1), .touchMoved(1.02, PadPoint(x: -0.1, y: 0.75)),
+                                   .touchEnded(1.12), .tick(1.4)])
+        XCTAssertEqual(gestures(top), [.tap(.top, double: false)])
+        let middle = run(recognizer, [.touchBegan(2), .touchMoved(2.02, PadPoint(x: 0.1, y: 0.12)),
+                                      .touchEnded(2.12), .tick(2.4)])
+        XCTAssertEqual(gestures(middle), [.tap(.center, double: false)])
+    }
+
+    func testSideIsTheNearestEdge() {
+        XCTAssertEqual(GestureRecognizer.side(of: [PadPoint(x: -0.7, y: 0.5)], threshold: 0.3), .left)
+        XCTAssertEqual(GestureRecognizer.side(of: [PadPoint(x: 0.4, y: -0.6)], threshold: 0.3), .bottom)
+        XCTAssertEqual(GestureRecognizer.side(of: [PadPoint(x: 0.2, y: -0.25)], threshold: 0.3), .center)
+        XCTAssertEqual(GestureRecognizer.side(of: [], threshold: 0.3), .center)
+    }
+
     func testPadPositionsAloneNeverStartATouch() {
         let recognizer = GestureRecognizer()
         XCTAssertTrue(run(recognizer, [

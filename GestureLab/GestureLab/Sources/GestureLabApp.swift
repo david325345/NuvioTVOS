@@ -214,7 +214,7 @@ struct TuningView: View {
                   keyPath: \.clickGuard, step: 0.05, range: 0...0.5, format: TuningView.seconds),
         Parameter(id: "liftTrim", title: "Ořez při zvednutí prstu", hint: "Polohy těsně před zvednutím se zahodí",
                   keyPath: \.liftTrim, step: 0.01, range: 0...0.2, format: TuningView.seconds),
-        Parameter(id: "side", title: "Hranice vlevo/vpravo", hint: "Dotyk dál od středu je vlevo nebo vpravo",
+        Parameter(id: "side", title: "Hranice od středu", hint: "Dotyk dál od středu je vlevo, vpravo, nahoře nebo dole",
                   keyPath: \.sideThreshold, step: 0.05, range: 0.1...0.8, format: TuningView.units),
         Parameter(id: "circle", title: "Kroužek", hint: "Kolik stupňů je potřeba otočit",
                   keyPath: \.circleDegrees, step: 30, range: 180...720, format: { String(format: "%.0f°", $0) }),

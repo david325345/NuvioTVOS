@@ -37,7 +37,7 @@ public struct Tuning: Codable, Equatable, Sendable {
     public var tapMaxDuration: Double = 0.40
     /// …and moves less than this (UIKit points).
     public var tapMaxMovePoints: Double = 60
-    /// Taps farther from the middle than this are left or right.
+    /// Taps farther from the middle than this are on an edge (left, right, top, bottom).
     public var sideThreshold: Double = 0.30
     /// Turn needed for a circle, in degrees.
     public var circleDegrees: Double = 300
@@ -58,4 +58,36 @@ public struct Tuning: Codable, Equatable, Sendable {
     public var digitMinScore: Double = 0.60
 
     public init() {}
+
+    private enum CodingKeys: String, CodingKey {
+        case doubleWindow, longPress, swipeMinPoints, swipeLongPoints, swipeMaxDuration
+        case tapMaxDuration, tapMaxMovePoints, sideThreshold, circleDegrees, circleMinRadius
+        case clickGuard, liftTrim, drawingMode, drawArmWindow, strokeGap, digitMinScore
+    }
+
+    /// Saved settings from an older version: what it has is kept, what is new
+    /// (or renamed) starts at its default, so an update never resets everything.
+    public init(from decoder: Decoder) throws {
+        self.init()
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        func read(_ key: CodingKeys, _ fallback: Double) -> Double {
+            (try? c.decodeIfPresent(Double.self, forKey: key)) ?? fallback
+        }
+        doubleWindow = read(.doubleWindow, doubleWindow)
+        longPress = read(.longPress, longPress)
+        swipeMinPoints = read(.swipeMinPoints, swipeMinPoints)
+        swipeLongPoints = read(.swipeLongPoints, swipeLongPoints)
+        swipeMaxDuration = read(.swipeMaxDuration, swipeMaxDuration)
+        tapMaxDuration = read(.tapMaxDuration, tapMaxDuration)
+        tapMaxMovePoints = read(.tapMaxMovePoints, tapMaxMovePoints)
+        sideThreshold = read(.sideThreshold, sideThreshold)
+        circleDegrees = read(.circleDegrees, circleDegrees)
+        circleMinRadius = read(.circleMinRadius, circleMinRadius)
+        clickGuard = read(.clickGuard, clickGuard)
+        liftTrim = read(.liftTrim, liftTrim)
+        drawArmWindow = read(.drawArmWindow, drawArmWindow)
+        strokeGap = read(.strokeGap, strokeGap)
+        digitMinScore = read(.digitMinScore, digitMinScore)
+        drawingMode = (try? c.decodeIfPresent(DrawingMode.self, forKey: .drawingMode)) ?? drawingMode
+    }
 }

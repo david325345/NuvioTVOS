@@ -95,12 +95,11 @@ private struct PadView: View {
             let ringRect = CGRect(x: (1 - ring) / 2 * w, y: (1 - ring) / 2 * h, width: ring * w, height: ring * h)
             context.stroke(Path(ellipseIn: ringRect), with: .color(.white.opacity(0.15)),
                            style: StrokeStyle(lineWidth: 2, dash: [8, 8]))
-            for x in [-model.tuning.sideThreshold, model.tuning.sideThreshold] {
-                var line = Path()
-                line.move(to: point(PadPoint(x: x, y: 1)))
-                line.addLine(to: point(PadPoint(x: x, y: -1)))
-                context.stroke(line, with: .color(.white.opacity(0.12)), style: StrokeStyle(lineWidth: 2, dash: [6, 10]))
-            }
+            // Taps inside this square are "in the middle"; outside, on the nearest edge.
+            let side = model.tuning.sideThreshold
+            let topLeft = point(PadPoint(x: -side, y: side))
+            let middle = CGRect(x: topLeft.x, y: topLeft.y, width: side * w, height: side * h)
+            context.stroke(Path(middle), with: .color(.white.opacity(0.12)), style: StrokeStyle(lineWidth: 2, dash: [6, 10]))
 
             // Pressed buttons light up where they are.
             let marks: [(RemoteButton, PadPoint)] = [

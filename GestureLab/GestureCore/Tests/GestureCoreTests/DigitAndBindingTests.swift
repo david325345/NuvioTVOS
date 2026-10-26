@@ -93,6 +93,22 @@ final class BindingTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(GestureBindings.self, from: data), bindings)
     }
 
+    func testOlderSavedSettingsKeepWhatTheyHave() throws {
+        // Saved by the first build: old names, no newer settings.
+        let old = #"{"doubleWindow":0.5,"longPress":0.7,"swipeMin":0.6,"drawingMode":"off"}"#
+        let tuning = try JSONDecoder().decode(Tuning.self, from: Data(old.utf8))
+        XCTAssertEqual(tuning.doubleWindow, 0.5)
+        XCTAssertEqual(tuning.longPress, 0.7)
+        XCTAssertEqual(tuning.drawingMode, .off)
+        XCTAssertEqual(tuning.swipeMinPoints, Tuning().swipeMinPoints)
+        XCTAssertEqual(tuning.clickGuard, Tuning().clickGuard)
+
+        var changed = Tuning()
+        changed.swipeLongPoints = 700
+        let roundTrip = try JSONDecoder().decode(Tuning.self, from: JSONEncoder().encode(changed))
+        XCTAssertEqual(roundTrip, changed)
+    }
+
     func testTitles() {
         XCTAssertEqual(RemoteGesture.click(.right, .double).title, "Dvojklik vpravo")
         XCTAssertEqual(RemoteGesture.swipe(.left, long: true).title, "Dlouhý tah doleva")
