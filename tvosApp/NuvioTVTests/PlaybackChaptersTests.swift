@@ -25,6 +25,18 @@ final class PlaybackChaptersTests: XCTestCase {
         XCTAssertEqual(overlapping.map(\.endSeconds), [120, 300])
     }
 
+    func testASingleChapterIsNoChapterList() {
+        XCTAssertTrue(PlaybackChapters.chapters(from: [(id: 0, name: "Movie", start: 0, duration: 0)], totalDuration: 5400).isEmpty)
+        XCTAssertTrue(PlaybackChapters.chapters(from: [], totalDuration: 5400).isEmpty)
+        XCTAssertEqual(
+            PlaybackChapters.chapters(
+                from: [(id: 0, name: "A", start: 0, duration: 0), (id: 1, name: "B", start: 600, duration: 0)],
+                totalDuration: 5400
+            ).count,
+            2
+        )
+    }
+
     func testGenericNamesBecomeChapterNumbers() {
         XCTAssertEqual(PlaybackChapters.displayName(chapter(0, "Opening", 0, 90), index: 0), "Opening")
         XCTAssertEqual(PlaybackChapters.displayName(chapter(1, "Chapter 03", 90, 200), index: 2), "Chapter 3")
@@ -80,6 +92,29 @@ final class PlaybackChaptersTests: XCTestCase {
         // Too long to be an opening, or too short to be one: no button.
         XCTAssertTrue(PlaybackChapters.skipIntervals(from: [chapter(0, "Intro", 0, 600)]).isEmpty)
         XCTAssertTrue(PlaybackChapters.skipIntervals(from: [chapter(0, "OP", 0, 5)]).isEmpty)
+    }
+
+    func testOpeningAndEndingOnTheTimeline() {
+        let segments = PlaybackChapters.timelineSegments([
+            SkipInterval(startTime: 60, endTime: 150, type: "intro", provider: "introdb"),
+            SkipInterval(startTime: 0, endTime: 30, type: "recap", provider: "introdb"),
+            SkipInterval(startTime: 1290, endTime: 1500, type: "outro", provider: "chapters"),
+        ], duration: 1400)
+        XCTAssertEqual(segments.map(\.kind), [.opening, .ending])
+        XCTAssertEqual(segments[0].start, 60.0 / 1400, accuracy: 0.0001)
+        XCTAssertEqual(segments[0].end, 150.0 / 1400, accuracy: 0.0001)
+        // Past the end of the video: cut at the end.
+        XCTAssertEqual(segments[1].end, 1)
+        XCTAssertTrue(PlaybackChapters.timelineSegments(
+            [SkipInterval(startTime: 60, endTime: 150, type: "intro", provider: "introdb")], duration: 0
+        ).isEmpty)
+    }
+
+    func testChapterBadgeFromNameOrFromTheMatchingSegment() {
+        let introDB = [SkipInterval(startTime: 61, endTime: 151, type: "intro", provider: "introdb")]
+        XCTAssertEqual(PlaybackChapters.kind(of: chapter(0, "Opening", 300, 390), segments: []), .opening)
+        XCTAssertEqual(PlaybackChapters.kind(of: chapter(1, "Chapter 2", 60, 150), segments: introDB), .opening)
+        XCTAssertNil(PlaybackChapters.kind(of: chapter(2, "Chapter 3", 150, 600), segments: introDB))
     }
 
     func testIntroDBComesFirstAndChaptersFillTheRest() {

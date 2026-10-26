@@ -16,7 +16,8 @@ struct PlaybackChapter: Equatable, Identifiable, Hashable {
 enum PlaybackChapters {
     /// Chapters from an engine's (start, duration) list: sorted, each ending
     /// where the next one starts when the container gives no length, the last
-    /// at the end of the video.
+    /// at the end of the video. A single chapter is no chapter list: the file
+    /// gets no Chapters button and no marks.
     static func chapters(
         from items: [(id: Int, name: String, start: Double, duration: Double)],
         totalDuration: Double
@@ -24,6 +25,7 @@ enum PlaybackChapters {
         let sorted = items
             .filter { $0.start.isFinite && $0.start >= 0 }
             .sorted { $0.start < $1.start }
+        guard sorted.count >= 2 else { return [] }
         return sorted.enumerated().map { index, item in
             let next = index + 1 < sorted.count ? sorted[index + 1].start : nil
             var end = item.duration.isFinite && item.duration > 0 ? item.start + item.duration : (next ?? totalDuration)
@@ -72,6 +74,13 @@ enum PlaybackChapters {
         case ending
     }
 
+    /// An opening or an ending on the timeline, as fractions of the duration.
+    struct TimelineSegment: Equatable {
+        let start: Double
+        let end: Double
+        let kind: Kind
+    }
+
     /// Longest chapter still taken for an opening or an ending: anything longer
     /// is more likely a part of the episode that happens to carry the name.
     static let maxOpeningSeconds: Double = 180
@@ -116,6 +125,37 @@ enum PlaybackChapters {
             }
         }
         return [opening, ending].compactMap { $0 }
+    }
+
+    /// Where the opening and the ending sit on the timeline, as fractions of
+    /// the duration, from the skip segments in use (IntroDB and chapters).
+    static func timelineSegments(_ intervals: [SkipInterval], duration: Double) -> [TimelineSegment] {
+        guard duration > 0 else { return [] }
+        return intervals.compactMap { interval in
+            let kind: Kind
+            if interval.isIntro {
+                kind = .opening
+            } else if interval.isEnding {
+                kind = .ending
+            } else {
+                return nil
+            }
+            let start = min(max(interval.startTime / duration, 0), 1)
+            let end = min(max(interval.endTime / duration, 0), 1)
+            guard end - start > 0.001 else { return nil }
+            return TimelineSegment(start: start, end: end, kind: kind)
+        }
+    }
+
+    /// A chapter's badge in the list: from its name, or from the segment it
+    /// lines up with (IntroDB's opening over an unnamed chapter).
+    static func kind(of chapter: PlaybackChapter, segments: [SkipInterval]) -> Kind? {
+        if let named = kind(ofName: chapter.name) { return named }
+        let match = segments.first {
+            abs($0.startTime - chapter.startSeconds) <= 3 && abs($0.endTime - chapter.endSeconds) <= 3
+        }
+        guard let match else { return nil }
+        return match.isIntro ? .opening : (match.isEnding ? .ending : nil)
     }
 
     /// IntroDB first; chapters only fill an opening or an ending IntroDB

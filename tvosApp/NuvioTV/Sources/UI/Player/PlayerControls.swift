@@ -4,6 +4,7 @@ import CoreGraphics
 
 enum PlayerControlFocus: Hashable {
     case pip
+    case chapters
     case episodes
     case sources
     case subtitles
@@ -28,6 +29,8 @@ struct PlayerControls: View {
     @AppStorage(SettingsKey.playerShowSources) private var playerShowSources = true
     @AppStorage(SettingsKey.playerShowSubtitles) private var playerShowSubtitles = true
     @AppStorage(SettingsKey.playerShowAudio) private var playerShowAudio = true
+    @AppStorage(SettingsKey.playerShowChapters) private var playerShowChapters = true
+    @AppStorage(SettingsKey.playerButtonOrder) private var playerButtonOrder = ""
 
     var body: some View {
         GlassControlsContainer {
@@ -251,16 +254,37 @@ struct PlayerControls: View {
             && !isNextEpisodeFocused
     }
 
+    /// The transport buttons on screen, in the user's order (Settings → Playback
+    /// → Button Order). Settings (⋯) is not among them: it always comes last.
+    private var visibleTransportButtons: [PlayerButtonKind] {
+        PlayerButtonOrder.parse(playerButtonOrder).filter { isTransportButtonShown($0) }
+    }
+
+    private func isTransportButtonShown(_ kind: PlayerButtonKind) -> Bool {
+        switch kind {
+        case .pip: return didReportPlaybackStarted && viewModel.isPictureInPictureSupported && playerShowPiP
+        case .chapters: return didReportPlaybackStarted && !viewModel.chapters.isEmpty && playerShowChapters
+        case .episodes: return viewModel.canShowEpisodesPanel && playerShowEpisodes
+        case .sources: return viewModel.canShowSourcesPanel && playerShowSources
+        case .subtitles: return didReportPlaybackStarted && canShowSubtitlePicker && playerShowSubtitles
+        case .audio: return didReportPlaybackStarted && canShowAudioPicker && playerShowAudio
+        }
+    }
+
+    private static func focusKey(for kind: PlayerButtonKind) -> PlayerControlFocus {
+        switch kind {
+        case .pip: return .pip
+        case .chapters: return .chapters
+        case .episodes: return .episodes
+        case .sources: return .sources
+        case .subtitles: return .subtitles
+        case .audio: return .audio
+        }
+    }
+
     /// Left-to-right order of currently visible transport buttons.
     private var transportFocusOrder: [PlayerControlFocus] {
-        var order: [PlayerControlFocus] = []
-        if didReportPlaybackStarted && viewModel.isPictureInPictureSupported && playerShowPiP { order.append(.pip) }
-        if viewModel.canShowEpisodesPanel && playerShowEpisodes { order.append(.episodes) }
-        if viewModel.canShowSourcesPanel && playerShowSources { order.append(.sources) }
-        if didReportPlaybackStarted && canShowSubtitlePicker && playerShowSubtitles { order.append(.subtitles) }
-        if didReportPlaybackStarted && canShowAudioPicker && playerShowAudio { order.append(.audio) }
-        order.append(.settings)
-        return order
+        visibleTransportButtons.map(Self.focusKey(for:)) + [.settings]
     }
 
     private var canShowSubtitlePicker: Bool {
@@ -431,93 +455,8 @@ struct PlayerControls: View {
         HStack(spacing: 18) {
             Spacer()
 
-            if didReportPlaybackStarted && viewModel.isPictureInPictureSupported && playerShowPiP {
-                glassIconButton(
-                    size: 70,
-                    iconSize: 28,
-                    focusKey: .pip,
-                    isFocused: focusedControl == .pip
-                ) {
-                    viewModel.togglePictureInPicture()
-                } icon: {
-                    Image(systemName: "pip.enter")
-                }
-                .id("pip_button")
-            }
-
-            if viewModel.canShowEpisodesPanel && playerShowEpisodes {
-                glassIconButton(
-                    size: 70,
-                    iconSize: 28,
-                    focusKey: .episodes,
-                    isFocused: focusedControl == .episodes
-                ) {
-                    viewModel.openSidePanel(.episodes)
-                } icon: {
-                    Image(systemName: "list.bullet")
-                }
-                .id("episodes_button")
-            }
-
-            if viewModel.canShowSourcesPanel && playerShowSources {
-                glassIconButton(
-                    size: 70,
-                    iconSize: 28,
-                    focusKey: .sources,
-                    isFocused: focusedControl == .sources
-                ) {
-                    viewModel.openSidePanel(.sources)
-                } icon: {
-                    Image(systemName: "square.stack.3d.up")
-                }
-                .id("sources_button")
-            }
-
-            if didReportPlaybackStarted && canShowSubtitlePicker && playerShowSubtitles {
-                PlayerSubtitleMenuButton(
-                    noneOption: subtitleNoneOption,
-                    languageGroups: subtitleLanguageGroups,
-                    isFocused: focusedControl == .subtitles,
-                    onSelect: { selectSubtitlePickerOption($0) }
-                )
-                .equatable()
-                .focused($focusedControl, equals: .subtitles)
-                .disabled(!isTransportButtonFocusable(.subtitles))
-                .onExitCommand(perform: handleExit)
-                .onMoveCommand { direction in
-                    handleMove(direction, from: .subtitles)
-                }
-            }
-
-            if didReportPlaybackStarted && canShowAudioPicker && playerShowAudio {
-                PlayerAudioMenuButton(
-                    orderedTracks: orderedAudioTracks,
-                    enhanceDialogueMode: viewModel.enhanceDialogueMode,
-                    isReduceLoudSoundsActive: viewModel.isReduceLoudSoundsActive,
-                    isFocused: focusedControl == .audio,
-                    onSelectTrack: { track in
-                        viewModel.selectAudio(track)
-                        viewModel.setControlsAutoHideSuspended(false)
-                        viewModel.scheduleControlsHide(after: 10.0)
-                    },
-                    onSetEnhanceDialogueMode: { mode in
-                        viewModel.setEnhanceDialogueMode(mode)
-                        viewModel.setControlsAutoHideSuspended(false)
-                        viewModel.scheduleControlsHide(after: 10.0)
-                    },
-                    onToggleReduceLoudSounds: {
-                        viewModel.toggleReduceLoudSounds()
-                        viewModel.setControlsAutoHideSuspended(false)
-                        viewModel.scheduleControlsHide(after: 10.0)
-                    }
-                )
-                .equatable()
-                .focused($focusedControl, equals: .audio)
-                .disabled(!isTransportButtonFocusable(.audio))
-                .onExitCommand(perform: handleExit)
-                .onMoveCommand { direction in
-                    handleMove(direction, from: .audio)
-                }
+            ForEach(visibleTransportButtons) { kind in
+                transportButton(kind)
             }
 
             glassIconButton(
@@ -533,6 +472,108 @@ struct PlayerControls: View {
             .id("settings_button")
         }
         .shadow(color: .black.opacity(0.74), radius: 20, x: 0, y: 8)
+    }
+
+    @ViewBuilder
+    private func transportButton(_ kind: PlayerButtonKind) -> some View {
+        switch kind {
+        case .pip:
+            glassIconButton(
+                size: 70,
+                iconSize: 28,
+                focusKey: .pip,
+                isFocused: focusedControl == .pip
+            ) {
+                viewModel.togglePictureInPicture()
+            } icon: {
+                Image(systemName: "pip.enter")
+            }
+            .id("pip_button")
+
+        case .chapters:
+            glassIconButton(
+                size: 70,
+                iconSize: 28,
+                focusKey: .chapters,
+                isFocused: focusedControl == .chapters
+            ) {
+                viewModel.openSidePanel(.chapters)
+            } icon: {
+                Image(systemName: "list.number")
+            }
+            .id("chapters_button")
+
+        case .episodes:
+            glassIconButton(
+                size: 70,
+                iconSize: 28,
+                focusKey: .episodes,
+                isFocused: focusedControl == .episodes
+            ) {
+                viewModel.openSidePanel(.episodes)
+            } icon: {
+                Image(systemName: "list.bullet")
+            }
+            .id("episodes_button")
+
+        case .sources:
+            glassIconButton(
+                size: 70,
+                iconSize: 28,
+                focusKey: .sources,
+                isFocused: focusedControl == .sources
+            ) {
+                viewModel.openSidePanel(.sources)
+            } icon: {
+                Image(systemName: "square.stack.3d.up")
+            }
+            .id("sources_button")
+
+        case .subtitles:
+            PlayerSubtitleMenuButton(
+                noneOption: subtitleNoneOption,
+                languageGroups: subtitleLanguageGroups,
+                isFocused: focusedControl == .subtitles,
+                onSelect: { selectSubtitlePickerOption($0) }
+            )
+            .equatable()
+            .focused($focusedControl, equals: .subtitles)
+            .disabled(!isTransportButtonFocusable(.subtitles))
+            .onExitCommand(perform: handleExit)
+            .onMoveCommand { direction in
+                handleMove(direction, from: .subtitles)
+            }
+
+        case .audio:
+            PlayerAudioMenuButton(
+                orderedTracks: orderedAudioTracks,
+                enhanceDialogueMode: viewModel.enhanceDialogueMode,
+                isReduceLoudSoundsActive: viewModel.isReduceLoudSoundsActive,
+                isFocused: focusedControl == .audio,
+                onSelectTrack: { track in
+                    viewModel.selectAudio(track)
+                    viewModel.setControlsAutoHideSuspended(false)
+                    viewModel.scheduleControlsHide(after: 10.0)
+                },
+                onSetEnhanceDialogueMode: { mode in
+                    viewModel.setEnhanceDialogueMode(mode)
+                    viewModel.setControlsAutoHideSuspended(false)
+                    viewModel.scheduleControlsHide(after: 10.0)
+                },
+                onToggleReduceLoudSounds: {
+                    viewModel.toggleReduceLoudSounds()
+                    viewModel.setControlsAutoHideSuspended(false)
+                    viewModel.scheduleControlsHide(after: 10.0)
+                }
+            )
+            .equatable()
+            .focused($focusedControl, equals: .audio)
+            .disabled(!isTransportButtonFocusable(.audio))
+            .onExitCommand(perform: handleExit)
+            .onMoveCommand { direction in
+                handleMove(direction, from: .audio)
+            }
+        }
     }
 
     private func glassIconButton<Icon: View>(
@@ -687,7 +728,8 @@ struct PlayerControls: View {
             pendingSeekDelta: viewModel.pendingSeekDelta,
             speedMultiplier: viewModel.seekSpeedMultiplier,
             seekStepSeconds: viewModel.seekStepSeconds,
-            chapters: viewModel.chapters
+            chapters: viewModel.chapters,
+            skipSegments: viewModel.skipSegments
         )
         .overlay(alignment: .top) {
             // Keep the geometry mounted even while a still is unavailable so
@@ -1055,6 +1097,8 @@ private struct PlayerTimelineBar: View {
     var seekStepSeconds: Int = PlayerSeekSettings.defaultStep
     /// Chapters of the file: marks on the track and the chapter's name by the time.
     var chapters: [PlaybackChapter] = []
+    /// Opening and ending (IntroDB or chapters), colored on the track.
+    var skipSegments: [SkipInterval] = []
 
     private var duration: Double {
         max(clock.duration, 0.001)
@@ -1111,7 +1155,10 @@ private struct PlayerTimelineBar: View {
                         showThumb: false,
                         emphasized: isTimelineFocused || isSeekingOrScrubbing,
                         glassTrack: true,
-                        markers: PlaybackChapters.markers(chapters, duration: clock.duration)
+                        markers: PlaybackChapters.markers(chapters, duration: clock.duration),
+                        segments: PlaybackChapters.timelineSegments(skipSegments, duration: clock.duration).map {
+                            PlayerTrackSegment(start: $0.start, end: $0.end, color: $0.kind.color)
+                        }
                     )
 
                     if isScrubbing || isHoldingSeek {
@@ -1672,7 +1719,6 @@ struct PlayerSettingsPanel: View {
     var onClose: () -> Void
 
     private enum Tab: String, CaseIterable, Hashable {
-        case chapters = "Chapters"
         case subtitles = "Subtitles"
         case audio = "Audio"
         case speed = "Speed"
@@ -1701,7 +1747,6 @@ struct PlayerSettingsPanel: View {
 
     private enum Focus: Hashable {
         case tab(Tab)
-        case chapter(Int)
         case noneRow
         case language(String)
         case option(String)
@@ -1726,19 +1771,7 @@ struct PlayerSettingsPanel: View {
     @FocusState private var focus: Focus?
 
     private var visibleTabs: [Tab] {
-        guard didReportPlaybackStarted else { return [.logs] }
-        var tabs: [Tab] = []
-        // Only files with chapters get the tab.
-        if !viewModel.chapters.isEmpty { tabs.append(.chapters) }
-        tabs.append(contentsOf: [.subtitles, .audio, .speed, .picture, .logs])
-        return tabs
-    }
-
-    /// The chapter to focus when the Chapters tab opens: the one playing.
-    private var focusedChapterOnOpen: Int? {
-        let chapters = viewModel.chapters
-        guard !chapters.isEmpty else { return nil }
-        return chapters[viewModel.currentChapterIndex ?? 0].id
+        didReportPlaybackStarted ? Tab.allCases : [.logs]
     }
 
     private var activeTab: Tab {
@@ -1758,7 +1791,6 @@ struct PlayerSettingsPanel: View {
                 tabBar
 
                 switch activeTab {
-                case .chapters: chaptersPage
                 case .subtitles: subtitlesPage
                 case .audio: audioPage
                 case .speed: speedPage
@@ -1798,8 +1830,6 @@ struct PlayerSettingsPanel: View {
         .onChange(of: tab) { _, newTab in
             if newTab == .audio && orderedAudioTracks.isEmpty {
                 focus = .audioControl(.delayMinus)
-            } else if newTab == .chapters, let id = focusedChapterOnOpen {
-                focus = .chapter(id)
             }
         }
         .onChange(of: didReportPlaybackStarted) { _, isReady in
@@ -1828,8 +1858,6 @@ struct PlayerSettingsPanel: View {
                     tab = item
                     if item == .audio && orderedAudioTracks.isEmpty {
                         focus = .audioControl(.delayMinus)
-                    } else if item == .chapters, let id = focusedChapterOnOpen {
-                        focus = .chapter(id)
                     }
                 } label: {
                     Text(item.rawValue)
@@ -1854,76 +1882,6 @@ struct PlayerSettingsPanel: View {
             Spacer()
         }
         .focusSection()
-    }
-
-    // MARK: Chapters page
-
-    private var chaptersPage: some View {
-        let current = viewModel.currentChapterIndex
-        return VStack(alignment: .leading, spacing: 18) {
-            columnHeader(L10n.string("player_chapters", fallback: "Chapters"))
-            ScrollViewReader { proxy in
-                ScrollView(showsIndicators: false) {
-                    VStack(spacing: 14) {
-                        ForEach(Array(viewModel.chapters.enumerated()), id: \.element.id) { index, chapter in
-                            chapterCard(chapter, index: index, isCurrent: index == current)
-                                .id(chapter.id)
-                        }
-                    }
-                    .padding(.vertical, 6)
-                }
-                .onAppear {
-                    if let id = focusedChapterOnOpen { proxy.scrollTo(id, anchor: .center) }
-                }
-            }
-            .focusSection()
-        }
-        .frame(width: 840, alignment: .leading)
-    }
-
-    private func chapterCard(_ chapter: PlaybackChapter, index: Int, isCurrent: Bool) -> some View {
-        let isFocused = focus == .chapter(chapter.id)
-        let start = PlayerTimeFormat.clock(chapter.startSeconds)
-        let length = chapter.durationSeconds > 0 ? PlayerTimeFormat.clock(chapter.durationSeconds) : ""
-        let detail = [start, length].filter { !$0.isEmpty }.joined(separator: " • ")
-
-        return Button {
-            viewModel.seekToChapter(chapter)
-            onClose()
-        } label: {
-            HStack(spacing: 18) {
-                Text("\(index + 1)")
-                    .font(.system(size: 24, weight: .bold).monospacedDigit())
-                    .foregroundColor(isFocused ? .black.opacity(0.55) : .white.opacity(0.45))
-                    .frame(width: 44, alignment: .trailing)
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(PlaybackChapters.displayName(chapter, index: index))
-                        .font(.system(size: 27, weight: .semibold))
-                        .foregroundColor(isFocused ? .black : .white)
-                        .lineLimit(1)
-                    Text(detail)
-                        .font(.system(size: 20, weight: .medium).monospacedDigit())
-                        .foregroundColor(isFocused ? .black.opacity(0.58) : .white.opacity(0.6))
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 8)
-                if isCurrent {
-                    Image(systemName: "play.fill")
-                        .font(.system(size: 22, weight: .bold))
-                        .foregroundColor(isFocused ? .black : .white)
-                }
-            }
-            .padding(.horizontal, 26)
-            .padding(.vertical, 16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .fill(isFocused ? Color.white : Color.white.opacity(0.07))
-            )
-        }
-        .buttonStyle(PosterCardButtonStyle())
-        .focused($focus, equals: .chapter(chapter.id))
-        .focusEffectDisabledIfAvailable()
     }
 
     // MARK: Subtitles page

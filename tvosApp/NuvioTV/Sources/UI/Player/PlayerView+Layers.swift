@@ -803,12 +803,15 @@ extension PlayerView {
 
     @ViewBuilder
     var sidePanelLayer: some View {
-        // Episodes / Sources side panels.
+        // Episodes / Sources / Chapters side panels.
         if viewModel.sidePanel == .episodes {
             PlayerEpisodesPanel(viewModel: viewModel)
                 .zIndex(25)
         } else if viewModel.sidePanel == .sources {
             PlayerSourcesPanel(viewModel: viewModel)
+                .zIndex(25)
+        } else if viewModel.sidePanel == .chapters {
+            PlayerChaptersPanel(viewModel: viewModel, clock: viewModel.clock)
                 .zIndex(25)
         }
     }

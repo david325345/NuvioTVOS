@@ -8,6 +8,23 @@ import CoreGraphics
 /// `glassTrack` uses a single frosted capsule (material + soft white tint) so it
 /// matches the liquid-glass control chrome without `glassEffect`, which draws a
 /// second raised pill and reads as a double bar.
+/// A stretch of the timeline drawn in its own color (the opening, the ending).
+struct PlayerTrackSegment: Equatable {
+    var start: Double
+    var end: Double
+    var color: Color
+}
+
+extension PlaybackChapters.Kind {
+    /// Opening yellow, ending blue: on the timeline and as the chapter badges.
+    var color: Color {
+        switch self {
+        case .opening: return Color(red: 0.95, green: 0.79, blue: 0.30)
+        case .ending: return Color(red: 0.34, green: 0.80, blue: 0.95)
+        }
+    }
+}
+
 struct PlayerProgressTrack: View {
     var played: Double
     var buffered: Double
@@ -18,6 +35,8 @@ struct PlayerProgressTrack: View {
     var glassTrack: Bool = false
     /// Chapter starts as fractions of the track, drawn as thin gaps.
     var markers: [Double] = []
+    /// Colored stretches: dimmed ahead of the playhead, full color once played.
+    var segments: [PlayerTrackSegment] = []
 
     @State private var animatedBuffered: Double = 0
 
@@ -48,11 +67,33 @@ struct PlayerProgressTrack: View {
                             .frame(width: w * b)
                     }
 
+                    ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
+                        let start = CGFloat(min(max(segment.start, 0), 1))
+                        let end = CGFloat(min(max(segment.end, 0), 1))
+                        if end > start {
+                            Rectangle()
+                                .fill(segment.color.opacity(0.5))
+                                .frame(width: w * (end - start), height: h)
+                                .position(x: w * (start + end) / 2, y: h / 2)
+                        }
+                    }
+
                     if p > 0 {
                         // Played progress bar (semi-opaque grey)
                         Rectangle()
                             .fill(Color.white.opacity(0.65))
                             .frame(width: w * p)
+
+                        ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
+                            let start = CGFloat(min(max(segment.start, 0), 1))
+                            let end = min(CGFloat(min(max(segment.end, 0), 1)), p)
+                            if end > start {
+                                Rectangle()
+                                    .fill(segment.color)
+                                    .frame(width: w * (end - start), height: h)
+                                    .position(x: w * (start + end) / 2, y: h / 2)
+                            }
+                        }
 
                         // Leading edge tick: bright white cap flush with the track height
                         Rectangle()

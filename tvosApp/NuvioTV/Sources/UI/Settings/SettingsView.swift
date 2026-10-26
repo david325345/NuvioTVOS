@@ -336,6 +336,9 @@ enum SettingsKey {
     static let playerShowSources = "nuvio.tv.settings.playback.showSources"
     static let playerShowSubtitles = "nuvio.tv.settings.playback.showSubtitles"
     static let playerShowAudio = "nuvio.tv.settings.playback.showAudio"
+    static let playerShowChapters = "nuvio.tv.settings.playback.showChapters"
+    /// Left-to-right order of the player buttons ("pip,chapters,…"), see `PlayerButtonOrder`.
+    static let playerButtonOrder = "nuvio.tv.settings.playback.buttonOrder"
     static let seekPreviewEnabled = "nuvio.tv.settings.playback.seekPreviewEnabled"
     static let showLoadingStatus = "nuvio.tv.settings.playback.showLoadingStatus"
     static let audioDelayPersistEnabled = "nuvio.tv.settings.playback.audioDelayPersistEnabled"
@@ -404,7 +407,8 @@ enum SettingsKey {
         subtitleLanguages, subtitleLanguage, subtitleLanguageSecondary, subtitleLanguageTertiary,
         forcedSubtitles, subtitleSize, frameRateMatching, networkCache, hybridDiskCacheEnabled, hybridDiskCacheLimitGB, playbackTrackSelections, showAudioLanguages,
         externalPlayerForwardSubtitles, assOverrideMode,
-        playerShowPiP, playerShowEpisodes, playerShowSources, playerShowSubtitles, playerShowAudio, seekPreviewEnabled, showLoadingStatus,
+        playerShowPiP, playerShowEpisodes, playerShowSources, playerShowSubtitles, playerShowAudio, playerShowChapters, playerButtonOrder,
+        seekPreviewEnabled, showLoadingStatus,
         audioDelayPersistEnabled, persistentAudioDelayMs,
         sceneFeatureEnabled,
         fastNavigation, smoothFocus, playbackDiagnostics, playbackDebug, focusHighlighter,
@@ -7989,6 +7993,8 @@ private struct PlaybackSettingsView: View {
     @AppStorage(SettingsKey.playerShowSources) private var playerShowSources = true
     @AppStorage(SettingsKey.playerShowSubtitles) private var playerShowSubtitles = true
     @AppStorage(SettingsKey.playerShowAudio) private var playerShowAudio = true
+    @AppStorage(SettingsKey.playerShowChapters) private var playerShowChapters = true
+    @AppStorage(SettingsKey.playerButtonOrder) private var playerButtonOrder = ""
     @AppStorage(SettingsKey.sceneFeatureEnabled) private var sceneFeatureEnabled = true
 
     @State private var streamBadgeURL = ""
@@ -8036,6 +8042,39 @@ private struct PlaybackSettingsView: View {
         case "3 days", "72 hours", "72 hrs": return 72
         case "7 days", "168 hours", "168 hrs", "1 week": return 168
         default: return 24
+        }
+    }
+
+    private func playerButtonTitle(_ kind: PlayerButtonKind) -> String {
+        switch kind {
+        case .pip: return L10n.string("tvos_settings_player_pip", fallback: "Picture in Picture")
+        case .chapters: return L10n.string("player_chapters", fallback: "Chapters")
+        case .episodes: return L10n.string("player_button_episodes", fallback: "Episodes")
+        case .sources: return L10n.string("player_button_sources", fallback: "Streams & Sources")
+        case .subtitles: return L10n.string("player_button_subtitles", fallback: "Subtitles")
+        case .audio: return L10n.string("player_button_audio", fallback: "Audio & Sound")
+        }
+    }
+
+    private func playerButtonIcon(_ kind: PlayerButtonKind) -> String {
+        switch kind {
+        case .pip: return "pip.enter"
+        case .chapters: return "list.number"
+        case .episodes: return "list.bullet"
+        case .sources: return "square.stack.3d.up"
+        case .subtitles: return "captions.bubble"
+        case .audio: return "waveform"
+        }
+    }
+
+    private func isPlayerButtonOn(_ kind: PlayerButtonKind) -> Bool {
+        switch kind {
+        case .pip: return playerShowPiP
+        case .chapters: return playerShowChapters
+        case .episodes: return playerShowEpisodes
+        case .sources: return playerShowSources
+        case .subtitles: return playerShowSubtitles
+        case .audio: return playerShowAudio
         }
     }
 
@@ -8211,6 +8250,16 @@ private struct PlaybackSettingsView: View {
                 )
 
                 SettingsToggleRow(
+                    title: L10n.string("tvos_settings_player_chapters", fallback: "Chapters Button"),
+                    subtitle: L10n.string(
+                        "tvos_settings_player_chapters_subtitle",
+                        fallback: "Show the Chapters button when the file has chapters"
+                    ),
+                    isOn: $playerShowChapters,
+                    accentColor: accentColor
+                )
+
+                SettingsToggleRow(
                     title: L10n.string("tvos_settings_player_episodes", fallback: "Episodes Button"),
                     subtitle: L10n.string(
                         "tvos_settings_player_episodes_subtitle",
@@ -8260,6 +8309,41 @@ private struct PlaybackSettingsView: View {
                     accentColor: accentColor
                 )
 
+            }
+
+            SettingsGroup(
+                title: L10n.string("tvos_playback_button_order", fallback: "Button Order"),
+                subtitle: L10n.string(
+                    "tvos_playback_button_order_subtitle",
+                    fallback: "Top to bottom here is left to right in the player. The ⋯ button always stays last."
+                )
+            ) {
+                let order = PlayerButtonOrder.parse(playerButtonOrder)
+                ForEach(Array(order.enumerated()), id: \.element) { index, kind in
+                    PlayerButtonOrderRow(
+                        title: playerButtonTitle(kind),
+                        systemImage: playerButtonIcon(kind),
+                        isShown: isPlayerButtonOn(kind),
+                        isFirst: index == 0,
+                        isLast: index == order.count - 1,
+                        accentColor: accentColor
+                    ) { offset in
+                        playerButtonOrder = PlayerButtonOrder.serialize(
+                            PlayerButtonOrder.moving(kind, by: offset, in: PlayerButtonOrder.parse(playerButtonOrder))
+                        )
+                    }
+                }
+
+                HStack {
+                    SMBRowButton(
+                        title: L10n.string("tvos_playback_button_order_reset", fallback: "Reset Order"),
+                        accentColor: accentColor,
+                        enabled: order != PlayerButtonOrder.defaultOrder
+                    ) {
+                        playerButtonOrder = ""
+                    }
+                    Spacer()
+                }
             }
 
             SettingsGroup(
@@ -15185,6 +15269,50 @@ private struct SettingsStepperRow: View {
                     isAtBound: value >= range.upperBound
                 ) {
                     value = min(range.upperBound, value + step)
+                }
+            }
+        }
+        .focused($isFocused)
+        .focusEffectDisabledIfAvailable()
+    }
+}
+
+/// One player button in Settings → Playback → Button Order: its icon and name,
+/// arrows to move it up (left in the player) or down (right).
+private struct PlayerButtonOrderRow: View {
+    let title: String
+    let systemImage: String
+    let isShown: Bool
+    let isFirst: Bool
+    let isLast: Bool
+    let accentColor: Color
+    let onMove: (Int) -> Void
+
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        SettingsRowShell(isFocused: isFocused, accentColor: accentColor) {
+            Image(systemName: systemImage)
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundColor(.white)
+                .frame(width: 40)
+
+            SettingsRowText(
+                title: title,
+                subtitle: isShown
+                    ? L10n.string("tvos_playback_button_order_shown", fallback: "Shown in the player")
+                    : L10n.string("tvos_playback_button_order_hidden", fallback: "Hidden (turned off above)")
+            )
+            .opacity(isShown ? 1 : 0.6)
+
+            Spacer(minLength: 24)
+
+            HStack(spacing: 12) {
+                SettingsMiniButton(systemName: "chevron.up", accentColor: accentColor, isAtBound: isFirst) {
+                    onMove(-1)
+                }
+                SettingsMiniButton(systemName: "chevron.down", accentColor: accentColor, isAtBound: isLast) {
+                    onMove(1)
                 }
             }
         }

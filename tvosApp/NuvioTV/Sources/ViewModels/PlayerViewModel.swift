@@ -503,14 +503,26 @@ class PlayerViewModel: ObservableObject {
     private var traktProgressTask: Task<Void, Never>?
     private static let traktProgressReportInterval: TimeInterval = 30
     private(set) var controlsAutoHideSuspended = false
-    private var skipIntervals: [SkipInterval] = []
+    private var skipIntervals: [SkipInterval] = [] {
+        didSet { publishSkipSegments() }
+    }
     /// Skip Intro / Skip Ending from chapter names ("Opening", "ED"…), used
     /// only for what IntroDB doesn't have.
-    private var chapterSkipIntervals: [SkipInterval] = []
+    private var chapterSkipIntervals: [SkipInterval] = [] {
+        didSet { publishSkipSegments() }
+    }
     /// IntroDB's segments, completed from the chapters. The IntroDB season
     /// template keeps learning from `skipIntervals` alone.
     private var effectiveSkipIntervals: [SkipInterval] {
         PlaybackChapters.merged(introDB: skipIntervals, chapters: chapterSkipIntervals)
+    }
+    /// The same segments for the views: the opening and the ending colored on
+    /// the timeline, their badges in the chapter list.
+    @Published private(set) var skipSegments: [SkipInterval] = []
+
+    private func publishSkipSegments() {
+        let latest = effectiveSkipIntervals
+        if latest != skipSegments { skipSegments = latest }
     }
     private var autoHiddenSkipIntervalId: String?
     /// Segments the user skipped during this playback item. Keep these hidden

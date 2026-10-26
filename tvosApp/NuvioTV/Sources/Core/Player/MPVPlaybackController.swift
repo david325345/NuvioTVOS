@@ -997,6 +997,10 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
     // Cached track lists
     var audioTracks: [PlaybackTrackInfo] = []
     var subtitleTracks: [PlaybackTrackInfo] = []
+    /// mpv's own chapter list (Matroska / MP4), read again when its length or
+    /// the duration changes.
+    private(set) var chapters: [PlaybackChapter] = []
+    private var chapterListKey = ""
 
     // State (polled from the view model every 250ms)
     var onFirstFrameReady: (() -> Void)?
@@ -1464,6 +1468,8 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
     }
 
     func loadFile(_ urlString: String) {
+        chapters = []
+        chapterListKey = ""
         resetStartupDisplayGateState(clearAnchor: true)
         firstFrameReadiness.reset()
         if didConfigureMPVRemoteCommands { teardownMPVRemoteCommands(); setupMPVRemoteCommandsIfNeeded() }
@@ -2202,6 +2208,8 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
     }
 
     func destroyPlayer() {
+        chapters = []
+        chapterListKey = ""
         firstFrameReadiness.reset()
 #if NUVIO_MPV_MEMORY_WATCHDOG && os(tvOS)
         memoryWatchdog.stop(event: "destroy")
@@ -2430,6 +2438,24 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
     func updateState() {
         refreshPlaybackState()
         refreshTracks()
+        refreshChapters()
+    }
+
+    private func refreshChapters() {
+        guard mpv != nil else { return }
+        let count = max(0, getInt("chapter-list/count"))
+        let reported = getDouble("duration")
+        let duration = reported.isFinite ? max(0, reported) : 0
+        let key = "\(count):\(Int(duration))"
+        guard key != chapterListKey else { return }
+        chapterListKey = key
+        let items: [(id: Int, name: String, start: Double, duration: Double)] = (0..<count).map { index in
+            (id: index,
+             name: getString("chapter-list/\(index)/title") ?? "",
+             start: getDouble("chapter-list/\(index)/time"),
+             duration: 0.0)
+        }
+        chapters = PlaybackChapters.chapters(from: items, totalDuration: duration)
     }
 
     private func refreshTracks() {
