@@ -1,0 +1,63 @@
+name: Build Gesture Lab IPA (fork)
+
+# Fork only. A small test app for Siri Remote gestures (GestureLab/):
+# unit tests of the gesture logic, then an unsigned IPA.
+on:
+  push:
+    branches: [gesture-lab]
+  workflow_dispatch:
+
+jobs:
+  core-tests:
+    runs-on: xcode-27
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: GestureCore tests
+        run: swift test --package-path GestureLab/GestureCore
+
+  ipa:
+    runs-on: xcode-27
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Xcode version
+        run: xcodebuild -version
+
+      - name: Install Tuist
+        run: brew install tuist
+
+      - name: Generate project
+        run: tuist generate --path GestureLab --no-open
+
+      - name: Build unsigned IPA
+        run: |
+          set -o pipefail
+          ARCHIVE="$RUNNER_TEMP/GestureLab.xcarchive"
+          report() {
+            grep -E "error: " build.log | sort -u | head -40 | while IFS= read -r line; do echo "::error::$line"; done
+          }
+          trap 'report' ERR
+          xcodebuild archive \
+            -workspace GestureLab/GestureLab.xcworkspace \
+            -scheme GestureLab \
+            -configuration Release \
+            -destination 'generic/platform=tvOS' \
+            -archivePath "$ARCHIVE" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee build.log | grep -E "error: |warning: .*GestureLab|ARCHIVE SUCCEEDED|ARCHIVE FAILED" || true
+          test -d "$ARCHIVE/Products/Applications/GestureLab.app"
+          mkdir -p build-ipa/Payload
+          cp -R "$ARCHIVE/Products/Applications/GestureLab.app" build-ipa/Payload/
+          (cd build-ipa && zip -qry GestureLab-unsigned.ipa Payload)
+          ls -lh build-ipa/GestureLab-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GestureLab-unsigned-ipa
+          path: build-ipa/GestureLab-unsigned.ipa
+          retention-days: 14
