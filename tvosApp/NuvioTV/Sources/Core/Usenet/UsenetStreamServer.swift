@@ -1,6 +1,19 @@
 import Foundation
 import Network
 
+/// One range request from the player, for timing seeks in the debug overlay.
+struct UsenetRangeRequest: Sendable, Equatable {
+    let id: Int
+    let at: Date
+    let offset: Int64
+    /// Took over as the playback read: a seek.
+    let isSeek: Bool
+    /// An index lookup near the end of the file.
+    let isTail: Bool
+    /// When its first bytes went out to the player.
+    var firstByteAt: Date?
+}
+
 /// Local HTTP range server on 127.0.0.1 that hands the player bytes of one
 /// Usenet file, the same way `TorrentStreamServer` does for torrents.
 actor UsenetStreamServer {
@@ -15,6 +28,9 @@ actor UsenetStreamServer {
     private var playbackGeneration = 0
     private var playbackConnection: NWConnection?
     private var lastOffset: Int64 = -1
+    private var requestLog: [UsenetRangeRequest] = []
+    private var nextRequestID = 0
+    private static let requestLogCapacity = 64
 
     private static let chunkBytes = 256 * 1024
 
@@ -179,6 +195,8 @@ actor UsenetStreamServer {
         }
         let generation = playbackGeneration
         if !isTailRead { lastOffset = range.lowerBound }
+        let requestID = noteRequest(offset: range.lowerBound, isSeek: isSeek, isTail: isTailRead)
+        var sentFirstBytes = false
 
         var position = range.lowerBound
         while position <= range.upperBound {
@@ -188,10 +206,35 @@ actor UsenetStreamServer {
             let chunk = try await session.read(offset: position, maxLength: wanted, updatesPlayhead: !isTailRead)
             guard !chunk.isEmpty else { throw NetworkIO.Failure.closed }
             try await NetworkIO.send(connection, chunk)
+            if !sentFirstBytes {
+                sentFirstBytes = true
+                noteFirstBytes(requestID)
+            }
             position += Int64(chunk.count)
             if connection === playbackConnection { lastOffset = position }
         }
         return true
+    }
+
+    // MARK: - Request log (debug overlay)
+
+    /// The player's range requests between two moments.
+    func requests(from start: Date, to end: Date) -> [UsenetRangeRequest] {
+        requestLog.filter { $0.at >= start && $0.at <= end }
+    }
+
+    private func noteRequest(offset: Int64, isSeek: Bool, isTail: Bool) -> Int {
+        nextRequestID += 1
+        requestLog.append(UsenetRangeRequest(id: nextRequestID, at: Date(), offset: offset, isSeek: isSeek, isTail: isTail))
+        if requestLog.count > Self.requestLogCapacity {
+            requestLog.removeFirst(requestLog.count - Self.requestLogCapacity)
+        }
+        return nextRequestID
+    }
+
+    private func noteFirstBytes(_ id: Int) {
+        guard let index = requestLog.lastIndex(where: { $0.id == id }) else { return }
+        requestLog[index].firstByteAt = Date()
     }
 
     private func sendHead(_ connection: NWConnection, _ status: String, _ headers: [String: String]) async throws {

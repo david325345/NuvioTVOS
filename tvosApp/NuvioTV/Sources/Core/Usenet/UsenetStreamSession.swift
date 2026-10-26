@@ -151,6 +151,34 @@ struct UsenetWaitLog: Sendable {
     }
 }
 
+/// Articles that arrived, by time: what a seek had to download (debug overlay).
+struct UsenetDownloadLog: Sendable {
+    struct Entry: Sendable, Equatable {
+        let at: Date
+        let bytes: Int
+    }
+
+    static let capacity = 4096
+
+    private(set) var entries: [Entry] = []
+
+    mutating func add(_ bytes: Int, at: Date) {
+        entries.append(Entry(at: at, bytes: bytes))
+        if entries.count > Self.capacity { entries.removeFirst(entries.count - Self.capacity) }
+    }
+
+    /// Bytes and articles that arrived between `start` and `end`.
+    func downloaded(from start: Date, to end: Date) -> (bytes: Int64, articles: Int) {
+        var bytes: Int64 = 0
+        var articles = 0
+        for entry in entries where entry.at >= start && entry.at <= end {
+            bytes += Int64(entry.bytes)
+            articles += 1
+        }
+        return (bytes, articles)
+    }
+}
+
 /// Serves byte ranges of the played file to the local HTTP server, fetching
 /// and decoding articles on demand with read-ahead and an in-memory cache.
 ///
@@ -180,6 +208,9 @@ actor UsenetStreamSession {
     /// on a seek.
     private var pinned: Set<Int> = []
     private var waits = UsenetWaitLog()
+    private var downloads = UsenetDownloadLog()
+    /// Bytes of video per second, once the player knows the duration.
+    private var bytesPerSecond: Double?
     /// Fetches still waiting for the speed cap or a connection, by article:
     /// one the player now needs sooner can be moved up.
     private var queued: [Int: QueuedFetch] = [:]
@@ -308,6 +339,18 @@ actor UsenetStreamSession {
     /// How long playback reads waited for articles between two moments.
     func waitedSeconds(from start: Date, to end: Date) -> TimeInterval {
         waits.waited(from: start, to: end, now: Date())
+    }
+
+    /// What arrived from Usenet between two moments.
+    func downloaded(from start: Date, to end: Date) -> (bytes: Int64, articles: Int) {
+        downloads.downloaded(from: start, to: end)
+    }
+
+    /// The video's length, from the player: sizes the read-ahead that the
+    /// speed cap never holds back in seconds of video.
+    func setDuration(_ seconds: Double) {
+        guard seconds.isFinite, seconds > 60, totalSize > 0 else { return }
+        bytesPerSecond = Double(totalSize) / seconds
     }
 
     func stop() async {
@@ -460,6 +503,7 @@ actor UsenetStreamSession {
         layouts[place.volume].learn(place.index, range: begin..<(begin + Int64(decoded.data.count)))
         store(index, decoded.data)
         counters.downloadedBytes += Int64(decoded.data.count)
+        downloads.add(decoded.data.count, at: Date())
         recordOutcome(missing: false)
     }
 
@@ -511,11 +555,26 @@ actor UsenetStreamSession {
     private var prefetchSlots: Int { max(1, pool.totalConnections - 1) }
 
     /// Read-ahead this close to the playhead is needed in a moment, so the
-    /// speed cap never holds it back.
+    /// speed cap never holds it back: `nextSeconds` of video once the bitrate
+    /// is known (dozens of articles in a 4K remux), never fewer than
+    /// `nextArticles`.
     static let nextArticles = 4
+    static let nextSeconds: Double = 4
 
-    static func priority(of index: Int, playhead: Int) -> UsenetConnectionPool.FetchPriority {
-        index > playhead && index - playhead <= nextArticles ? .next : .readAhead
+    static func nextWindow(bytesPerSecond: Double?, partSize: Int64, limit: Int) -> Int {
+        guard let bytesPerSecond, bytesPerSecond > 0 else { return nextArticles }
+        let articles = Int((bytesPerSecond * nextSeconds / Double(max(1, partSize))).rounded(.up))
+        return max(nextArticles, min(limit, articles))
+    }
+
+    private var nextWindow: Int {
+        Self.nextWindow(bytesPerSecond: bytesPerSecond, partSize: layouts.first?.partSize ?? 716_800,
+                        limit: readAheadSegments)
+    }
+
+    static func priority(of index: Int, playhead: Int,
+                         next: Int = UsenetStreamSession.nextArticles) -> UsenetConnectionPool.FetchPriority {
+        index > playhead && index - playhead <= next ? .next : .readAhead
     }
 
     private func noteRead(_ index: Int) {
@@ -532,7 +591,7 @@ actor UsenetStreamSession {
             // Read-ahead kept for the next articles may still wait for the
             // speed cap: they are needed now. (One already waiting for a
             // connection keeps its place in line.)
-            let nextLast = min(articleCount - 1, index + Self.nextArticles)
+            let nextLast = min(articleCount - 1, index + nextWindow)
             if index + 1 <= nextLast {
                 for next in (index + 1)...nextLast where prefetching.contains(next) {
                     if let promoted = promote(next, to: .next, onlyWhileWaitingForCap: true) {
@@ -555,7 +614,7 @@ actor UsenetStreamSession {
 
     private func startPrefetch(_ index: Int) {
         guard cache[index] == nil, inflight[index] == nil else { return }
-        let task = startFetch(index, priority: Self.priority(of: index, playhead: playhead))
+        let task = startFetch(index, priority: Self.priority(of: index, playhead: playhead, next: nextWindow))
         prefetching.insert(index)
         watchPrefetch(index, task)
     }

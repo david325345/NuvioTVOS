@@ -20,6 +20,8 @@ struct UsenetStreamStats: Equatable, Sendable {
     /// and how much of it playback reads waited for Usenet articles.
     var lastSeekSeconds: Double?
     var lastSeekUsenetSeconds: Double?
+    /// What that seek downloaded and asked for.
+    var lastSeekDetail: UsenetSeekDetail?
 
     var downloadRateFormatted: String {
         ByteCountFormatter.string(fromByteCount: Int64(downloadRate), countStyle: .file) + "/s"
@@ -61,8 +63,61 @@ struct UsenetStreamStats: Equatable, Sendable {
         ].joined(separator: " · ")
     }
 
+    /// HUD line 4: what the last timed seek downloaded, the player's range
+    /// requests (MB from the first one; "end" = index lookup) and how long
+    /// until the first bytes reached the player.
+    var seekDetailLine: String? {
+        guard let detail = lastSeekDetail else { return nil }
+        var parts = [
+            String(format: "%.0f MB", Double(detail.bytes) / 1_000_000),
+            "\(detail.articles) art",
+        ]
+        if !detail.requests.isEmpty {
+            let shown = detail.requests.prefix(Self.shownRequests).map { offset -> String in
+                guard let offset else { return "end" }
+                let mb = Double(offset) / 1_000_000
+                return abs(mb) < 0.5 ? "0" : String(format: "%+.0f", mb)
+            }
+            let more = detail.requests.count > Self.shownRequests ? ", …" : ""
+            let seeks = detail.seeks == 1 ? "1 seek" : "\(detail.seeks) seeks"
+            parts.append("req " + shown.joined(separator: ", ") + more + " MB (\(seeks))")
+        }
+        if let firstData = detail.firstData {
+            parts.append("1st data " + Self.seconds(firstData))
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    static let shownRequests = 5
+
     private static func seconds(_ value: Double) -> String {
         String(format: "%.1f s", value)
+    }
+}
+
+/// What one timed seek downloaded and what the player asked for meanwhile.
+struct UsenetSeekDetail: Equatable, Sendable {
+    var bytes: Int64
+    var articles: Int
+    /// Each range request's offset from the first playback request; nil for
+    /// index lookups near the end of the file.
+    var requests: [Int64?]
+    /// Requests that took over as a new playback read.
+    var seeks: Int
+    /// From the jump until the first bytes reached the player.
+    var firstData: Double?
+
+    init(bytes: Int64, articles: Int, requests log: [UsenetRangeRequest], requestedAt: Date) {
+        self.bytes = bytes
+        self.articles = articles
+        let base = log.first { !$0.isTail }?.offset
+        self.requests = log.map { request in
+            guard !request.isTail, let base else { return nil }
+            return request.offset - base
+        }
+        self.seeks = log.filter(\.isSeek).count
+        self.firstData = log.first { !$0.isTail && $0.firstByteAt != nil }?
+            .firstByteAt.map { max(0, $0.timeIntervalSince(requestedAt)) }
     }
 }
 
@@ -142,6 +197,8 @@ final class UsenetEngineManager: ObservableObject {
     private var seekTimer: UsenetSeekTimer?
     /// The user paused: a jump made meanwhile is timed from the play press.
     private var playbackPaused = false
+    /// The duration last passed to the session.
+    private var reportedDuration: Double = 0
 
     private init() {}
 
@@ -245,6 +302,7 @@ final class UsenetEngineManager: ObservableObject {
         activeStreamURL = nil
         seekTimer = nil
         playbackPaused = false
+        reportedDuration = 0
         isStreaming = false
         activeStats = UsenetStreamStats()
         damagedStreamURL = nil
@@ -280,7 +338,8 @@ final class UsenetEngineManager: ObservableObject {
     }
 
     /// A playback sample from the player; ends a running seek timing.
-    func observeSeekTiming(position: Double, playing: Bool) {
+    func observeSeekTiming(position: Double, playing: Bool, duration: Double = 0) {
+        reportDuration(duration)
         if playbackPaused {
             // Playing again without a play press we saw (another resume path).
             guard playing else { return }
@@ -295,18 +354,35 @@ final class UsenetEngineManager: ObservableObject {
         case .resumed(let resumedAt):
             seekTimer = nil
             guard let session else { return }
+            let server = self.server
             let requestedAt = timer.requestedAt
             let total = max(0, resumedAt.timeIntervalSince(requestedAt))
             let generation = self.generation
             Task { [weak self] in
                 let waited = await session.waitedSeconds(from: requestedAt, to: resumedAt)
+                let downloaded = await session.downloaded(from: requestedAt, to: resumedAt)
+                let requests = await server?.requests(from: requestedAt, to: resumedAt) ?? []
                 guard let self, self.generation == generation else { return }
                 var stats = self.activeStats
                 stats.lastSeekSeconds = total
                 stats.lastSeekUsenetSeconds = min(total, waited)
+                stats.lastSeekDetail = UsenetSeekDetail(
+                    bytes: downloaded.bytes,
+                    articles: downloaded.articles,
+                    requests: requests,
+                    requestedAt: requestedAt
+                )
                 self.activeStats = stats
             }
         }
+    }
+
+    /// Tells the session the video's length once (and when it changes), so
+    /// it can size the read-ahead in seconds of video.
+    private func reportDuration(_ duration: Double) {
+        guard let session, duration.isFinite, duration > 60, abs(duration - reportedDuration) > 1 else { return }
+        reportedDuration = duration
+        Task { await session.setDuration(duration) }
     }
 
     private func reportDamage(generation: Int) {

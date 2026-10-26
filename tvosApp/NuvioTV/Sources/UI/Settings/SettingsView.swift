@@ -15971,9 +15971,12 @@ private struct UsenetServerEditSheet: View {
                         )
                         SettingsStepperRow(
                             title: L10n.string("usenet_connections", fallback: "Connections"),
-                            subtitle: L10n.string("usenet_connections_subtitle", fallback: "How many your plan allows; 5 to 10 is plenty for streaming"),
+                            subtitle: L10n.string(
+                                "usenet_connections_subtitle",
+                                fallback: "How many your plan allows (up to 100). More connections make jumps in large 4K files faster."
+                            ),
                             value: $connections,
-                            range: 1...30,
+                            range: 1...UsenetServerConfig.maxConnectionsLimit,
                             step: 1,
                             suffix: "",
                             accentColor: accentColor

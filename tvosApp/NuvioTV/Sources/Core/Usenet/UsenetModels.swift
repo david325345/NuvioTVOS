@@ -16,10 +16,13 @@ struct UsenetServerConfig: Sendable, Equatable, Hashable {
         self.useSSL = useSSL
         self.username = username
         self.password = password
-        self.maxConnections = min(50, max(1, maxConnections))
+        self.maxConnections = min(Self.maxConnectionsLimit, max(1, maxConnections))
     }
 
     static let defaultConnections = 5
+    /// Some plans allow 50 or more; more connections make jumps in high
+    /// bitrate files faster.
+    static let maxConnectionsLimit = 100
 
     /// Parses a Stremio-style server URL: `nntps://user:pass@host:563/5`
     /// (`nntp://` for plain text; the path is the connection count).

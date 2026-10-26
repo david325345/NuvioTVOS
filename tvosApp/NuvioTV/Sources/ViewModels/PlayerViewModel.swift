@@ -3181,7 +3181,8 @@ class PlayerViewModel: ObservableObject {
         let latestTime = PlayerTime(current: rawCurrent, duration: rawDuration)
         UsenetEngineManager.shared.observeSeekTiming(
             position: rawCurrent,
-            playing: c.isPlayerPlaying && !c.isPlayerLoading
+            playing: c.isPlayerPlaying && !c.isPlayerLoading,
+            duration: rawDuration
         )
 
         // An unavailable duration is unknown, not evidence of a live stream.

@@ -768,6 +768,58 @@ final class UsenetSourceTests: XCTestCase {
         XCTAssertEqual(stuck.observe(position: 600, playing: false, now: t0 + 31), .cancelled)
     }
 
+    func testNextWindowCoversSecondsOfVideo() {
+        let part: Int64 = 716_800
+        // Unknown bitrate: the fixed few articles.
+        XCTAssertEqual(UsenetStreamSession.nextWindow(bytesPerSecond: nil, partSize: part, limit: 54), 4)
+        // A 60 GB, two-hour 4K remux: about 8.3 MB a second, 4 s ≈ 47 articles.
+        let remux = 59.55e9 / 7200
+        XCTAssertEqual(UsenetStreamSession.nextWindow(bytesPerSecond: remux, partSize: part, limit: 54), 47)
+        // Never past the read-ahead, never under the fixed few.
+        XCTAssertEqual(UsenetStreamSession.nextWindow(bytesPerSecond: remux, partSize: part, limit: 20), 20)
+        XCTAssertEqual(UsenetStreamSession.nextWindow(bytesPerSecond: 2e9 / 3600, partSize: part, limit: 54), 4)
+        XCTAssertEqual(UsenetStreamSession.priority(of: 57, playhead: 10, next: 47), .next)
+        XCTAssertEqual(UsenetStreamSession.priority(of: 58, playhead: 10, next: 47), .readAhead)
+    }
+
+    func testDownloadLogCountsArrivalsInTheWindow() {
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        var log = UsenetDownloadLog()
+        log.add(700_000, at: t0)
+        log.add(700_000, at: t0 + 1)
+        log.add(500_000, at: t0 + 2)
+        log.add(700_000, at: t0 + 5)
+        let window = log.downloaded(from: t0 + 0.5, to: t0 + 2)
+        XCTAssertEqual(window.bytes, 1_200_000)
+        XCTAssertEqual(window.articles, 2)
+        for step in 0..<(UsenetDownloadLog.capacity + 5) {
+            log.add(1, at: t0 + 10 + Double(step))
+        }
+        XCTAssertEqual(log.entries.count, UsenetDownloadLog.capacity)
+    }
+
+    func testSeekDetailShowsDownloadsAndRequests() {
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        let requests = [
+            UsenetRangeRequest(id: 1, at: t0 + 0.1, offset: 1_000_000_000, isSeek: true, isTail: false, firstByteAt: t0 + 0.6),
+            UsenetRangeRequest(id: 2, at: t0 + 0.8, offset: 982_000_000, isSeek: true, isTail: false),
+            UsenetRangeRequest(id: 3, at: t0 + 0.9, offset: 59_000_000_000, isSeek: false, isTail: true),
+            UsenetRangeRequest(id: 4, at: t0 + 1.2, offset: 1_000_200_000, isSeek: false, isTail: false),
+        ]
+        let detail = UsenetSeekDetail(bytes: 131_000_000, articles: 183, requests: requests, requestedAt: t0)
+        XCTAssertEqual(detail.requests, [0, -18_000_000, nil, 200_000])
+        XCTAssertEqual(detail.seeks, 2)
+        XCTAssertEqual(detail.firstData ?? -1, 0.6, accuracy: 0.001)
+
+        var stats = UsenetStreamStats()
+        XCTAssertNil(stats.seekDetailLine)
+        stats.lastSeekDetail = detail
+        XCTAssertEqual(stats.seekDetailLine, "131 MB · 183 art · req 0, -18, end, 0 MB (2 seeks) · 1st data 0.6 s")
+
+        stats.lastSeekDetail = UsenetSeekDetail(bytes: 40_000_000, articles: 56, requests: [], requestedAt: t0)
+        XCTAssertEqual(stats.seekDetailLine, "40 MB · 56 art")
+    }
+
     func testSeekLineSplitsUsenetAndPlayer() {
         var stats = UsenetStreamStats()
         XCTAssertNil(stats.seekLine)
@@ -888,7 +940,8 @@ final class UsenetServerTests: XCTestCase {
         XCTAssertEqual(plain.maxConnections, UsenetServerConfig.defaultConnections)
         XCTAssertEqual(UsenetServerConfig(url: "snews://news.example.com")?.port, 563)
         XCTAssertNil(UsenetServerConfig(url: "https://news.example.com"))
-        XCTAssertEqual(UsenetServerConfig(url: "nntps://h.example/500")?.maxConnections, 50)
+        XCTAssertEqual(UsenetServerConfig(url: "nntps://h.example/500")?.maxConnections, 100)
+        XCTAssertEqual(UsenetServerConfig(url: "nntps://h.example/50")?.maxConnections, 50)
     }
 
     func testServerURLRoundTrip() throws {

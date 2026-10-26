@@ -91,6 +91,9 @@ struct PlaybackDebugHUDView: View {
                     if let seek = usenet.seekLine {
                         hudRow(label: "NNTP seek", value: seek)
                     }
+                    if let detail = usenet.seekDetailLine {
+                        hudRow(label: "NNTP jump", value: detail)
+                    }
                 }
                 hudRow(label: "Server", value: info.server.isEmpty ? "--" : info.server)
                 fileRow
