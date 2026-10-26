@@ -112,8 +112,12 @@ private struct PadView: View {
                 let c = point(at)
                 let r: CGFloat = button == .select ? 46 : 30
                 let rect = CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)
-                let lit = model.pressed.contains(button)
-                context.fill(Path(ellipseIn: rect), with: .color(lit ? .orange.opacity(0.85) : .white.opacity(0.06)))
+                if model.pressed.contains(button) {
+                    context.fill(Path(ellipseIn: rect), with: .color(.orange.opacity(0.85)))
+                } else {
+                    // Outlines only, so an idle mark never looks like the finger.
+                    context.stroke(Path(ellipseIn: rect), with: .color(.white.opacity(0.18)), lineWidth: 2)
+                }
             }
             if model.pressed.contains(.playPause) {
                 context.draw(Text("▶︎❙❙").font(.system(size: 28, weight: .bold)).foregroundColor(.orange),

@@ -13,6 +13,7 @@ final class CaptureView: UIView {
 final class CaptureViewController: UIViewController {
     private let model: LabModel
     private let captureView = CaptureView()
+    private var touchOrigin: CGPoint?
 
     init(model: LabModel) {
         self.model = model
@@ -49,19 +50,32 @@ final class CaptureViewController: UIViewController {
     // MARK: Touches (the touch surface)
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        touchOrigin = touches.first?.location(in: view)
         model.touchBegan(at: touches.first?.timestamp ?? ProcessInfo.processInfo.systemUptime)
     }
 
+    /// UIKit's movement is relative and filtered: swipes are measured with it.
+    /// Absolute positions come from GameController.
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
-        // Positions come from GameController (absolute); UIKit's are relative.
+        reportTranslation(touches)
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        reportTranslation(touches)
+        touchOrigin = nil
         model.touchEnded(at: touches.first?.timestamp ?? ProcessInfo.processInfo.systemUptime)
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        touchOrigin = nil
         model.touchEnded(at: touches.first?.timestamp ?? ProcessInfo.processInfo.systemUptime, cancelled: true)
+    }
+
+    private func reportTranslation(_ touches: Set<UITouch>) {
+        guard let touch = touches.first, let origin = touchOrigin else { return }
+        let location = touch.location(in: view)
+        model.touchTranslated(dx: Double(location.x - origin.x), dy: Double(location.y - origin.y),
+                              at: touch.timestamp)
     }
 
     // MARK: Presses

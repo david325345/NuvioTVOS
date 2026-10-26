@@ -19,28 +19,36 @@ public enum DrawingMode: String, Codable, CaseIterable, Sendable {
 }
 
 /// Every threshold the recognizer uses, adjustable on the Tuning screen.
-/// Pad distances are in pad units: the surface is 2 wide (−1…1).
+/// Pad positions are in pad units (the surface is 2 wide, −1…1); swipe and
+/// tap movement in points of the system's own (UIKit) touch movement.
 public struct Tuning: Codable, Equatable, Sendable {
-    /// Longest gap between two clicks or taps that still makes a double.
-    public var doubleWindow: Double = 0.30
+    /// Longest gap from letting go of the first click (or tap) to the second
+    /// one that still makes a double.
+    public var doubleWindow: Double = 0.35
     /// A press held this long is a long press.
     public var longPress: Double = 0.50
-    /// Shortest swipe.
-    public var swipeMin: Double = 0.60
-    /// A swipe at least this long is a long swipe.
-    public var swipeLong: Double = 1.20
+    /// Shortest swipe, in UIKit points.
+    public var swipeMinPoints: Double = 250
+    /// A swipe at least this long (UIKit points) is a long swipe.
+    public var swipeLongPoints: Double = 900
     /// Slower movements are not swipes.
     public var swipeMaxDuration: Double = 1.0
     /// A light tap is shorter than this…
-    public var tapMaxDuration: Double = 0.25
-    /// …and moves less than this.
-    public var tapMaxMovement: Double = 0.15
+    public var tapMaxDuration: Double = 0.40
+    /// …and moves less than this (UIKit points).
+    public var tapMaxMovePoints: Double = 60
     /// Taps farther from the middle than this are left or right.
     public var sideThreshold: Double = 0.30
     /// Turn needed for a circle, in degrees.
     public var circleDegrees: Double = 300
     /// The finger must stay at least this far from the middle while circling.
     public var circleMinRadius: Double = 0.45
+    /// A touch this close (before or after) to a click belongs to the click:
+    /// clicking on the edge is no swipe and no tap.
+    public var clickGuard: Double = 0.15
+    /// Pad positions this long before the lift are dropped: they slide
+    /// towards the middle as the finger comes off.
+    public var liftTrim: Double = 0.07
     public var drawingMode: DrawingMode = .longPressThenDraw
     /// After the long press, how long the first stroke may wait.
     public var drawArmWindow: Double = 2.0

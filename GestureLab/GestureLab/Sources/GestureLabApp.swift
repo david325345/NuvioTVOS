@@ -193,22 +193,27 @@ struct TuningView: View {
 
     private static let seconds: (Double) -> String = { String(format: "%.2f s", $0) }
     private static let units: (Double) -> String = { String(format: "%.2f", $0) }
+    private static let points: (Double) -> String = { String(format: "%.0f b", $0) }
 
     private let parameters: [Parameter] = [
-        Parameter(id: "double", title: "Okno pro dvojklik", hint: "Jak dlouho se čeká na druhé kliknutí nebo dotyk",
-                  keyPath: \.doubleWindow, step: 0.05, range: 0.15...0.6, format: TuningView.seconds),
+        Parameter(id: "double", title: "Okno pro dvojklik", hint: "Od puštění prvního kliknutí (dotyku) do druhého",
+                  keyPath: \.doubleWindow, step: 0.05, range: 0.15...0.8, format: TuningView.seconds),
         Parameter(id: "long", title: "Dlouhý stisk", hint: "Od kdy je stisk dlouhý",
                   keyPath: \.longPress, step: 0.1, range: 0.3...1.5, format: TuningView.seconds),
-        Parameter(id: "swipeMin", title: "Nejkratší tah", hint: "Plocha má šířku 2,0",
-                  keyPath: \.swipeMin, step: 0.1, range: 0.2...1.4, format: TuningView.units),
-        Parameter(id: "swipeLong", title: "Dlouhý tah od", hint: "Tah aspoň takhle dlouhý je dlouhý",
-                  keyPath: \.swipeLong, step: 0.1, range: 0.6...1.9, format: TuningView.units),
+        Parameter(id: "swipeMin", title: "Nejkratší tah", hint: "Posun UIKit v bodech (je vidět v logu)",
+                  keyPath: \.swipeMinPoints, step: 25, range: 50...1500, format: TuningView.points),
+        Parameter(id: "swipeLong", title: "Dlouhý tah od", hint: "Posun UIKit v bodech",
+                  keyPath: \.swipeLongPoints, step: 50, range: 200...3000, format: TuningView.points),
         Parameter(id: "swipeTime", title: "Nejpomalejší tah", hint: "Pomalejší pohyb už není tah",
                   keyPath: \.swipeMaxDuration, step: 0.1, range: 0.3...2.0, format: TuningView.seconds),
         Parameter(id: "tapTime", title: "Dotyk nejdéle", hint: "Delší dotyk není ťuknutí",
                   keyPath: \.tapMaxDuration, step: 0.05, range: 0.1...0.6, format: TuningView.seconds),
-        Parameter(id: "tapMove", title: "Dotyk se smí posunout", hint: "Víc pohybu už není ťuknutí",
-                  keyPath: \.tapMaxMovement, step: 0.05, range: 0.05...0.6, format: TuningView.units),
+        Parameter(id: "tapMove", title: "Dotyk se smí posunout", hint: "Posun UIKit v bodech, víc už není ťuknutí",
+                  keyPath: \.tapMaxMovePoints, step: 10, range: 10...400, format: TuningView.points),
+        Parameter(id: "clickGuard", title: "Odstup od kliknutí", hint: "Dotyk takhle blízko kliknutí patří ke kliknutí",
+                  keyPath: \.clickGuard, step: 0.05, range: 0...0.5, format: TuningView.seconds),
+        Parameter(id: "liftTrim", title: "Ořez při zvednutí prstu", hint: "Polohy těsně před zvednutím se zahodí",
+                  keyPath: \.liftTrim, step: 0.01, range: 0...0.2, format: TuningView.seconds),
         Parameter(id: "side", title: "Hranice vlevo/vpravo", hint: "Dotyk dál od středu je vlevo nebo vpravo",
                   keyPath: \.sideThreshold, step: 0.05, range: 0.1...0.8, format: TuningView.units),
         Parameter(id: "circle", title: "Kroužek", hint: "Kolik stupňů je potřeba otočit",

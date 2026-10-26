@@ -159,16 +159,25 @@ final class LabModel: ObservableObject {
         isDrawing = false
         recordCandidate = nil
         timeline = LabTimeline()
+        // Drawing samples must work even with drawing turned off in Tuning.
+        var effective = tuning
+        if case .trainDigit = mode, effective.drawingMode == .off {
+            effective.drawingMode = .longPressThenDraw
+        }
+        recognizer.tuning = effective
         switch mode {
         case .test:
             headline = "Zkus gesto"
             detail = "Přiřazená gesta se projeví na časové ose dole. Menu = zpět."
+            if tuning.drawingMode == .off {
+                detail += " Kreslení číslic je vypnuté (Ladění)."
+            }
         case let .record(action):
             headline = "Udělej gesto pro „\(action.title)“"
             detail = "Play/Pause = uložit, další gesto = zkusit znovu, Menu = zrušit."
         case let .trainDigit(digit):
             headline = "Nakresli \(digit)"
-            detail = "Kreslení: \(tuning.drawingMode.title). Každá kresba se uloží jako vzor. Menu = zpět."
+            detail = "Podrž střed, až naskočí „Kresli…“, pusť a nakresli \(digit). Po chvíli bez dotyku se uloží. Menu = zpět."
         }
         updateDoublePolicy()
 
@@ -188,6 +197,7 @@ final class LabModel: ObservableObject {
         tickTimer?.invalidate()
         tickTimer = nil
         recognizer.reset()
+        recognizer.tuning = tuning
         captureController?.dismiss(animated: true)
         captureController = nil
     }
@@ -205,17 +215,23 @@ final class LabModel: ObservableObject {
     func touchBegan(at time: TimeInterval) {
         uikitTouchStart = time
         trail = []
+        fingerPoint = nil
         lastDrawing = isDrawing ? lastDrawing : []
         addLog("dotyk začal (UIKit)", .raw)
         feed(.touchBegan(time))
     }
 
     func touchEnded(at time: TimeInterval, cancelled: Bool = false) {
-        let length = uikitTouchStart.map { Int((time - $0) * 1000) }
         uikitTouchStart = nil
         fingerPoint = nil
-        addLog("dotyk skončil\(cancelled ? " (zrušen)" : "")" + (length.map { " po \($0) ms" } ?? ""), .raw)
+        if cancelled { addLog("dotyk zrušen systémem", .raw) }
+        if isDrawing { addLog("tah kresby hotov", .raw) }
         feed(.touchEnded(time))
+    }
+
+    /// The system's movement since the touch began, in points (y down, as UIKit gives it).
+    func touchTranslated(dx: Double, dy: Double, at time: TimeInterval) {
+        feed(.touchTranslation(time, dx: dx, dy: -dy))
     }
 
     func pressBegan(_ button: RemoteButton, at time: TimeInterval) {
@@ -242,9 +258,12 @@ final class LabModel: ObservableObject {
                 padTouchStart = time
                 addLog(String(format: "plocha: první bod (%.2f, %.2f)", x, y), .raw)
             }
-            fingerPoint = point
-            trail.append(point)
-            if trail.count > 240 { trail.removeFirst(trail.count - 240) }
+            // The dot and its path only while the system reports a touch.
+            if uikitTouchStart != nil {
+                fingerPoint = point
+                trail.append(point)
+                if trail.count > 240 { trail.removeFirst(trail.count - 240) }
+            }
             sampleTimes.append(time)
             sampleTimes.removeAll { time - $0 > 1 }
             sampleRate = Double(sampleTimes.count)
@@ -282,6 +301,8 @@ final class LabModel: ObservableObject {
             let delay = Int(((decidedTime - inputTime) * 1000).rounded())
             addLog("✓ \(gesture.title)" + (delay > 5 ? "  (+\(delay) ms čekání)" : ""), .gesture)
             handle(gesture, delay: delay)
+        case let .touchSummary(summary):
+            addLog(describe(summary), .raw)
         case .drawingStarted:
             isDrawing = true
             liveStrokes = []
@@ -359,6 +380,20 @@ final class LabModel: ObservableObject {
             headline = "Vzor \(digit) uložen (\(sampleCount(for: digit)))"
             detail = "Před uložením: \(best)"
         }
+    }
+
+    private func describe(_ summary: TouchSummary) -> String {
+        var text = "dotyk \(Int((summary.duration * 1000).rounded())) ms"
+        if let movement = summary.movement {
+            text += String(format: ", posun %.0f/%.0f", movement.dx, movement.dy)
+        } else {
+            text += ", bez posunu UIKit"
+        }
+        if let start = summary.padStart, let end = summary.padEnd {
+            text += String(format: ", plocha %.2f,%.2f→%.2f,%.2f", start.x, start.y, end.x, end.y)
+        }
+        if summary.withClick { text += ", s klikem" }
+        return text
     }
 
     private func describe(_ match: DigitMatch) -> String {
