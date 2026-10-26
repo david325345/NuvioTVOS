@@ -70,7 +70,7 @@ final class LabModel: ObservableObject {
     @Published private(set) var headline = ""
     @Published private(set) var detail = ""
     @Published private(set) var timeline = LabTimeline()
-    @Published private(set) var recordCandidate: Gesture?
+    @Published private(set) var recordCandidate: RemoteGesture?
     @Published private(set) var controllerName = "nenalezen"
     @Published private(set) var sampleRate: Double = 0
 
@@ -306,7 +306,7 @@ final class LabModel: ObservableObject {
         }
     }
 
-    private func handle(_ gesture: Gesture, delay: Int) {
+    private func handle(_ gesture: RemoteGesture, delay: Int) {
         let wait = delay > 5 ? " · čekání na druhé kliknutí \(delay) ms" : ""
         switch mode {
         case .test:

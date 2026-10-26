@@ -2,7 +2,7 @@ import XCTest
 @testable import GestureCore
 
 final class GestureRecognizerTests: XCTestCase {
-    private func gestures(_ outputs: [RecognizerOutput]) -> [Gesture] {
+    private func gestures(_ outputs: [RecognizerOutput]) -> [RemoteGesture] {
         outputs.compactMap {
             if case let .gesture(gesture, _, _) = $0 { return gesture }
             return nil

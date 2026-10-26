@@ -40,10 +40,10 @@ public enum DigitMode: String, Codable, CaseIterable, Sendable {
 }
 
 public struct GestureBinding: Codable, Hashable, Sendable {
-    public var gesture: Gesture
+    public var gesture: RemoteGesture
     public var action: LabAction
 
-    public init(gesture: Gesture, action: LabAction) {
+    public init(gesture: RemoteGesture, action: LabAction) {
         self.gesture = gesture
         self.action = action
     }
@@ -70,23 +70,23 @@ public struct GestureBindings: Codable, Equatable, Sendable {
         GestureBinding(gesture: .click(.playPause, .single), action: .playPause),
     ])
 
-    public func action(for gesture: Gesture) -> LabAction? {
+    public func action(for gesture: RemoteGesture) -> LabAction? {
         bindings.first { $0.gesture == gesture }?.action
     }
 
-    public func gesture(for action: LabAction) -> Gesture? {
+    public func gesture(for action: LabAction) -> RemoteGesture? {
         bindings.first { $0.action == action }?.gesture
     }
 
     /// The other action that already uses `gesture`, if any.
-    public func conflict(for gesture: Gesture, action: LabAction) -> LabAction? {
+    public func conflict(for gesture: RemoteGesture, action: LabAction) -> LabAction? {
         bindings.first { $0.gesture == gesture && $0.action != action }?.action
     }
 
     /// Gives `action` this gesture. The action that had it before loses it and
     /// is returned. Digits can't be bound (see `digitMode`).
     @discardableResult
-    public mutating func bind(_ gesture: Gesture, to action: LabAction) -> LabAction? {
+    public mutating func bind(_ gesture: RemoteGesture, to action: LabAction) -> LabAction? {
         if case .digit = gesture { return nil }
         let previous = conflict(for: gesture, action: action)
         bindings.removeAll { $0.action == action || $0.gesture == gesture }
@@ -99,7 +99,7 @@ public struct GestureBindings: Codable, Equatable, Sendable {
     }
 
     /// A single click or tap only has to wait for a second one when its double does something.
-    public func waitsForDouble(_ double: Gesture) -> Bool {
+    public func waitsForDouble(_ double: RemoteGesture) -> Bool {
         action(for: double) != nil
     }
 }

@@ -67,7 +67,7 @@ public enum PadSide: String, Codable, CaseIterable, Sendable {
 }
 
 /// Everything Gesture Lab tells apart.
-public enum Gesture: Hashable, Codable, Sendable {
+public enum RemoteGesture: Hashable, Codable, Sendable {
     case click(RemoteButton, ClickKind)
     case swipe(SwipeDirection, long: Bool)
     case tap(PadSide, double: Bool)
@@ -95,7 +95,7 @@ public enum Gesture: Hashable, Codable, Sendable {
 
     /// The double version of a single click or tap, which the single one has
     /// to wait for when it is bound.
-    public var doubled: Gesture? {
+    public var doubled: RemoteGesture? {
         switch self {
         case let .click(button, .single): return .click(button, .double)
         case let .tap(side, false): return .tap(side, double: true)

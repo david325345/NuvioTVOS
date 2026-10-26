@@ -24,7 +24,7 @@ public struct DrawingResult: Equatable, Sendable {
 public enum RecognizerOutput: Equatable, Sendable {
     /// `inputTime` is when the deciding input happened (release, lift);
     /// `decidedTime - inputTime` is the delay the recognizer added.
-    case gesture(Gesture, inputTime: TimeInterval, decidedTime: TimeInterval)
+    case gesture(RemoteGesture, inputTime: TimeInterval, decidedTime: TimeInterval)
     case drawingStarted
     case drawingFinished(DrawingResult)
     case drawingCancelled
@@ -37,7 +37,7 @@ public final class GestureRecognizer {
     public var digits: DigitRecognizer
     /// Whether a single click or tap has to wait `doubleWindow` for a second
     /// one: true when its double is in use. Otherwise singles come at once.
-    public var waitsForDouble: (Gesture) -> Bool
+    public var waitsForDouble: (RemoteGesture) -> Bool
 
     public private(set) var isDrawing = false
     /// Strokes of the drawing in progress (finished ones, then the current one).
@@ -75,7 +75,7 @@ public final class GestureRecognizer {
     private var drawState: DrawState = .idle
 
     public init(tuning: Tuning = Tuning(), digits: DigitRecognizer = DigitRecognizer(),
-                waitsForDouble: @escaping (Gesture) -> Bool = { _ in true }) {
+                waitsForDouble: @escaping (RemoteGesture) -> Bool = { _ in true }) {
         self.tuning = tuning
         self.digits = digits
         self.waitsForDouble = waitsForDouble
@@ -221,7 +221,7 @@ public final class GestureRecognizer {
             outputs.append(.gesture(.tap(pending.side, double: false), inputTime: pending.time, decidedTime: time))
             pendingTap = nil
         }
-        let single = Gesture.tap(side, double: false)
+        let single = RemoteGesture.tap(side, double: false)
         if let double = single.doubled, waitsForDouble(double) {
             pendingTap = (side, time)
         } else {
@@ -259,7 +259,7 @@ public final class GestureRecognizer {
             outputs.append(.gesture(.click(pending.button, .single), inputTime: pending.time, decidedTime: time))
             pendingClick = nil
         }
-        let single = Gesture.click(button, .single)
+        let single = RemoteGesture.click(button, .single)
         if let double = single.doubled, waitsForDouble(double) {
             pendingClick = (button, time)
         } else {

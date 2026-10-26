@@ -94,10 +94,10 @@ final class BindingTests: XCTestCase {
     }
 
     func testTitles() {
-        XCTAssertEqual(Gesture.click(.right, .double).title, "Dvojklik vpravo")
-        XCTAssertEqual(Gesture.swipe(.left, long: true).title, "Dlouhý tah doleva")
-        XCTAssertEqual(Gesture.tap(.left, double: true).title, "Dvojí dotyk vlevo")
-        XCTAssertEqual(Gesture.digit(3).title, "Číslice 3")
+        XCTAssertEqual(RemoteGesture.click(.right, .double).title, "Dvojklik vpravo")
+        XCTAssertEqual(RemoteGesture.swipe(.left, long: true).title, "Dlouhý tah doleva")
+        XCTAssertEqual(RemoteGesture.tap(.left, double: true).title, "Dvojí dotyk vlevo")
+        XCTAssertEqual(RemoteGesture.digit(3).title, "Číslice 3")
     }
 }
 
