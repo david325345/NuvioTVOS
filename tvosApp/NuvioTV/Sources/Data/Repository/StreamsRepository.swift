@@ -246,13 +246,14 @@ final class StreamsRepository: ObservableObject {
     nonisolated static let availabilityProbeTimeout: TimeInterval = 12
 
     /// One add-on's answer, fetched and decoded off the main actor. Message
-    /// rows ("no results", "configure me") don't count.
+    /// rows ("no results", "configure me") don't count. A 404 that still
+    /// lists streams counts (Peerflix answers so).
     nonisolated private static func hasPlayableStream(at url: URL) async -> Bool {
         var request = URLRequest(url: url)
         request.timeoutInterval = availabilityProbeTimeout
         request.setValue("Mozilla/5.0 (AppleTV; tvOS 18.0) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
         guard let (data, response) = try? await URLSession.shared.data(for: request),
-              let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode,
+              let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode || http.statusCode == 404,
               let decoded = try? JSONDecoder().decode(StreamAddonResponse.self, from: data) else { return false }
         return (decoded.streams ?? []).contains { raw in
             guard let stream = raw.toNuvioStream(addonName: "") else { return false }

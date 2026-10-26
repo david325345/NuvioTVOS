@@ -3407,6 +3407,9 @@ struct TvDetailsContent: View {
     @State private var progressRevision = 0
     @State private var scrollOffset: CGFloat = 0
     @State private var hasAppearedBefore = false
+    /// Opened from the calendar before the title listed that episode (a
+    /// cached copy shows first): focus it once the full title arrives.
+    @State private var calendarFocusPending = false
     @State private var reentryProgressRefreshPending = false
     @StateObject private var episodeCache = TvDetailsEpisodeCache()
 
@@ -4101,20 +4104,24 @@ struct TvDetailsContent: View {
                     hasAppearedBefore = true
                     // Opened from the calendar: start on that episode card
                     // instead of Play.
-                    calendarEpisodeKey = initialFocusEpisode
-                        .flatMap { $0.pick(from: episodePresentation.guide.episodes) }
-                        .map { TvEpisodeFocus.card($0.id) }
+                    calendarEpisodeKey = calendarEpisodeFocusKey(in: episodePresentation.guide.episodes)
+                    calendarFocusPending = initialFocusEpisode != nil && calendarEpisodeKey == nil
                 }
                 if let calendarEpisodeKey {
-                    focusedDetailsSection = .episodes
-                    restoreGeneration &+= 1
-                    restoreEpisodeKey = calendarEpisodeKey
-                    restoreEpisodeFocus(to: calendarEpisodeKey, generation: restoreGeneration)
+                    focusCalendarEpisode(calendarEpisodeKey)
                 } else {
                     focusedDetailsSection = .actions
                     DispatchQueue.main.async { actionFocus = .play }
                 }
                 scheduleBackgroundTrailer(for: meta)
+            }
+            .onChange(of: episodePresentation.guide.revision) { _, _ in
+                guard calendarFocusPending,
+                      let key = calendarEpisodeFocusKey(in: episodePresentation.guide.episodes) else { return }
+                calendarFocusPending = false
+                // Only while focus is still on Play, where the screen put it.
+                guard focusedDetailsSection == .actions, actionFocus == nil || actionFocus == .play else { return }
+                focusCalendarEpisode(key)
             }
             .onDisappear {
                 let seconds = trailerPlayer.currentTime().seconds
@@ -4236,6 +4243,20 @@ struct TvDetailsContent: View {
     /// delayed because the cards are unfocusable for a few frames while the
     /// picker fades, and the 1s clear is a safety net for a target that is gone
     /// (the season was switched, say) so the strip can't stay unfocusable.
+    /// The card of the episode the calendar asked for, when the title lists it.
+    private func calendarEpisodeFocusKey(in episodes: [NuvioVideo]) -> String? {
+        initialFocusEpisode
+            .flatMap { $0.pick(from: episodes) }
+            .map { TvEpisodeFocus.card($0.id) }
+    }
+
+    private func focusCalendarEpisode(_ key: String) {
+        focusedDetailsSection = .episodes
+        restoreGeneration &+= 1
+        restoreEpisodeKey = key
+        restoreEpisodeFocus(to: key, generation: restoreGeneration)
+    }
+
     private func restoreEpisodeFocus(to target: String, generation: Int) {
         for delay in [0.12, 0.45] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
