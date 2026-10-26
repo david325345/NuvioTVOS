@@ -102,6 +102,35 @@ private final class ProbeLog {
     var asked: [String] = []
 }
 
+/// Holds the add-on's answer back until the test lets it through.
+private final class ProbeGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var waiter: CheckedContinuation<Void, Never>?
+    private var isOpen = false
+
+    func wait() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            lock.lock()
+            if isOpen {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                waiter = continuation
+                lock.unlock()
+            }
+        }
+    }
+
+    func open() {
+        lock.lock()
+        isOpen = true
+        let waiting = waiter
+        waiter = nil
+        lock.unlock()
+        waiting?.resume()
+    }
+}
+
 @MainActor
 final class CalendarEntryStatusModelTests: XCTestCase {
     func testWatchedUsesTheAddonsEpisode() async {
@@ -169,9 +198,15 @@ final class CalendarEntryStatusModelTests: XCTestCase {
     }
 
     func testMovingOnClearsUnfinishedChecks() async {
+        // The add-on answers only when the test says so, so the check is
+        // still running when the cursor moves on.
+        let gate = ProbeGate()
         let model = CalendarEntryStatusModel(
             loadMeta: { _, _ in nil },
-            probe: { _, _ in true },
+            probe: { _, _ in
+                await gate.wait()
+                return true
+            },
             isWatched: { _, _, _ in false },
             availabilityDelay: .zero
         )
@@ -185,6 +220,7 @@ final class CalendarEntryStatusModelTests: XCTestCase {
         XCTAssertEqual(model.availability[digital.id], .checking)
         model.cancelAvailability()
         XCTAssertNil(model.availability[digital.id])
+        gate.open()
         for _ in 0..<200 { await Task.yield() }
         XCTAssertNil(model.availability[digital.id], "a cancelled check doesn't write its answer")
     }
