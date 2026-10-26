@@ -1667,6 +1667,19 @@ enum HybridSeekThumbnailPolicy {
     static let coarseIntervalSeconds: Double = 60
     static let maximumCoarseSamples = 120
     static let maximumPreviewTimeError: Double = 0.5
+    /// How far before the requested time the keyframe of a fast preview may be. While the
+    /// user is moving, that keyframe is shown at once; the exact frame follows when they stop.
+    static let maximumKeyframePreviewLead: Double = 12
+
+    /// Whether a decoded still may be shown for `requestedSeconds`: exact requests within
+    /// `maximumPreviewTimeError`, fast ones also from the keyframe before it.
+    static func acceptsPreview(actualSeconds: Double?, requestedSeconds: Double, precise: Bool) -> Bool {
+        guard let actualSeconds, actualSeconds.isFinite, requestedSeconds.isFinite else { return false }
+        if abs(actualSeconds - requestedSeconds) <= maximumPreviewTimeError { return true }
+        guard !precise else { return false }
+        return actualSeconds < requestedSeconds
+            && requestedSeconds - actualSeconds <= maximumKeyframePreviewLead
+    }
 
     static func fineBucket(for seconds: Double) -> Int? {
         guard seconds.isFinite, seconds >= 0 else { return nil }
@@ -2706,15 +2719,17 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
         return containers.contains { knownContainers.contains(String($0).trimmingCharacters(in: .whitespaces)) }
     }
 
-    static func acceptsBoundedScrubFrame(_ frame: ScrubFrame?, at seconds: Double) -> Bool {
-        guard let frame, seconds.isFinite, frame.actualSeconds.isFinite,
-              abs(frame.actualSeconds - seconds) <= HybridSeekThumbnailPolicy.maximumPreviewTimeError else { return false }
+    static func acceptsBoundedScrubFrame(_ frame: ScrubFrame?, at seconds: Double, precise: Bool = true) -> Bool {
+        guard let frame, seconds.isFinite,
+              HybridSeekThumbnailPolicy.acceptsPreview(
+                actualSeconds: frame.actualSeconds, requestedSeconds: seconds, precise: precise) else { return false }
         return frame.validRange?.contains(seconds) ?? true
     }
 
     @MainActor
     static func boundedProgressiveScrubFrame(
         at seconds: Double,
+        precise: Bool = true,
         resident: @MainActor () async -> ScrubFrame?,
         ownsSource: @MainActor () -> Bool,
         cleanup: @MainActor () async -> Void,
@@ -2727,7 +2742,7 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
         await cleanup()
         // Superseded requests on the same source still drain their decoder, then stop before publication/fallback.
         guard isCurrent() else { return nil }
-        if acceptsBoundedScrubFrame(frame, at: seconds), let frame {
+        if acceptsBoundedScrubFrame(frame, at: seconds, precise: precise), let frame {
             return BoundedStillFrame(image: frame.image, actualSeconds: frame.actualSeconds)
         }
         return await fallback()
@@ -3136,12 +3151,16 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
                                              cancellation: cancellation) else { return nil }
         if let cached { return cached }
         if usesBoundedProgressiveScrubPreview(sourceContext) {
+            // A fast request (precise: false) takes the keyframe before the target: one
+            // frame decoded instead of the whole stretch up to it. The exact frame is
+            // the follow-up request once the user stops moving.
             let still = await Self.boundedProgressiveScrubFrame(
                 at: seconds,
+                precise: precise,
                 resident: {
                     await engine.scrubPreviewFrame(
                         atSeconds: seconds,
-                        refined: true,
+                        refined: precise,
                         maxWidth: maxWidth,
                         isCancelled: { cancellation.isCancelled })
                 },
@@ -3164,6 +3183,7 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
                         sourceContext: sourceContext,
                         atSeconds: seconds,
                         maxWidth: maxWidth,
+                        precise: precise,
                         cancellation: cancellation,
                         isCurrent: {
                             self.isCurrentScrubThumbnailRequest(
@@ -3175,8 +3195,11 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
                                                  providerGeneration: providerGeneration,
                                                  cancellation: cancellation),
                   let still, let actual = still.actualSeconds, actual.isFinite else { return nil }
+            // A keyframe some seconds off the target stays in memory only: the disk lookup
+            // matches within seconds and would hand it to the exact request that follows.
             await hybridThumbnailIndex.store(
-                still.image, seconds: actual, kind: .fine, generation: generation)
+                still.image, seconds: actual, kind: .fine, generation: generation,
+                persistToDisk: abs(actual - seconds) <= HybridSeekThumbnailPolicy.maximumPreviewTimeError)
             guard isCurrentScrubThumbnailRequest(requestID, generation: generation,
                                                  providerGeneration: providerGeneration,
                                                  cancellation: cancellation) else { return nil }

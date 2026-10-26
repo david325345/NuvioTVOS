@@ -117,6 +117,19 @@ final class PlaybackChaptersTests: XCTestCase {
         XCTAssertNil(PlaybackChapters.kind(of: chapter(2, "Chapter 3", 150, 600), segments: introDB))
     }
 
+    func testThumbnailIsAFewSecondsIntoTheChapter() {
+        XCTAssertEqual(PlaybackChapters.thumbnailTime(for: chapter(0, "A", 100, 400)), 105)
+        XCTAssertEqual(PlaybackChapters.thumbnailTime(for: chapter(1, "B", 100, 108)), 102)
+        XCTAssertEqual(PlaybackChapters.thumbnailTime(for: chapter(2, "C", 100, 100)), 100)
+    }
+
+    func testThumbnailsLoadFromThePlayingChapterOutward() {
+        XCTAssertEqual(PlaybackChapters.thumbnailOrder(count: 6, from: 2), [2, 3, 1, 4, 0, 5])
+        XCTAssertEqual(PlaybackChapters.thumbnailOrder(count: 4, from: 0), [0, 1, 2, 3])
+        XCTAssertEqual(PlaybackChapters.thumbnailOrder(count: 3, from: 9), [2, 1, 0])
+        XCTAssertEqual(PlaybackChapters.thumbnailOrder(count: 0, from: 0), [])
+    }
+
     func testIntroDBComesFirstAndChaptersFillTheRest() {
         let introDB = [SkipInterval(startTime: 80, endTime: 168, type: "intro", provider: "introdb")]
         let fromChapters = [

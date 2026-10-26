@@ -475,6 +475,8 @@ struct PlayerChaptersPanel: View {
     @ObservedObject var viewModel: PlayerViewModel
     /// The playhead, so the playing chapter and its progress stay current.
     @ObservedObject var clock: PlaybackClock
+    /// Chapter thumbnails as they load (trial).
+    @ObservedObject var thumbnails: ChapterThumbnailStore
     @FocusState private var focusedID: Int?
 
     @AppStorage(SettingsKey.cardCornerRadius) private var cardCornerRadiusSetting = AppCardStyle.defaultCornerRadiusRaw
@@ -483,8 +485,17 @@ struct PlayerChaptersPanel: View {
         AppCardStyle.cornerRadius(for: cardCornerRadiusSetting, fallback: 18)
     }
 
+    private var thumbCornerRadius: CGFloat {
+        max(4, AppCardStyle.cornerRadius(for: cardCornerRadiusSetting, fallback: 16) * 0.6)
+    }
+
     private var chapters: [PlaybackChapter] {
         viewModel.chapters
+    }
+
+    /// Thumbnails only when the player can make stills for this stream.
+    private var showsThumbnails: Bool {
+        viewModel.canShowChapterThumbnails
     }
 
     private var currentIndex: Int? {
@@ -544,6 +555,10 @@ struct PlayerChaptersPanel: View {
                 .focusSection()
                 .onAppear {
                     scrollToTarget(proxy: proxy)
+                    viewModel.startChapterThumbnails()
+                }
+                .onDisappear {
+                    viewModel.stopChapterThumbnails()
                 }
             }
         }
@@ -570,18 +585,22 @@ struct PlayerChaptersPanel: View {
         let secondary: Color = isFocused ? .black.opacity(0.55) : .white.opacity(0.55)
 
         return HStack(alignment: .center, spacing: 16) {
-            Group {
-                if isCurrent {
-                    Image(systemName: "play.fill")
-                        .font(.system(size: 20, weight: .bold))
-                        .foregroundStyle(primary)
-                } else {
-                    Text("\(index + 1)")
-                        .font(.system(size: 22, weight: .bold).monospacedDigit())
-                        .foregroundStyle(secondary)
+            if showsThumbnails {
+                chapterThumbnail(chapter, index: index, isCurrent: isCurrent)
+            } else {
+                Group {
+                    if isCurrent {
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 20, weight: .bold))
+                            .foregroundStyle(primary)
+                    } else {
+                        Text("\(index + 1)")
+                            .font(.system(size: 22, weight: .bold).monospacedDigit())
+                            .foregroundStyle(secondary)
+                    }
                 }
+                .frame(width: 40, alignment: .center)
             }
-            .frame(width: 40, alignment: .center)
 
             VStack(alignment: .leading, spacing: 6) {
                 Text(PlaybackChapters.displayName(chapter, index: index))
@@ -645,5 +664,44 @@ struct PlayerChaptersPanel: View {
         )
         .scaleEffect(isFocused ? 1.02 : 1)
         .animation(.easeOut(duration: 0.14), value: isFocused)
+    }
+
+    /// 16:9 still with the chapter number (▶ on the playing one) in the corner;
+    /// a plain tile until the still arrives.
+    private func chapterThumbnail(_ chapter: PlaybackChapter, index: Int, isCurrent: Bool) -> some View {
+        let image = thumbnails.images[chapter.id]
+        return ZStack(alignment: .bottomLeading) {
+            Color.white.opacity(0.08)
+            if let image {
+                Image(decorative: image, scale: 1)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 160, height: 90)
+                    .transition(.opacity)
+            } else {
+                Image(systemName: "photo")
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.25))
+                    .frame(width: 160, height: 90)
+            }
+
+            Group {
+                if isCurrent {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 13, weight: .bold))
+                } else {
+                    Text("\(index + 1)")
+                        .font(.system(size: 15, weight: .bold).monospacedDigit())
+                }
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(Color.black.opacity(0.6)))
+            .padding(6)
+        }
+        .frame(width: 160, height: 90)
+        .clipShape(RoundedRectangle(cornerRadius: thumbCornerRadius, style: .continuous))
+        .animation(.easeOut(duration: 0.2), value: image != nil)
     }
 }

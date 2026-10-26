@@ -486,11 +486,14 @@ enum PlaybackThumbnailSourceFallback {
         maxInputBytes: 64 * 1024 * 1024, maxPackets: 2_048,
         maxPacketBytes: 8 * 1024 * 1024, timeBudget: 2)
 
+    /// `precise: false` is the fast preview while the user is moving: the keyframe before
+    /// `seconds`, read and decoded alone, instead of everything from it up to `seconds`.
     @MainActor
     static func boundedSnapshot(
         sourceContext: PlaybackThumbnailSourceContext,
         atSeconds seconds: Double,
         maxWidth: Int,
+        precise: Bool = true,
         cancellation: PlaybackThumbnailRequestCancellation,
         isCurrent: @MainActor () -> Bool,
         requiredDolbyVisionReshaping: Bool = false,
@@ -516,13 +519,14 @@ enum PlaybackThumbnailSourceFallback {
                 reader: reader, allowsHardwareDecode: !requiredDolbyVisionReshaping,
                 yieldWhile: yieldWhile)
             let still = await boundedSnapshot(
-                extractor, seconds: seconds, maxWidth: maxWidth, limits: limits ?? cacheLimits,
+                extractor, seconds: seconds, maxWidth: maxWidth, keyframeOnly: !precise,
+                limits: limits ?? cacheLimits,
                 cancellation: stage, requiredDolbyVisionReshaping: requiredDolbyVisionReshaping,
                 yieldWhile: yieldWhile)
             cancellation.finishStage(stage)
             reader.close()
             guard isCurrent(), !cancellation.isCancelled, yieldWhile?() != true else { return nil }
-            if isAccurate(still, requestedSeconds: seconds) { return still }
+            if isAccurate(still, requestedSeconds: seconds, precise: precise) { return still }
         } else if isCacheProxyURL(playbackURL) {
             // A loopback cache URL is usable only while its exact active server descriptor exists.
             return nil
@@ -536,12 +540,13 @@ enum PlaybackThumbnailSourceFallback {
             allowsHardwareDecode: !requiredDolbyVisionReshaping,
             yieldWhile: yieldWhile)
         let still = await boundedSnapshot(
-            extractor, seconds: seconds, maxWidth: maxWidth, limits: limits ?? sourceLimits,
+            extractor, seconds: seconds, maxWidth: maxWidth, keyframeOnly: !precise,
+            limits: limits ?? sourceLimits,
             cancellation: stage, requiredDolbyVisionReshaping: requiredDolbyVisionReshaping,
             yieldWhile: yieldWhile)
         cancellation.finishStage(stage)
         guard isCurrent(), !cancellation.isCancelled, yieldWhile?() != true,
-              isAccurate(still, requestedSeconds: seconds) else { return nil }
+              isAccurate(still, requestedSeconds: seconds, precise: precise) else { return nil }
         return still
     }
 
@@ -550,6 +555,7 @@ enum PlaybackThumbnailSourceFallback {
         _ extractor: FrameExtractor,
         seconds: Double,
         maxWidth: Int,
+        keyframeOnly: Bool,
         limits: ProbeLimits,
         cancellation: ProbeCancellation,
         requiredDolbyVisionReshaping: Bool,
@@ -562,16 +568,16 @@ enum PlaybackThumbnailSourceFallback {
             limits: limits,
             cancellation: cancellation,
             relativeToPresentationStart: true,
-            requiredDolbyVisionReshaping: requiredDolbyVisionReshaping
+            requiredDolbyVisionReshaping: requiredDolbyVisionReshaping,
+            keyframeOnly: keyframeOnly
         )
         await extractor.shutdown()
         return result
     }
 
-    static func isAccurate(_ still: BoundedStillFrame?, requestedSeconds: Double) -> Bool {
-        guard let actualSeconds = still?.actualSeconds, actualSeconds.isFinite,
-              requestedSeconds.isFinite else { return false }
-        return abs(actualSeconds - requestedSeconds) <= HybridSeekThumbnailPolicy.maximumPreviewTimeError
+    static func isAccurate(_ still: BoundedStillFrame?, requestedSeconds: Double, precise: Bool = true) -> Bool {
+        HybridSeekThumbnailPolicy.acceptsPreview(
+            actualSeconds: still?.actualSeconds, requestedSeconds: requestedSeconds, precise: precise)
     }
 
     static func isKnownHLSURL(_ url: URL?) -> Bool {
@@ -697,6 +703,7 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
                 await self.generateScrubThumbnail(
                     atSeconds: seconds,
                     maxWidth: maxWidth,
+                    precise: precise,
                     duration: duration,
                     generation: generation,
                     requestID: requestID,
@@ -730,6 +737,7 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
     private func generateScrubThumbnail(
         atSeconds seconds: Double,
         maxWidth: Int,
+        precise: Bool,
         duration: Double,
         generation: UInt64,
         requestID: UInt64,
@@ -765,6 +773,7 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
             sourceContext: sourceContext,
             atSeconds: seconds,
             maxWidth: maxWidth,
+            precise: precise,
             cancellation: cancellation,
             isCurrent: {
                 self.isCurrentScrubThumbnailRequest(
@@ -775,13 +784,14 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
                                              providerGeneration: providerGeneration,
                                              cancellation: cancellation) else { return nil }
         return await storePreviewIfCurrent(
-            still, requestedSeconds: seconds, generation: generation,
+            still, requestedSeconds: seconds, precise: precise, generation: generation,
             requestID: requestID, providerGeneration: providerGeneration, cancellation: cancellation)
     }
 
     private func storePreviewIfCurrent(
         _ still: BoundedStillFrame?,
         requestedSeconds: Double,
+        precise: Bool = true,
         generation: UInt64,
         requestID: UInt64,
         providerGeneration: UInt64,
@@ -789,13 +799,15 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
     ) async -> CGImage? {
         guard let still,
               let actualSeconds = still.actualSeconds,
-              actualSeconds.isFinite,
-              abs(actualSeconds - requestedSeconds) <= HybridSeekThumbnailPolicy.maximumPreviewTimeError,
+              HybridSeekThumbnailPolicy.acceptsPreview(
+                actualSeconds: actualSeconds, requestedSeconds: requestedSeconds, precise: precise),
               isCurrentScrubThumbnailRequest(requestID, generation: generation,
                                              providerGeneration: providerGeneration,
                                              cancellation: cancellation) else { return nil }
+        // A keyframe some seconds off the target stays in memory only (see the Aether path).
         await hybridThumbnailIndex.store(
-            still.image, seconds: actualSeconds, kind: .fine, generation: generation)
+            still.image, seconds: actualSeconds, kind: .fine, generation: generation,
+            persistToDisk: abs(actualSeconds - requestedSeconds) <= HybridSeekThumbnailPolicy.maximumPreviewTimeError)
         guard isCurrentScrubThumbnailRequest(requestID, generation: generation,
                                              providerGeneration: providerGeneration,
                                              cancellation: cancellation) else { return nil }

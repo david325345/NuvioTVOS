@@ -212,11 +212,14 @@ public actor FrameExtractor {
     /// analysis, seek and decode. The controlled reader counts every input byte,
     /// the monotonic deadline interrupts I/O, and a late result is discarded.
     /// Unlike snapshot(), this never uses a previously opened or cached context.
+    /// `keyframeOnly` returns the keyframe the seek lands on instead of decoding forward to
+    /// `seconds`: one frame read and decoded, for a fast first preview while the user is moving.
     public func boundedSnapshot(at seconds: Double, maxSize: CGSize,
                                 limits: ProbeLimits, cancellation: ProbeCancellation,
                                 relativeToPresentationStart: Bool = false,
                                 firstFrameOffset: Double? = nil,
-                                requiredDolbyVisionReshaping: Bool = false) async -> BoundedStillFrame? {
+                                requiredDolbyVisionReshaping: Bool = false,
+                                keyframeOnly: Bool = false) async -> BoundedStillFrame? {
         let yieldWhile = self.yieldWhile
         guard !isShutDown, !isClosingAuxiliaryContext, seconds.isFinite, !Task.isCancelled, !cancellation.isCancelled,
               firstFrameOffset.map({ $0.isFinite && $0 >= 0 }) ?? true,
@@ -237,8 +240,8 @@ public actor FrameExtractor {
                 guard !token.isCancelled, !cancellation.isCancelled else { return nil }
                 do { try context.ensureOpen(control: control) } catch { return nil }
                 var actual: Double?
-                guard let image = context.decodeFrame(at: seconds, mode: .snapshot,
-                    targetWidth: 0, maxSize: maxSize,
+                guard let image = context.decodeFrame(at: seconds, mode: keyframeOnly ? .thumbnail : .snapshot,
+                    targetWidth: keyframeOnly ? max(1, Int(maxSize.width)) : 0, maxSize: maxSize,
                     afterFirstFrame: firstFrameOffset,
                     relativeToPresentationStart: relativeToPresentationStart,
                     requiredDolbyVisionReshaping: requiredDolbyVisionReshaping,

@@ -207,7 +207,14 @@ class PlayerViewModel: ObservableObject {
     @Published var subtitles: [SubtitleTrack] = []
     @Published var audioTracks: [AudioTrack] = []
     /// Container chapters of the playing file (empty when it has none).
-    @Published var chapters: [PlaybackChapter] = []
+    @Published var chapters: [PlaybackChapter] = [] {
+        didSet {
+            if chapters != oldValue { resetChapterThumbnails() }
+        }
+    }
+    /// Thumbnails for the Chapters panel (trial): loaded while the panel is open.
+    let chapterThumbnails = ChapterThumbnailStore()
+    private var chapterThumbnailTask: Task<Void, Never>?
     @Published var playbackSpeed: PlaybackSpeed = .normal
     @Published var seekStepSeconds: Int = PlayerSeekSettings.current
     @Published var qualities: [QualityOption] = [.auto]
@@ -4330,6 +4337,54 @@ class PlayerViewModel: ObservableObject {
 
     func seekToChapter(_ chapter: PlaybackChapter) {
         seek(to: chapter.startSeconds)
+    }
+
+    /// Whether the Chapters panel can show thumbnails: seek previews are on and
+    /// the player can make stills for this stream.
+    var canShowChapterThumbnails: Bool {
+        guard isSeekPreviewEnabled, let provider = scrubThumbnailProvider else { return false }
+        return provider.supportsScrubThumbnails
+    }
+
+    /// Loads the missing chapter thumbnails one at a time, the playing chapter
+    /// first and then outward. Each is the keyframe a few seconds into the
+    /// chapter, from the same cache and still path as the seek preview.
+    func startChapterThumbnails() {
+        chapterThumbnailTask?.cancel()
+        chapterThumbnailTask = nil
+        guard canShowChapterThumbnails, let provider = scrubThumbnailProvider, !chapters.isEmpty else { return }
+        let chapters = self.chapters
+        let order = PlaybackChapters.thumbnailOrder(count: chapters.count, from: currentChapterIndex ?? 0)
+        let duration = playbackDuration
+        let store = chapterThumbnails
+        chapterThumbnailTask = Task { @MainActor [weak self, weak provider] in
+            for index in order {
+                guard !Task.isCancelled, let self, let provider,
+                      self.chapters == chapters, !self.isScrubbing, !self.isHoldingSeek else { return }
+                let chapter = chapters[index]
+                guard store.images[chapter.id] == nil else { continue }
+                let seconds = PlaybackChapters.thumbnailTime(for: chapter)
+                var image = await provider.cachedScrubThumbnail(atSeconds: seconds, duration: duration)
+                if image == nil {
+                    guard !Task.isCancelled else { return }
+                    image = await provider.scrubThumbnail(atSeconds: seconds, maxWidth: 320, precise: false)
+                }
+                guard !Task.isCancelled, self.chapters == chapters else { return }
+                if let image { store.set(image, for: chapter.id) }
+                // Leave room for playback between stills.
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
+    }
+
+    func stopChapterThumbnails() {
+        chapterThumbnailTask?.cancel()
+        chapterThumbnailTask = nil
+    }
+
+    private func resetChapterThumbnails() {
+        stopChapterThumbnails()
+        chapterThumbnails.reset()
     }
 
     func seek(to seconds: Double) {
