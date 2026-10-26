@@ -20,8 +20,9 @@ struct UsenetServerConfig: Sendable, Equatable, Hashable {
     }
 
     static let defaultConnections = 5
-    /// Some plans allow 50 or more; more connections make jumps in high
-    /// bitrate files faster.
+    /// Some plans allow 50 or more. More connections help only until the
+    /// line is full; beyond that each article arrives later and jumps slow
+    /// down (see the guide under the Connections setting).
     static let maxConnectionsLimit = 100
 
     /// Parses a Stremio-style server URL: `nntps://user:pass@host:563/5`
