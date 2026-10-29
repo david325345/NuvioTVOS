@@ -94,7 +94,9 @@ jobs:
             -only-testing:NuvioTVTests/SeekPreviewLaneTests \
             -only-testing:NuvioTVTests/PlayerControlsSettingsTests \
             -only-testing:NuvioTVTests/UsenetPoolTests \
-            -only-testing:NuvioTVTests/PlaybackChaptersTests
+            -only-testing:NuvioTVTests/PlaybackChaptersTests \
+            -only-testing:NuvioTVTests/TopShelfLayoutTests \
+            -only-testing:NuvioTVTests/TopShelfArtworkPrunerTests
       - name: Seek preview test results
         if: always()
         env:
