@@ -57,7 +57,8 @@ jobs:
           trap 'report' ERR
           bash scripts/test-tvos.sh \
             -only-testing:NuvioTVTests/SeekPreviewLaneTests \
-            -only-testing:NuvioTVTests/PlayerControlsSettingsTests
+            -only-testing:NuvioTVTests/PlayerControlsSettingsTests \
+            -only-testing:NuvioTVTests/UsenetPoolTests
       - name: Seek preview test results
         if: always()
         env:
@@ -69,16 +70,16 @@ jobs:
             def walk(node, suite, out)
               name = node["name"].to_s
               suite = name if node["nodeType"] == "Test Suite"
-              if node["nodeType"] == "Test Case" && suite == "SeekPreviewLaneTests"
-                out << [name, node["result"]]
+              if node["nodeType"] == "Test Case" && ["SeekPreviewLaneTests", "UsenetPoolTests"].include?(suite)
+                out << ["#{suite}.#{name}", node["result"]]
               end
               (node["children"] || []).each { |child| walk(child, suite, out) }
             end
             out = []
             JSON.parse(File.read("tests.json")).fetch("testNodes", []).each { |n| walk(n, nil, out) }
             passed = out.count { |_, r| r == "Passed" }
-            puts "::notice::SeekPreviewLaneTests #{passed}/#{out.size} passed"
-            out.reject { |_, r| r == "Passed" }.each { |n, r| puts "::error::SeekPreviewLaneTests #{n}: #{r}" }
+            puts "::notice::preview and pool tests #{passed}/#{out.size} passed"
+            out.reject { |_, r| r == "Passed" }.each { |n, r| puts "::error::#{n}: #{r}" }
           '
 
   all-tests:
