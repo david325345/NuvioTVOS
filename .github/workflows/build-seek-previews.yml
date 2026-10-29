@@ -58,6 +58,28 @@ jobs:
           bash scripts/test-tvos.sh \
             -only-testing:NuvioTVTests/SeekPreviewLaneTests \
             -only-testing:NuvioTVTests/PlayerControlsSettingsTests
+      - name: Seek preview test results
+        if: always()
+        env:
+          NUVIO_TEST_ARTIFACTS: ${{ runner.temp }}/nuvio-tests
+        run: |
+          xcrun xcresulttool get test-results tests \
+            --path "$NUVIO_TEST_ARTIFACTS/Tests.xcresult" --format json > tests.json || exit 0
+          ruby -rjson -e '
+            def walk(node, suite, out)
+              name = node["name"].to_s
+              suite = name if node["nodeType"] == "Test Suite"
+              if node["nodeType"] == "Test Case" && suite == "SeekPreviewLaneTests"
+                out << [name, node["result"]]
+              end
+              (node["children"] || []).each { |child| walk(child, suite, out) }
+            end
+            out = []
+            JSON.parse(File.read("tests.json")).fetch("testNodes", []).each { |n| walk(n, nil, out) }
+            passed = out.count { |_, r| r == "Passed" }
+            puts "::notice::SeekPreviewLaneTests #{passed}/#{out.size} passed"
+            out.reject { |_, r| r == "Passed" }.each { |n, r| puts "::error::SeekPreviewLaneTests #{n}: #{r}" }
+          '
 
   all-tests:
     runs-on: xcode-27
