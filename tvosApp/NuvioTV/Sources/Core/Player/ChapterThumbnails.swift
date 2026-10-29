@@ -9,6 +9,15 @@ extension PlaybackChapters {
         chapter.startSeconds + min(5, chapter.durationSeconds * 0.25)
     }
 
+    /// The next chapter to load among `missing`: the one closest to `anchor` (the focused
+    /// chapter in the panel, else the playing one), the later one on a tie.
+    static func nextThumbnailIndex(missing: [Int], anchor: Int) -> Int? {
+        missing.min { a, b in
+            let da = abs(a - anchor), db = abs(b - anchor)
+            return da != db ? da < db : a > b
+        }
+    }
+
     /// The order the thumbnails load in: the playing chapter, then outward
     /// (next, previous, the one after, …), so what is on screen comes first.
     static func thumbnailOrder(count: Int, from current: Int) -> [Int] {

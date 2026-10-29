@@ -237,6 +237,7 @@ class PlayerViewModel: ObservableObject {
     let chapterThumbnails = ChapterThumbnailStore()
     private var chapterThumbnailTask: Task<Void, Never>?
     private var chapterThumbnailToken: UInt64 = 0
+    private var chapterThumbnailFocusIndex: Int?
     @Published var discTitles: [PlaybackDiscTitleInfo] = []
     @Published var selectedDiscTitleId: Int? = nil
     @Published var playbackSpeed: PlaybackSpeed = .normal
@@ -4462,68 +4463,104 @@ class PlayerViewModel: ObservableObject {
         return provider.supportsScrubThumbnails
     }
 
-    /// Loads the missing chapter stills, the playing chapter first and then outward, a few
-    /// seconds into each chapter. Started by the panel's first open, it carries on after the
-    /// panel closes; scrubbing pauses it. Chapters it could not get yet are tried again every
-    /// few seconds while the panel is open, and a few more times after it closes.
+    /// Loads every chapter's still after the Chapters panel's first open, a few seconds into
+    /// each chapter: the chapter under the focus first (the playing one until the panel reports
+    /// focus), then outward. While the panel is open nothing holds it back; closed, it carries on
+    /// only while paused or with a healthy buffer, so playback keeps its bandwidth. Scrubbing
+    /// pauses it, a chapter that fails is tried again a little later, and it runs until every
+    /// chapter has its still.
     func startChapterThumbnails() {
         guard chapterThumbnailTask == nil, canShowChapterThumbnails,
               let provider = scrubThumbnailProvider, !chapters.isEmpty else { return }
         let chapters = self.chapters
-        let order = PlaybackChapters.thumbnailOrder(count: chapters.count, from: currentChapterIndex ?? 0)
         let store = chapterThumbnails
         chapterThumbnailToken &+= 1
         let token = chapterThumbnailToken
+        publishChapterThumbnailStatus("loading")
         chapterThumbnailTask = Task { @MainActor [weak self, weak provider] in
             defer {
                 if let self, self.chapterThumbnailToken == token { self.chapterThumbnailTask = nil }
             }
-            var pending = order
-            var pass = 0
-            while !pending.isEmpty,
-                  pass < Self.chapterThumbnailPasses || self?.sidePanel == .chapters {
-                var missed: [Int] = []
-                for index in pending {
+            var retryAfter: [Int: Date] = [:]
+            var consecutiveMisses = 0
+            while true {
+                guard !Task.isCancelled, let self, let provider,
+                      PlaybackChapters.isSameList(self.chapters, chapters),
+                      self.scrubThumbnailProvider === provider, self.canShowChapterThumbnails else { return }
+                let missing = chapters.indices.filter { store.images[chapters[$0].id] == nil }
+                guard !missing.isEmpty else {
+                    self.publishChapterThumbnailStatus("done")
+                    return
+                }
+                let now = Date()
+                let ready = missing.filter { (retryAfter[$0] ?? .distantPast) <= now }
+                let waitReason: String?
+                if self.isScrubbing || self.isHoldingSeek || self.pendingSeekDelta != 0 {
                     // A seek preview owns the still decoder while the user scrubs.
-                    while let self, self.isScrubbing || self.isHoldingSeek || self.pendingSeekDelta != 0 {
-                        try? await Task.sleep(nanoseconds: 400_000_000)
-                        if Task.isCancelled { return }
-                    }
-                    guard !Task.isCancelled, let self, let provider,
-                          PlaybackChapters.isSameList(self.chapters, chapters),
-                          self.scrubThumbnailProvider === provider, self.canShowChapterThumbnails else { return }
-                    let chapter = chapters[index]
-                    guard store.images[chapter.id] == nil else { continue }
-                    let image = await provider.chapterThumbnail(
-                        atSeconds: PlaybackChapters.thumbnailTime(for: chapter),
-                        duration: self.playbackDuration)
-                    guard !Task.isCancelled, PlaybackChapters.isSameList(self.chapters, chapters) else { return }
-                    if let image {
-                        store.set(image, for: chapter.id)
-                    } else {
-                        missed.append(index)
-                    }
-                    // Leave room for playback between stills.
-                    try? await Task.sleep(nanoseconds: 100_000_000)
+                    waitReason = "waiting (scrubbing)"
+                } else if self.sidePanel != .chapters, !self.chapterThumbnailsMayLoadInBackground {
+                    waitReason = "waiting (playback buffer)"
+                } else if ready.isEmpty {
+                    waitReason = "waiting (retry)"
+                } else {
+                    waitReason = nil
                 }
-                pending = missed
-                // Counts only while the panel is closed: open, it keeps trying.
-                if self?.sidePanel != .chapters { pass += 1 }
-                if !pending.isEmpty {
-                    try? await Task.sleep(nanoseconds: 3_000_000_000)
-                    if Task.isCancelled { return }
+                if let waitReason {
+                    self.publishChapterThumbnailStatus(waitReason)
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    continue
                 }
+                let anchor = self.chapterThumbnailFocusIndex ?? self.currentChapterIndex ?? 0
+                guard let index = PlaybackChapters.nextThumbnailIndex(missing: ready, anchor: anchor) else { continue }
+                self.publishChapterThumbnailStatus("loading")
+                let chapter = chapters[index]
+                let image = await provider.chapterThumbnail(
+                    atSeconds: PlaybackChapters.thumbnailTime(for: chapter),
+                    duration: self.playbackDuration)
+                guard !Task.isCancelled, PlaybackChapters.isSameList(self.chapters, chapters) else { return }
+                if let image {
+                    store.set(image, for: chapter.id)
+                    retryAfter[index] = nil
+                    consecutiveMisses = 0
+                } else {
+                    // Back off further while nothing comes at all (no network for a while).
+                    consecutiveMisses += 1
+                    retryAfter[index] = Date().addingTimeInterval(consecutiveMisses >= 6 ? 30 : 5)
+                }
+                // Leave room for playback between stills.
+                try? await Task.sleep(nanoseconds: 100_000_000)
             }
         }
     }
 
-    static let chapterThumbnailPasses = 4
+    /// The panel's focused chapter, which loads next.
+    func focusChapterThumbnail(id: Int?) {
+        chapterThumbnailFocusIndex = id.flatMap { id in chapters.firstIndex { $0.id == id } }
+    }
+
+    /// With the panel closed, stills load only while they cannot cost playback its bandwidth.
+    private var chapterThumbnailsMayLoadInBackground: Bool {
+        if status == .paused { return true }
+        return clock.buffered - clock.position >= SeekPreviewNetworkPolicy.minimumForwardBufferSeconds
+    }
+
+    private func publishChapterThumbnailStatus(_ state: String) {
+        let total = chapters.count
+        guard total > 0 else {
+            SeekPreviewDiagnostics.shared.updateChapters("")
+            return
+        }
+        let loaded = chapters.filter { chapterThumbnails.images[$0.id] != nil }.count
+        SeekPreviewDiagnostics.shared.updateChapters("\(loaded)/\(total) stills · \(state)")
+    }
 
     private func resetChapterThumbnails() {
         chapterThumbnailToken &+= 1
         chapterThumbnailTask?.cancel()
         chapterThumbnailTask = nil
+        chapterThumbnailFocusIndex = nil
         chapterThumbnails.reset()
+        SeekPreviewDiagnostics.shared.updateChapters("")
     }
 
     func seek(to seconds: Double) {

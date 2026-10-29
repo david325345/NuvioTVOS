@@ -139,6 +139,13 @@ final class PlaybackChaptersTests: XCTestCase {
         XCTAssertFalse(PlaybackChapters.isSameList(first, Array(first.prefix(1))))
     }
 
+    func testTheFocusedChapterLoadsNextThenTheClosest() {
+        XCTAssertEqual(PlaybackChapters.nextThumbnailIndex(missing: [0, 3, 7, 12], anchor: 7), 7)
+        XCTAssertEqual(PlaybackChapters.nextThumbnailIndex(missing: [0, 5, 9, 12], anchor: 7), 9, "a tie goes to the later chapter")
+        XCTAssertEqual(PlaybackChapters.nextThumbnailIndex(missing: [0, 2, 30], anchor: 20), 30)
+        XCTAssertNil(PlaybackChapters.nextThumbnailIndex(missing: [], anchor: 4))
+    }
+
     func testThumbnailsLoadFromThePlayingChapterOutward() {
         XCTAssertEqual(PlaybackChapters.thumbnailOrder(count: 6, from: 2), [2, 3, 1, 4, 0, 5])
         XCTAssertEqual(PlaybackChapters.thumbnailOrder(count: 4, from: 0), [0, 1, 2, 3])

@@ -740,14 +740,16 @@ private final class SeekPreviewResumeGate: @unchecked Sendable {
     }
 }
 
-/// What the debug HUD shows about seek previews.
+/// What the debug HUD shows about seek previews and the Chapters panel's stills.
 @MainActor
 final class SeekPreviewDiagnostics {
     static let shared = SeekPreviewDiagnostics()
     private(set) var line = ""
+    private(set) var chapterLine = ""
 
     func update(_ line: String) { self.line = line }
     func clear() { line = "" }
+    func updateChapters(_ line: String) { chapterLine = line }
 }
 
 /// Seek previews for one remote source session, outside what playback buffered: one persistent
@@ -843,7 +845,9 @@ final class SeekPreviewLane {
             return nil
         }
         if purpose == .scrub, SeekPreviewNetworkPolicy.beyondBufferEnabled { queueStoryboard(duration: duration) }
-        let task = startDecode(cell: cell, duration: duration, background: purpose == .chapter)
+        // A chapter still that fails is retried by the panel later; it never stops seek previews.
+        let task = startDecode(cell: cell, duration: duration, background: purpose == .chapter,
+                               countsFailures: purpose == .scrub)
         return await Self.awaitUnlessCancelled(task)
     }
 
@@ -955,7 +959,8 @@ final class SeekPreviewLane {
         return created
     }
 
-    private func startDecode(cell: Int, duration: Double, background: Bool) -> Task<CGImage?, Never> {
+    private func startDecode(cell: Int, duration: Double, background: Bool,
+                             countsFailures: Bool = true) -> Task<CGImage?, Never> {
         let extractor = ensureExtractor()
         if inFlight != nil {
             // The new request retires the decode in flight (FrameExtractor cancels its token);
@@ -987,7 +992,7 @@ final class SeekPreviewLane {
             } else {
                 // A retired decode gets its budget back; a real failure counts toward stopping.
                 self.networkDecodes = max(0, self.networkDecodes - 1)
-                if !superseded, self.lastDecision == .allowed, self.transport.trippedReason == nil {
+                if countsFailures, !superseded, self.lastDecision == .allowed, self.transport.trippedReason == nil {
                     self.consecutiveDecodeFailures += 1
                     if self.consecutiveDecodeFailures >= Self.consecutiveDecodeFailureLimit {
                         self.decodeDisabledReason = "decode failed"

@@ -559,6 +559,13 @@ struct PlayerChaptersPanel: View {
                     // after the panel closes, so the next open has them.
                     viewModel.startChapterThumbnails()
                 }
+                .onDisappear {
+                    viewModel.focusChapterThumbnail(id: nil)
+                }
+                .onChange(of: focusedID) { _, id in
+                    // The chapter under the focus loads next, then the ones around it.
+                    viewModel.focusChapterThumbnail(id: id)
+                }
             }
         }
     }
