@@ -1,0 +1,86 @@
+name: Seek previews test build (fork)
+
+# Fork only, never part of the PR: builds an unsigned IPA of the seek previews
+# branch and runs its tests, plus the whole suite for comparison.
+on:
+  push:
+    branches: [seek-previews-test]
+  workflow_dispatch:
+
+jobs:
+  ipa:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Tuist
+        run: brew install tuist
+      - name: Build unsigned IPA
+        run: |
+          set -o pipefail
+          report() {
+            grep -E "error: " build.log | grep -v "produced no further output" \
+              | sort -u | head -40 | while IFS= read -r line; do echo "::error::$line"; done
+          }
+          trap 'report' ERR
+          bash scripts/build-ipa.sh 2>&1 | tee build.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NuvioTV-seek-previews-unsigned-ipa
+          path: build-ipa/NuvioTV-unsigned.ipa
+          retention-days: 7
+
+  preview-tests:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Tuist
+        run: brew install tuist
+      - name: Generate Xcode project
+        run: tuist generate --path tvosApp --no-open
+      - name: Seek preview tests
+        env:
+          NUVIO_TEST_ARTIFACTS: ${{ runner.temp }}/nuvio-tests
+          NUVIO_DERIVED_DATA: ${{ runner.temp }}/NuvioTVDerivedData
+        run: |
+          set -o pipefail
+          report() {
+            grep -E "error: |XCTAssert|failed \(" "$NUVIO_TEST_ARTIFACTS/xcodebuild.log" 2>/dev/null \
+              | grep -v "produced no further output" \
+              | sort -u | head -40 | while IFS= read -r line; do echo "::error::$line"; done
+          }
+          trap 'report' ERR
+          bash scripts/test-tvos.sh \
+            -only-testing:NuvioTVTests/SeekPreviewLaneTests \
+            -only-testing:NuvioTVTests/PlayerControlsSettingsTests
+
+  all-tests:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Tuist
+        run: brew install tuist
+      - name: Generate Xcode project
+        run: tuist generate --path tvosApp --no-open
+      - name: Whole test suite
+        env:
+          NUVIO_TEST_ARTIFACTS: ${{ runner.temp }}/nuvio-tests
+          NUVIO_DERIVED_DATA: ${{ runner.temp }}/NuvioTVDerivedData
+        run: |
+          set -o pipefail
+          report() {
+            grep -E "error: |XCTAssert|failed \(" "$NUVIO_TEST_ARTIFACTS/xcodebuild.log" 2>/dev/null \
+              | grep -v "produced no further output" \
+              | sort -u | head -60 | while IFS= read -r line; do echo "::error::$line"; done
+          }
+          trap 'report' ERR
+          bash scripts/test-tvos.sh
