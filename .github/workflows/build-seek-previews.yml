@@ -26,9 +26,44 @@ jobs:
           }
           trap 'report' ERR
           bash scripts/build-ipa.sh 2>&1 | tee build.log
+      - name: Embed the App Group entitlement (Top Shelf test)
+        # The unsigned IPA carries no entitlements at all, so a sideloader has no App Group to
+        # register and the Top Shelf extension never gets the app's rows. Fake-sign both
+        # binaries with just the App Group, which the sideloader reads when it re-signs.
+        run: |
+          set -euo pipefail
+          brew install ldid
+          work="$(mktemp -d)"
+          cp build-ipa/NuvioTV-unsigned.ipa "$work/in.ipa"
+          cd "$work"
+          unzip -q in.ipa
+          app="Payload/NuvioTV.app"
+          cat > groups.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>com.apple.security.application-groups</key>
+            <array>
+              <string>group.com.pyksel.nuviotvos</string>
+            </array>
+          </dict>
+          </plist>
+          PLIST
+          for appex in "$app"/PlugIns/*.appex; do
+            exe=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$appex/Info.plist")
+            ldid -Sgroups.plist "$appex/$exe"
+            echo "::notice::$(basename "$appex"): $(ldid -e "$appex/$exe" | tr -d '\n' | grep -o 'group\.[^<]*' || echo none)"
+          done
+          exe=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$app/Info.plist")
+          ldid -Sgroups.plist "$app/$exe"
+          echo "::notice::NuvioTV.app: $(ldid -e "$app/$exe" | tr -d '\n' | grep -o 'group\.[^<]*' || echo none)"
+          rm in.ipa
+          zip -qry out.ipa Payload
+          cp out.ipa "$GITHUB_WORKSPACE/build-ipa/NuvioTV-unsigned.ipa"
       - uses: actions/upload-artifact@v4
         with:
-          name: NuvioTV-seek-previews-chapters-unsigned-ipa
+          name: NuvioTV-seek-previews-chapters-topshelf-unsigned-ipa
           path: build-ipa/NuvioTV-unsigned.ipa
           retention-days: 7
 
