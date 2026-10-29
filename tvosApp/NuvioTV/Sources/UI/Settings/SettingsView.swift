@@ -343,6 +343,7 @@ enum SettingsKey {
     static let playerShowSources = "nuvio.tv.settings.playback.showSources"
     static let playerShowSubtitles = "nuvio.tv.settings.playback.showSubtitles"
     static let playerShowAudio = "nuvio.tv.settings.playback.showAudio"
+    static let playerShowChapters = "nuvio.tv.settings.playback.showChapters"
     static let seekPreviewEnabled = "nuvio.tv.settings.playback.seekPreviewEnabled"
     static let seekPreviewBeyondBuffer = "nuvio.tv.settings.playback.seekPreviewBeyondBuffer"
     static let showLoadingStatus = "nuvio.tv.settings.playback.showLoadingStatus"
@@ -414,7 +415,7 @@ enum SettingsKey {
         subtitleLanguages, subtitleLanguage, subtitleLanguageSecondary, subtitleLanguageTertiary,
         forcedSubtitles, subtitleSize, frameRateMatching, networkCache, hybridDiskCacheEnabled, hybridDiskCacheLimitGB, playbackTrackSelections, showAudioLanguages,
         externalPlayerForwardSubtitles, assOverrideMode,
-        playerShowPiP, playerShowEpisodes, playerShowSources, playerShowSubtitles, playerShowAudio, seekPreviewEnabled, seekPreviewBeyondBuffer, showLoadingStatus,
+        playerShowPiP, playerShowEpisodes, playerShowSources, playerShowSubtitles, playerShowAudio, playerShowChapters, seekPreviewEnabled, seekPreviewBeyondBuffer, showLoadingStatus,
         audioDelayPersistEnabled, persistentAudioDelayMs,
         sceneFeatureEnabled,
         fastNavigation, smoothFocus, playbackDiagnostics, playbackDebug, focusHighlighter,
@@ -8345,6 +8346,7 @@ private struct PlaybackSettingsView: View {
     @AppStorage(SettingsKey.playerShowSources) private var playerShowSources = true
     @AppStorage(SettingsKey.playerShowSubtitles) private var playerShowSubtitles = true
     @AppStorage(SettingsKey.playerShowAudio) private var playerShowAudio = true
+    @AppStorage(SettingsKey.playerShowChapters) private var playerShowChapters = true
     @AppStorage(SettingsKey.sceneFeatureEnabled) private var sceneFeatureEnabled = true
 
     @State private var streamBadgeURL = ""
@@ -8561,6 +8563,16 @@ private struct PlaybackSettingsView: View {
                         fallback: "Show the Picture in Picture button in player controls"
                     ),
                     isOn: $playerShowPiP,
+                    accentColor: accentColor
+                )
+
+                SettingsToggleRow(
+                    title: L10n.string("tvos_settings_player_chapters", fallback: "Chapters Button"),
+                    subtitle: L10n.string(
+                        "tvos_settings_player_chapters_subtitle",
+                        fallback: "Show the Chapters button when the file has chapters"
+                    ),
+                    isOn: $playerShowChapters,
                     accentColor: accentColor
                 )
 

@@ -813,6 +813,9 @@ extension PlayerView {
         } else if viewModel.sidePanel == .sources {
             PlayerSourcesPanel(viewModel: viewModel)
                 .zIndex(25)
+        } else if viewModel.sidePanel == .chapters {
+            PlayerChaptersPanel(viewModel: viewModel, clock: viewModel.clock, thumbnails: viewModel.chapterThumbnails)
+                .zIndex(25)
         }
     }
 }

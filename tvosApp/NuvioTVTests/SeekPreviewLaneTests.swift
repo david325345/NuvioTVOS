@@ -151,6 +151,14 @@ final class SeekPreviewLaneTests: XCTestCase {
             .allowed)
     }
 
+    func testChapterStillsFollowThePanelNotTheOption() {
+        XCTAssertEqual(SeekPreviewNetworkPolicy.chapterThumbnails(isPaused: true, isPlaying: false, forwardBufferSeconds: nil), .allowed)
+        XCTAssertEqual(SeekPreviewNetworkPolicy.chapterThumbnails(isPaused: false, isPlaying: true, forwardBufferSeconds: 40), .allowed)
+        XCTAssertEqual(SeekPreviewNetworkPolicy.chapterThumbnails(isPaused: false, isPlaying: true, forwardBufferSeconds: 5), .bufferLow,
+                       "a starving buffer still comes first")
+        XCTAssertEqual(SeekPreviewNetworkPolicy.chapterThumbnails(isPaused: false, isPlaying: false, forwardBufferSeconds: 40), .busy)
+    }
+
     func testUsenetPreviewsDoNotWaitForThePausedConnection() {
         XCTAssertEqual(
             SeekPreviewNetworkPolicy.aether(

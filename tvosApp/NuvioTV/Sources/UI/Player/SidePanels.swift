@@ -5,11 +5,12 @@ import SwiftUI
 enum PlayerSidePanel: Equatable {
     case episodes
     case sources
+    case chapters
 }
 
 // MARK: - Chrome
 
-/// Right-anchored in-player side sheet (episodes / sources).
+/// Right-anchored in-player side sheet (episodes / sources / chapters).
 struct PlayerSidePanelChrome<Content: View>: View {
     let title: String
     var onExit: () -> Void = {}
@@ -462,5 +463,244 @@ private extension NuvioStream {
         if blob.contains("720") { return "720p" }
         if blob.contains("480") { return "480p" }
         return nil
+    }
+}
+
+// MARK: - Chapters
+
+/// The file's chapters: number (▶ on the one playing), name, start time,
+/// Opening / Ending badges. The playing chapter shows how much of it is left.
+/// Selecting a chapter jumps to its start.
+struct PlayerChaptersPanel: View {
+    @ObservedObject var viewModel: PlayerViewModel
+    /// The playhead, so the playing chapter and its progress stay current.
+    @ObservedObject var clock: PlaybackClock
+    /// Chapter thumbnails as they load.
+    @ObservedObject var thumbnails: ChapterThumbnailStore
+    @FocusState private var focusedID: Int?
+
+    @AppStorage(SettingsKey.cardCornerRadius) private var cardCornerRadiusSetting = AppCardStyle.defaultCornerRadiusRaw
+
+    private var rowCornerRadius: CGFloat {
+        AppCardStyle.cornerRadius(for: cardCornerRadiusSetting, fallback: 18)
+    }
+
+    private var thumbCornerRadius: CGFloat {
+        max(4, AppCardStyle.cornerRadius(for: cardCornerRadiusSetting, fallback: 16) * 0.6)
+    }
+
+    private var chapters: [PlaybackChapter] {
+        viewModel.chapters
+    }
+
+    /// Thumbnails only when the player can make stills for this stream.
+    private var showsThumbnails: Bool {
+        viewModel.canShowChapterThumbnails
+    }
+
+    private var currentIndex: Int? {
+        PlaybackChapters.index(at: clock.position, in: chapters)
+    }
+
+    private var title: String {
+        chapters.isEmpty
+            ? L10n.string("player_chapters", fallback: "Chapters")
+            : L10n.format("player_chapters_count", fallback: "Chapters (%d)", chapters.count)
+    }
+
+    var body: some View {
+        PlayerSidePanelChrome(title: title, onExit: { viewModel.closeSidePanel() }) {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 12) {
+                        if chapters.isEmpty {
+                            Button {} label: {
+                                PlayerPanelRow(
+                                    title: L10n.string("player_chapters_unavailable", fallback: "No chapters"),
+                                    subtitle: L10n.string(
+                                        "player_chapters_unavailable_subtitle",
+                                        fallback: "This file has no chapter list."
+                                    ),
+                                    isFocused: focusedID == -1
+                                )
+                            }
+                            .buttonStyle(PosterCardButtonStyle())
+                            .focusEffectDisabledIfAvailable()
+                            .focused($focusedID, equals: -1)
+                            .id(-1)
+                        } else {
+                            let current = currentIndex
+                            ForEach(Array(chapters.enumerated()), id: \.element.id) { index, chapter in
+                                Button {
+                                    viewModel.seekToChapter(chapter)
+                                    viewModel.closeSidePanel()
+                                } label: {
+                                    chapterRow(
+                                        chapter,
+                                        index: index,
+                                        isCurrent: index == current,
+                                        isFocused: focusedID == chapter.id
+                                    )
+                                }
+                                .buttonStyle(PosterCardButtonStyle())
+                                .focusEffectDisabledIfAvailable()
+                                .focused($focusedID, equals: chapter.id)
+                                .id(chapter.id)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 12)
+                }
+                .focusSection()
+                .onAppear {
+                    scrollToTarget(proxy: proxy)
+                    // The first open starts loading every chapter's still; it carries on
+                    // after the panel closes, so the next open has them.
+                    viewModel.startChapterThumbnails()
+                }
+            }
+        }
+    }
+
+    /// Opens on the chapter that is playing.
+    private func scrollToTarget(proxy: ScrollViewProxy) {
+        let target = chapters.isEmpty ? -1 : chapters[currentIndex ?? 0].id
+        DispatchQueue.main.async {
+            focusedID = target
+            proxy.scrollTo(target, anchor: .center)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            focusedID = target
+            withAnimation(.easeInOut(duration: 0.15)) {
+                proxy.scrollTo(target, anchor: .center)
+            }
+        }
+    }
+
+    private func chapterRow(_ chapter: PlaybackChapter, index: Int, isCurrent: Bool, isFocused: Bool) -> some View {
+        let kind = PlaybackChapters.kind(of: chapter, segments: viewModel.skipSegments)
+        let primary: Color = isFocused ? .black : .white
+        let secondary: Color = isFocused ? .black.opacity(0.55) : .white.opacity(0.55)
+
+        return HStack(alignment: .center, spacing: 16) {
+            if showsThumbnails {
+                chapterThumbnail(chapter, index: index, isCurrent: isCurrent)
+            } else {
+                Group {
+                    if isCurrent {
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 20, weight: .bold))
+                            .foregroundStyle(primary)
+                    } else {
+                        Text("\(index + 1)")
+                            .font(.system(size: 22, weight: .bold).monospacedDigit())
+                            .foregroundStyle(secondary)
+                    }
+                }
+                .frame(width: 40, alignment: .center)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(PlaybackChapters.displayName(chapter, index: index))
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundStyle(primary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 10) {
+                    Text(PlayerTimeFormat.clock(chapter.startSeconds))
+                        .font(.system(size: 18, weight: .medium).monospacedDigit())
+                        .foregroundStyle(secondary)
+                    if let kind {
+                        Text(kind == .opening
+                             ? L10n.string("player_chapter_opening", fallback: "Opening")
+                             : L10n.string("player_chapter_ending", fallback: "Ending"))
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundStyle(Color.black)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(kind.color))
+                    }
+                    if isCurrent {
+                        Text(L10n.format(
+                            "player_chapter_time_left",
+                            fallback: "%@ left",
+                            PlayerTimeFormat.clock(chapter.endSeconds - clock.position)
+                        ))
+                        .font(.system(size: 18, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(isFocused ? .black.opacity(0.7) : .white.opacity(0.8))
+                    }
+                }
+
+                if isCurrent, chapter.durationSeconds > 0 {
+                    let fraction = min(max((clock.position - chapter.startSeconds) / chapter.durationSeconds, 0), 1)
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(isFocused ? Color.black.opacity(0.15) : Color.white.opacity(0.2))
+                            Capsule()
+                                .fill(kind?.color ?? (isFocused ? Color.black.opacity(0.75) : Color.white))
+                                .frame(width: geo.size.width * CGFloat(fraction))
+                        }
+                    }
+                    .frame(height: 4)
+                    .padding(.top, 2)
+                }
+            }
+            .layoutPriority(1)
+            Spacer(minLength: 4)
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: rowCornerRadius, style: .continuous)
+                .fill(isFocused ? Color.white : Color.white.opacity(0.07))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: rowCornerRadius, style: .continuous)
+                .strokeBorder(isCurrent && !isFocused ? Color.white.opacity(0.35) : .clear, lineWidth: 2)
+        )
+        .scaleEffect(isFocused ? 1.02 : 1)
+        .animation(.easeOut(duration: 0.14), value: isFocused)
+    }
+
+    /// 16:9 still with the chapter number (▶ on the playing one) in the corner;
+    /// a plain tile until the still arrives.
+    private func chapterThumbnail(_ chapter: PlaybackChapter, index: Int, isCurrent: Bool) -> some View {
+        let image = thumbnails.images[chapter.id]
+        return ZStack(alignment: .bottomLeading) {
+            Color.white.opacity(0.08)
+            if let image {
+                Image(decorative: image, scale: 1)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 160, height: 90)
+                    .transition(.opacity)
+            } else {
+                Image(systemName: "photo")
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.25))
+                    .frame(width: 160, height: 90)
+            }
+
+            Group {
+                if isCurrent {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 13, weight: .bold))
+                } else {
+                    Text("\(index + 1)")
+                        .font(.system(size: 15, weight: .bold).monospacedDigit())
+                }
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(Color.black.opacity(0.6)))
+            .padding(6)
+        }
+        .frame(width: 160, height: 90)
+        .clipShape(RoundedRectangle(cornerRadius: thumbCornerRadius, style: .continuous))
+        .animation(.easeOut(duration: 0.2), value: image != nil)
     }
 }

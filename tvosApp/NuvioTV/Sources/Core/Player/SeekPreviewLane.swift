@@ -73,6 +73,15 @@ enum SeekPreviewNetworkPolicy {
         return playingHealth(forwardBufferSeconds: cacheSeconds, throughputMbps: nil, bitrateMbps: nil)
     }
 
+    /// Chapter stills, once the user opened the Chapters panel: about one keyframe per chapter.
+    /// Opening the panel asks for them, so the option does not hold them back and a pause admits
+    /// them at once; during playback they still wait for a healthy buffer.
+    static func chapterThumbnails(isPaused: Bool, isPlaying: Bool, forwardBufferSeconds: Double?) -> Decision {
+        if isPaused { return .allowed }
+        guard isPlaying else { return .busy }
+        return playingHealth(forwardBufferSeconds: forwardBufferSeconds, throughputMbps: nil, bitrateMbps: nil)
+    }
+
     static func playingHealth(forwardBufferSeconds: Double?, throughputMbps: Double?, bitrateMbps: Double?) -> Decision {
         guard let buffer = forwardBufferSeconds, buffer.isFinite,
               buffer >= minimumForwardBufferSeconds else { return .bufferLow }
@@ -751,7 +760,13 @@ final class SeekPreviewDiagnostics {
 /// direction, and with the option on a 16-frame storyboard on the first scrub.
 @MainActor
 final class SeekPreviewLane {
-    typealias Admission = @MainActor () -> SeekPreviewNetworkPolicy.Decision
+    /// What a still is for: a seek preview, or a chapter's still in the Chapters panel.
+    enum Purpose: Sendable {
+        case scrub
+        case chapter
+    }
+
+    typealias Admission = @MainActor (Purpose) -> SeekPreviewNetworkPolicy.Decision
     typealias LocalFrame = @MainActor (_ seconds: Double, _ maxDistance: Double) async -> CGImage?
 
     static let width = 360
@@ -819,19 +834,20 @@ final class SeekPreviewLane {
     }
 
     /// The still for `seconds`: a cached one, or one decoded from the network when admitted.
-    func image(at seconds: Double, duration: Double) async -> CGImage? {
+    /// A chapter still queues no neighbours and no storyboard, and a seek preview retires it.
+    func image(at seconds: Double, duration: Double, purpose: Purpose = .scrub) async -> CGImage? {
         guard !isShutDown, let cell = SeekPreviewGrid.cell(for: seconds, duration: duration) else { return nil }
         if let cached = await cachedImage(for: cell) { return cached }
         guard !isShutDown, !Task.isCancelled else { return nil }
         if let inFlight, inFlight.cell == cell {
             return await Self.awaitUnlessCancelled(inFlight.task)
         }
-        guard canDecodeFromNetwork() else {
+        guard canDecodeFromNetwork(purpose) else {
             publishDiagnostics()
             return nil
         }
-        if SeekPreviewNetworkPolicy.beyondBufferEnabled { queueStoryboard(duration: duration) }
-        let task = startDecode(cell: cell, duration: duration, background: false)
+        if purpose == .scrub, SeekPreviewNetworkPolicy.beyondBufferEnabled { queueStoryboard(duration: duration) }
+        let task = startDecode(cell: cell, duration: duration, background: purpose == .chapter)
         return await Self.awaitUnlessCancelled(task)
     }
 
@@ -901,13 +917,13 @@ final class SeekPreviewLane {
 
     // MARK: Private
 
-    private func canDecodeFromNetwork() -> Bool {
+    private func canDecodeFromNetwork(_ purpose: Purpose = .scrub) -> Bool {
         guard decodeDisabledReason == nil, transport.trippedReason == nil,
               networkDecodes < Self.maximumNetworkDecodes else {
             reader.setNetworkPermitted(false)
             return false
         }
-        let decision = admission()
+        let decision = admission(purpose)
         lastDecision = decision
         reader.setNetworkPermitted(decision == .allowed)
         return decision == .allowed

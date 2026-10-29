@@ -4,6 +4,7 @@ import CoreGraphics
 
 enum PlayerControlFocus: Hashable {
     case pip
+    case chapters
     case episodes
     case sources
     case subtitles
@@ -28,6 +29,7 @@ struct PlayerControls: View {
     @AppStorage(SettingsKey.playerShowSources) private var playerShowSources = true
     @AppStorage(SettingsKey.playerShowSubtitles) private var playerShowSubtitles = true
     @AppStorage(SettingsKey.playerShowAudio) private var playerShowAudio = true
+    @AppStorage(SettingsKey.playerShowChapters) private var playerShowChapters = true
 
     var body: some View {
         GlassControlsContainer {
@@ -279,10 +281,16 @@ struct PlayerControls: View {
             && !isNextEpisodeFocused
     }
 
+    /// A file with a chapter list (two or more chapters), next to PiP.
+    private var isChaptersButtonShown: Bool {
+        didReportPlaybackStarted && !viewModel.chapters.isEmpty && playerShowChapters
+    }
+
     /// Left-to-right order of currently visible transport buttons.
     private var transportFocusOrder: [PlayerControlFocus] {
         var order: [PlayerControlFocus] = []
         if didReportPlaybackStarted && viewModel.isPictureInPictureSupported && playerShowPiP { order.append(.pip) }
+        if isChaptersButtonShown { order.append(.chapters) }
         if viewModel.canShowEpisodesPanel && playerShowEpisodes { order.append(.episodes) }
         if viewModel.canShowSourcesPanel && playerShowSources { order.append(.sources) }
         if didReportPlaybackStarted && canShowSubtitlePicker && playerShowSubtitles { order.append(.subtitles) }
@@ -471,6 +479,20 @@ struct PlayerControls: View {
                     Image(systemName: "pip.enter")
                 }
                 .id("pip_button")
+            }
+
+            if isChaptersButtonShown {
+                glassIconButton(
+                    size: 70,
+                    iconSize: 28,
+                    focusKey: .chapters,
+                    isFocused: focusedControl == .chapters
+                ) {
+                    viewModel.openSidePanel(.chapters)
+                } icon: {
+                    Image(systemName: "list.number")
+                }
+                .id("chapters_button")
             }
 
             if viewModel.canShowEpisodesPanel && playerShowEpisodes {
@@ -715,7 +737,9 @@ struct PlayerControls: View {
             isHoldingSeek: viewModel.isHoldingSeek,
             pendingSeekDelta: viewModel.pendingSeekDelta,
             speedMultiplier: viewModel.seekSpeedMultiplier,
-            seekStepSeconds: viewModel.seekStepSeconds
+            seekStepSeconds: viewModel.seekStepSeconds,
+            chapters: viewModel.chapters,
+            skipSegments: viewModel.skipSegments
         )
         .overlay(alignment: .top) {
             // Keep the geometry mounted even while a still is unavailable so
@@ -1085,9 +1109,19 @@ private struct PlayerTimelineBar: View {
     let pendingSeekDelta: Double
     var speedMultiplier: Int? = nil
     var seekStepSeconds: Int = PlayerSeekSettings.defaultStep
+    /// Chapters of the file: marks on the track and the chapter's name by the time.
+    var chapters: [PlaybackChapter] = []
+    /// Opening and ending (IntroDB or chapters), colored on the track.
+    var skipSegments: [SkipInterval] = []
 
     private var duration: Double {
         max(clock.duration, 0.001)
+    }
+
+    /// The name of the chapter at `seconds`, if the file has chapters.
+    private func chapterName(at seconds: Double) -> String? {
+        guard let index = PlaybackChapters.index(at: seconds, in: chapters) else { return nil }
+        return PlaybackChapters.displayName(chapters[index], index: index)
     }
 
     private var skipIconName: String {
@@ -1134,7 +1168,11 @@ private struct PlayerTimelineBar: View {
                         height: trackHeight,
                         showThumb: false,
                         emphasized: isTimelineFocused || isSeekingOrScrubbing,
-                        glassTrack: true
+                        glassTrack: true,
+                        markers: PlaybackChapters.markers(chapters, duration: clock.duration),
+                        segments: PlaybackChapters.timelineSegments(skipSegments, duration: clock.duration).map {
+                            PlayerTrackSegment(start: $0.start, end: $0.end, color: $0.kind.color)
+                        }
                     )
 
                     if isScrubbing || isHoldingSeek {
@@ -1161,11 +1199,21 @@ private struct PlayerTimelineBar: View {
             if isSeekingOrScrubbing {
                 GeometryReader { geo in
                     let w = geo.size.width
-                    let targetX = min(max(w * progress, 60), w - 60)
+                    let targetChapter = chapterName(at: targetPosition)
+                    let margin: CGFloat = targetChapter == nil ? 60 : 240
+                    let targetX = min(max(w * progress, margin), max(margin, w - margin))
                     HStack(spacing: 8) {
                         Text(PlayerTime.formatted(time: targetPosition))
                             .font(.system(size: 26, weight: .bold).monospacedDigit())
                             .foregroundColor(.white)
+                        if let targetChapter {
+                            Text("· " + targetChapter)
+                                .font(.system(size: 22, weight: .semibold))
+                                .foregroundColor(.white.opacity(0.85))
+                                .lineLimit(1)
+                                .frame(maxWidth: 320)
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
 
                         if isHoldingSeek || speedMultiplier != nil {
                             let isForward = pendingSeekDelta >= 0
@@ -1194,6 +1242,11 @@ private struct PlayerTimelineBar: View {
                 HStack(spacing: 10) {
                     Text(PlayerTime.formatted(time: targetPosition))
                     Spacer()
+                    if let name = chapterName(at: targetPosition) {
+                        Text(name)
+                            .lineLimit(1)
+                        Spacer()
+                    }
                     Text("-" + PlayerTime.formatted(time: max(0, duration - targetPosition)))
                 }
                 .font(.system(size: 22, weight: .bold))

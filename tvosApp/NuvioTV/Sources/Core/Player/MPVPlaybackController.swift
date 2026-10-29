@@ -816,18 +816,24 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
                 guard let self else { return false }
                 return self.loadGeneration == generation && self.thumbnailSourceContext == context
             },
-            admission: { [weak self] in
-                self?.seekPreviewNetworkDecision() ?? .busy
+            admission: { [weak self] purpose in
+                self?.seekPreviewNetworkDecision(for: purpose) ?? .busy
             },
             localFrame: { seconds, maxDistance in
                 await index.nearest(seconds: seconds, maxDistance: maxDistance, generation: generation)
             })
     }
 
-    private func seekPreviewNetworkDecision() -> SeekPreviewNetworkPolicy.Decision {
+    private func seekPreviewNetworkDecision(for purpose: SeekPreviewLane.Purpose) -> SeekPreviewNetworkPolicy.Decision {
         guard mpv != nil else { return .busy }
         let paused = getFlag("pause")
         let seeking = getFlag("seeking") || getFlag("paused-for-cache")
+        if purpose == .chapter {
+            return SeekPreviewNetworkPolicy.chapterThumbnails(
+                isPaused: paused,
+                isPlaying: !paused && !seeking && isPlayerPlaying,
+                forwardBufferSeconds: readDoubleProperty("demuxer-cache-duration"))
+        }
         return SeekPreviewNetworkPolicy.mpv(
             beyondBuffer: SeekPreviewNetworkPolicy.beyondBufferEnabled,
             isPaused: paused,
@@ -845,6 +851,23 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
 
     var prefetchesScrubThumbnailsInBackground: Bool {
         SeekPreviewLaneHost.mayServe(thumbnailSourceContext)
+    }
+
+    /// A chapter's still for the Chapters panel: one held near it, else the preview lane's
+    /// keyframe; sources the lane does not serve keep the ordinary preview path.
+    func chapterThumbnail(atSeconds seconds: Double, duration: Double) async -> CGImage? {
+        let generation = loadGeneration
+        guard let context = thumbnailSourceContext else { return nil }
+        if let near = await hybridThumbnailIndex.nearest(seconds: seconds, maxDistance: 2.5, generation: generation) {
+            return near
+        }
+        guard loadGeneration == generation else { return nil }
+        guard SeekPreviewLaneHost.mayServe(context) else {
+            if let cached = await cachedScrubThumbnail(atSeconds: seconds, duration: duration) { return cached }
+            return await scrubThumbnail(atSeconds: seconds, maxWidth: 320, precise: false)
+        }
+        guard let lane = await previewLane(for: context), loadGeneration == generation else { return nil }
+        return await lane.image(at: seconds, duration: duration, purpose: .chapter)
     }
 
     func prefetchScrubThumbnails(around seconds: Double, direction: Double, duration: Double) {
@@ -1070,6 +1093,10 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
     // Cached track lists
     var audioTracks: [PlaybackTrackInfo] = []
     var subtitleTracks: [PlaybackTrackInfo] = []
+    /// mpv's own chapter list (Matroska / MP4), read again when its length or
+    /// the duration changes.
+    private(set) var chapters: [PlaybackChapter] = []
+    private var chapterListKey = ""
 
     // State (polled from the view model every 250ms)
     var onFirstFrameReady: (() -> Void)?
@@ -1537,6 +1564,8 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
     }
 
     func loadFile(_ urlString: String) {
+        chapters = []
+        chapterListKey = ""
         resetStartupDisplayGateState(clearAnchor: true)
         firstFrameReadiness.reset()
         if didConfigureMPVRemoteCommands { teardownMPVRemoteCommands(); setupMPVRemoteCommandsIfNeeded() }
@@ -2290,6 +2319,8 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
     }
 
     func destroyPlayer() {
+        chapters = []
+        chapterListKey = ""
         firstFrameReadiness.reset()
 #if NUVIO_MPV_MEMORY_WATCHDOG && os(tvOS)
         memoryWatchdog.stop(event: "destroy")
@@ -2519,6 +2550,24 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
     func updateState() {
         refreshPlaybackState()
         refreshTracks()
+        refreshChapters()
+    }
+
+    private func refreshChapters() {
+        guard mpv != nil else { return }
+        let count = max(0, getInt("chapter-list/count"))
+        let reported = getDouble("duration")
+        let duration = reported.isFinite ? max(0, reported) : 0
+        let key = "\(count):\(Int(duration))"
+        guard key != chapterListKey else { return }
+        chapterListKey = key
+        let items: [(id: Int, name: String, start: Double, duration: Double)] = (0..<count).map { index in
+            (id: index,
+             name: getString("chapter-list/\(index)/title") ?? "",
+             start: getDouble("chapter-list/\(index)/time"),
+             duration: 0.0)
+        }
+        chapters = PlaybackChapters.chapters(from: items, totalDuration: duration)
     }
 
     private func refreshTracks() {
