@@ -828,12 +828,7 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
         guard mpv != nil else { return .busy }
         let paused = getFlag("pause")
         let seeking = getFlag("seeking") || getFlag("paused-for-cache")
-        if purpose == .chapter {
-            return SeekPreviewNetworkPolicy.chapterThumbnails(
-                isPaused: paused,
-                isPlaying: !paused && !seeking && isPlayerPlaying,
-                forwardBufferSeconds: readDoubleProperty("demuxer-cache-duration"))
-        }
+        if purpose == .chapter { return SeekPreviewNetworkPolicy.chapterThumbnails() }
         return SeekPreviewNetworkPolicy.mpv(
             beyondBuffer: SeekPreviewNetworkPolicy.beyondBufferEnabled,
             isPaused: paused,

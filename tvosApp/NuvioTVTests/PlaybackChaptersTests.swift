@@ -123,6 +123,22 @@ final class PlaybackChaptersTests: XCTestCase {
         XCTAssertEqual(PlaybackChapters.thumbnailTime(for: chapter(2, "C", 100, 100)), 100)
     }
 
+    func testALengthThatMovesSlightlyKeepsTheSameChapterList() {
+        let items: [(id: Int, name: String, start: Double, duration: Double)] = [
+            (id: 0, name: "Opening", start: 0, duration: 0),
+            (id: 1, name: "Part A", start: 90, duration: 0),
+        ]
+        let first = PlaybackChapters.chapters(from: items, totalDuration: 1420.0)
+        let moved = PlaybackChapters.chapters(from: items, totalDuration: 1420.4)
+        XCTAssertNotEqual(first, moved)
+        XCTAssertTrue(PlaybackChapters.isSameList(first, moved))
+        let renamed = PlaybackChapters.chapters(
+            from: [(id: 0, name: "OP", start: 0, duration: 0), (id: 1, name: "Part A", start: 90, duration: 0)],
+            totalDuration: 1420.0)
+        XCTAssertFalse(PlaybackChapters.isSameList(first, renamed))
+        XCTAssertFalse(PlaybackChapters.isSameList(first, Array(first.prefix(1))))
+    }
+
     func testThumbnailsLoadFromThePlayingChapterOutward() {
         XCTAssertEqual(PlaybackChapters.thumbnailOrder(count: 6, from: 2), [2, 3, 1, 4, 0, 5])
         XCTAssertEqual(PlaybackChapters.thumbnailOrder(count: 4, from: 0), [0, 1, 2, 3])

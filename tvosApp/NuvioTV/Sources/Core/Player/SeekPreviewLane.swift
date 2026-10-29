@@ -74,13 +74,9 @@ enum SeekPreviewNetworkPolicy {
     }
 
     /// Chapter stills, once the user opened the Chapters panel: about one keyframe per chapter.
-    /// Opening the panel asks for them, so the option does not hold them back and a pause admits
-    /// them at once; during playback they still wait for a healthy buffer.
-    static func chapterThumbnails(isPaused: Bool, isPlaying: Bool, forwardBufferSeconds: Double?) -> Decision {
-        if isPaused { return .allowed }
-        guard isPlaying else { return .busy }
-        return playingHealth(forwardBufferSeconds: forwardBufferSeconds, throughputMbps: nil, bitrateMbps: nil)
-    }
+    /// Opening the panel asks for them, so neither the option nor the buffer holds them back,
+    /// paused or playing.
+    static func chapterThumbnails() -> Decision { .allowed }
 
     static func playingHealth(forwardBufferSeconds: Double?, throughputMbps: Double?, bitrateMbps: Double?) -> Decision {
         guard let buffer = forwardBufferSeconds, buffer.isFinite,

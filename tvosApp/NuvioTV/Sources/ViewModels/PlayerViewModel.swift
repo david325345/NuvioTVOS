@@ -230,7 +230,7 @@ class PlayerViewModel: ObservableObject {
     /// Container chapters of the playing file (empty when it has none).
     @Published var chapters: [PlaybackChapter] = [] {
         didSet {
-            if chapters != oldValue { resetChapterThumbnails() }
+            if !PlaybackChapters.isSameList(chapters, oldValue) { resetChapterThumbnails() }
         }
     }
     /// Stills for the Chapters panel: loaded for every chapter after the panel's first open.
@@ -3788,7 +3788,7 @@ class PlayerViewModel: ObservableObject {
         if audioTracks != latestAudioTracks { audioTracks = latestAudioTracks }
 
         let latestChapters = c.chapters
-        if chapters != latestChapters {
+        if !PlaybackChapters.isSameList(chapters, latestChapters) {
             chapters = latestChapters
             chapterSkipIntervals = PlaybackChapters.skipIntervals(from: latestChapters)
         }
@@ -4464,8 +4464,8 @@ class PlayerViewModel: ObservableObject {
 
     /// Loads the missing chapter stills, the playing chapter first and then outward, a few
     /// seconds into each chapter. Started by the panel's first open, it carries on after the
-    /// panel closes; scrubbing pauses it, and chapters it could not get yet (no network for
-    /// previews at that moment) are tried again a few times.
+    /// panel closes; scrubbing pauses it. Chapters it could not get yet are tried again every
+    /// few seconds while the panel is open, and a few more times after it closes.
     func startChapterThumbnails() {
         guard chapterThumbnailTask == nil, canShowChapterThumbnails,
               let provider = scrubThumbnailProvider, !chapters.isEmpty else { return }
@@ -4480,7 +4480,8 @@ class PlayerViewModel: ObservableObject {
             }
             var pending = order
             var pass = 0
-            while !pending.isEmpty, pass < Self.chapterThumbnailPasses {
+            while !pending.isEmpty,
+                  pass < Self.chapterThumbnailPasses || self?.sidePanel == .chapters {
                 var missed: [Int] = []
                 for index in pending {
                     // A seek preview owns the still decoder while the user scrubs.
@@ -4488,14 +4489,15 @@ class PlayerViewModel: ObservableObject {
                         try? await Task.sleep(nanoseconds: 400_000_000)
                         if Task.isCancelled { return }
                     }
-                    guard !Task.isCancelled, let self, let provider, self.chapters == chapters,
+                    guard !Task.isCancelled, let self, let provider,
+                          PlaybackChapters.isSameList(self.chapters, chapters),
                           self.scrubThumbnailProvider === provider, self.canShowChapterThumbnails else { return }
                     let chapter = chapters[index]
                     guard store.images[chapter.id] == nil else { continue }
                     let image = await provider.chapterThumbnail(
                         atSeconds: PlaybackChapters.thumbnailTime(for: chapter),
                         duration: self.playbackDuration)
-                    guard !Task.isCancelled, self.chapters == chapters else { return }
+                    guard !Task.isCancelled, PlaybackChapters.isSameList(self.chapters, chapters) else { return }
                     if let image {
                         store.set(image, for: chapter.id)
                     } else {
@@ -4505,7 +4507,8 @@ class PlayerViewModel: ObservableObject {
                     try? await Task.sleep(nanoseconds: 100_000_000)
                 }
                 pending = missed
-                pass += 1
+                // Counts only while the panel is closed: open, it keeps trying.
+                if self?.sidePanel != .chapters { pass += 1 }
                 if !pending.isEmpty {
                     try? await Task.sleep(nanoseconds: 3_000_000_000)
                     if Task.isCancelled { return }

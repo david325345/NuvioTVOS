@@ -3392,12 +3392,7 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
         guard !isAwaitingEngineLoad else { return .busy }
         let telemetry = engine.liveTelemetry
         let phase = engine.playbackPhase
-        if purpose == .chapter {
-            return SeekPreviewNetworkPolicy.chapterThumbnails(
-                isPaused: phase == .paused && !isTransportPlaying,
-                isPlaying: phase == .playing,
-                forwardBufferSeconds: telemetry?.forwardBufferSeconds)
-        }
+        if purpose == .chapter { return SeekPreviewNetworkPolicy.chapterThumbnails() }
         let containerBitrate = engine.sourceVideoBitrate > 0 ? Double(engine.sourceVideoBitrate) / 1_000_000 : nil
         return SeekPreviewNetworkPolicy.aether(
             beyondBuffer: SeekPreviewNetworkPolicy.beyondBufferEnabled,

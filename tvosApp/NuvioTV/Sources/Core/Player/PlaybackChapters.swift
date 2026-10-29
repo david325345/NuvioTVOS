@@ -35,6 +35,18 @@ enum PlaybackChapters {
         }
     }
 
+    /// Whether two chapter lists are the same chapters. The end of the last chapter follows the
+    /// video's length, which can still move by a fraction of a second: that is no new list, and
+    /// treating it as one dropped the Chapters panel's stills and stopped their loading.
+    static func isSameList(_ lhs: [PlaybackChapter], _ rhs: [PlaybackChapter]) -> Bool {
+        guard lhs.count == rhs.count else { return false }
+        return zip(lhs, rhs).allSatisfy { a, b in
+            a.id == b.id && a.name == b.name
+                && abs(a.startSeconds - b.startSeconds) < 0.5
+                && abs(a.endSeconds - b.endSeconds) < 1.5
+        }
+    }
+
     /// The chapter's own name, or "Chapter N" when it has none or only a
     /// generic one ("Chapter 03", "00:12:30.000").
     static func displayName(_ chapter: PlaybackChapter, index: Int) -> String {
