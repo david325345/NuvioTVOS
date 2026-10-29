@@ -108,7 +108,7 @@ jobs:
             def walk(node, suite, out)
               name = node["name"].to_s
               suite = name if node["nodeType"] == "Test Suite"
-              if node["nodeType"] == "Test Case" && ["SeekPreviewLaneTests", "UsenetPoolTests", "PlaybackChaptersTests"].include?(suite)
+              if node["nodeType"] == "Test Case" && ["SeekPreviewLaneTests", "UsenetPoolTests", "PlaybackChaptersTests", "PlayerControlsSettingsTests", "TopShelfLayoutTests", "TopShelfArtworkPrunerTests"].include?(suite)
                 out << ["#{suite}.#{name}", node["result"]]
               end
               (node["children"] || []).each { |child| walk(child, suite, out) }
@@ -116,7 +116,7 @@ jobs:
             out = []
             JSON.parse(File.read("tests.json")).fetch("testNodes", []).each { |n| walk(n, nil, out) }
             passed = out.count { |_, r| r == "Passed" }
-            puts "::notice::preview, pool and chapter tests #{passed}/#{out.size} passed"
+            puts "::notice::preview, pool, chapter, player and Top Shelf tests #{passed}/#{out.size} passed"
             out.reject { |_, r| r == "Passed" }.each { |n, r| puts "::error::#{n}: #{r}" }
           '
 
