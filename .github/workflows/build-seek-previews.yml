@@ -28,7 +28,7 @@ jobs:
           bash scripts/build-ipa.sh 2>&1 | tee build.log
       - uses: actions/upload-artifact@v4
         with:
-          name: NuvioTV-seek-previews-unsigned-ipa
+          name: NuvioTV-seek-previews-chapters-unsigned-ipa
           path: build-ipa/NuvioTV-unsigned.ipa
           retention-days: 7
 
@@ -58,7 +58,8 @@ jobs:
           bash scripts/test-tvos.sh \
             -only-testing:NuvioTVTests/SeekPreviewLaneTests \
             -only-testing:NuvioTVTests/PlayerControlsSettingsTests \
-            -only-testing:NuvioTVTests/UsenetPoolTests
+            -only-testing:NuvioTVTests/UsenetPoolTests \
+            -only-testing:NuvioTVTests/PlaybackChaptersTests
       - name: Seek preview test results
         if: always()
         env:
@@ -70,7 +71,7 @@ jobs:
             def walk(node, suite, out)
               name = node["name"].to_s
               suite = name if node["nodeType"] == "Test Suite"
-              if node["nodeType"] == "Test Case" && ["SeekPreviewLaneTests", "UsenetPoolTests"].include?(suite)
+              if node["nodeType"] == "Test Case" && ["SeekPreviewLaneTests", "UsenetPoolTests", "PlaybackChaptersTests"].include?(suite)
                 out << ["#{suite}.#{name}", node["result"]]
               end
               (node["children"] || []).each { |child| walk(child, suite, out) }
@@ -78,7 +79,7 @@ jobs:
             out = []
             JSON.parse(File.read("tests.json")).fetch("testNodes", []).each { |n| walk(n, nil, out) }
             passed = out.count { |_, r| r == "Passed" }
-            puts "::notice::preview and pool tests #{passed}/#{out.size} passed"
+            puts "::notice::preview, pool and chapter tests #{passed}/#{out.size} passed"
             out.reject { |_, r| r == "Passed" }.each { |n, r| puts "::error::#{n}: #{r}" }
           '
 
