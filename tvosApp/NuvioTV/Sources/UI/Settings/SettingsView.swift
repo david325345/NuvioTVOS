@@ -9824,6 +9824,22 @@ private struct AdvancedSettingsView: View {
                 )
                 #endif
 
+                // Whether the app can hand its rows to the Top Shelf extension: a sideloaded
+                // build only can when its signing kept the App Group.
+                SettingsActionRow(
+                    title: L10n.string("tvos_settings_topshelf_status", fallback: "Top Shelf"),
+                    subtitle: L10n.format(
+                        "tvos_settings_topshelf_status_detail",
+                        fallback: "Data shared with the home screen row (App Group %@)",
+                        topShelfAppGroupID
+                    ),
+                    value: TopShelfFeedStore.isAvailable
+                        ? L10n.string("tvos_settings_topshelf_available", fallback: "OK")
+                        : L10n.string("tvos_settings_topshelf_unavailable", fallback: "Unavailable"),
+                    accentColor: accentColor,
+                    action: {}
+                )
+
                 SettingsToggleRow(
                     title: L10n.string("tvos_settings_playback_debug_overlay", fallback: "Playback Debug Overlay"),
                     subtitle: L10n.string("tvos_settings_show_live_playback_engine_details", fallback: "Show live engine, pipeline, codec, HDR, resolution, frame-rate, audio and policy details while playing"),
