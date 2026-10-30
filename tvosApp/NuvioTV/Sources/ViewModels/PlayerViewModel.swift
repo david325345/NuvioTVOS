@@ -261,6 +261,9 @@ class PlayerViewModel: ObservableObject {
     /// Cache-backed Aether still for the current scrub target. Nil means the
     /// time-only HUD remains visible while a still is unavailable.
     @Published private(set) var scrubThumbnail: CGImage?
+    /// The card shows a still from somewhere else than where the remote rests (a position it
+    /// passed on the way), while the target's own still is on its way: the card dims it.
+    @Published private(set) var scrubThumbnailIsStale = false
     /// Accumulated D-pad skip preview (seconds). Zero when idle.
     @Published var pendingSeekDelta: Double = 0
     /// True while holding down D-pad Left/Right for continuous fast-seeking with live preview.
@@ -625,7 +628,12 @@ class PlayerViewModel: ObservableObject {
     private var pendingScrubThumbnailSeconds: Double?
     private var scrubThumbnailGeneration: UInt64 = 0
     private var scrubThumbnailInteractionToken: UInt64 = 0
-    private var scrubThumbnailTargetSeconds: Double?
+    private var scrubThumbnailTargetSeconds: Double? {
+        didSet { updateStaleScrubThumbnail() }
+    }
+    /// A still this far from the target belongs to another moment (more than a preview cell).
+    private static let staleScrubThumbnailDistance = 3.0
+    private var staleScrubThumbnailCheck: Task<Void, Never>?
     /// How far from the target a held still may stand in while the target has none.
     static let nearestScrubThumbnailDistance: Double = 30
     private var lastScrubTargetSeconds: Double?
@@ -5028,7 +5036,10 @@ class PlayerViewModel: ObservableObject {
            let shown = scrubThumbnailTargetSeconds, abs(shown - seconds) < Self.sameScrubTargetTolerance {
             return
         }
-        if !isSameTarget { lastScrubTargetChange = Date() }
+        if !isSameTarget {
+            lastScrubTargetChange = Date()
+            scheduleStaleScrubThumbnailCheck()
+        }
         // Keep the last still visible while the next frame is decoded. Remote
         // input routinely advances faster than a network decoder can finish.
         pendingScrubThumbnailSeconds = seconds
@@ -5103,7 +5114,7 @@ class PlayerViewModel: ObservableObject {
                 if image == nil {
                     // Throttle fast in-flight decodes while moving (~180ms)
                     let elapsed = Date().timeIntervalSince(lastDecodeTime)
-                    if elapsed < 0.18 {
+                    if elapsed < 0.18, !self.isScrubRemoteResting {
                         try? await Task.sleep(nanoseconds: UInt64((0.18 - elapsed) * 1_000_000_000))
                         guard !Task.isCancelled else { return }
                         if self.hasNewScrubTarget(besides: target) {
@@ -5140,9 +5151,12 @@ class PlayerViewModel: ObservableObject {
                     continue
                 }
 
-                // Give new input a chance to arrive before paying for exact decode.
-                try? await Task.sleep(nanoseconds: 160_000_000)
-                guard !Task.isCancelled else { return }
+                // Give new input a chance to arrive before paying for exact decode; a resting
+                // remote sends none.
+                if !self.isScrubRemoteResting {
+                    try? await Task.sleep(nanoseconds: 160_000_000)
+                    guard !Task.isCancelled else { return }
+                }
                 if self.hasNewScrubTarget(besides: target) {
                     if self.isCurrentScrubThumbnailWork(
                         generation: generation, interactionToken: interactionToken,
@@ -5217,6 +5231,30 @@ class PlayerViewModel: ObservableObject {
         scrubThumbnail = image
         scrubThumbnailTargetSeconds = target
         SeekPreviewDiagnostics.shared.noteShown(image, target: target, path: "moving")
+    }
+
+    /// The remote has not moved the target for a moment: it rests.
+    private var isScrubRemoteResting: Bool {
+        Date().timeIntervalSince(lastScrubTargetChange) >= Self.scrubMovingWindow
+    }
+
+    /// Once the remote rests, a still from a passed position stops looking like the preview.
+    private func scheduleStaleScrubThumbnailCheck() {
+        staleScrubThumbnailCheck?.cancel()
+        staleScrubThumbnailCheck = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.scrubMovingWindow * 1_000_000_000) + 10_000_000)
+            guard !Task.isCancelled else { return }
+            self?.updateStaleScrubThumbnail()
+        }
+    }
+
+    private func updateStaleScrubThumbnail() {
+        var stale = false
+        if scrubThumbnail != nil, isScrubRemoteResting,
+           let shown = scrubThumbnailTargetSeconds, let target = lastScrubTargetSeconds {
+            stale = abs(shown - target) > Self.staleScrubThumbnailDistance
+        }
+        if stale != scrubThumbnailIsStale { scrubThumbnailIsStale = stale }
     }
 
     /// Whether the remote asked for another target than `target`. A repeat of `target` itself
