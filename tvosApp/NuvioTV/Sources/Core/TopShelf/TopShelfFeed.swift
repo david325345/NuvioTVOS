@@ -305,7 +305,7 @@ public enum TopShelfFeedStore {
     // Version 4 / 2: drawn from the largest source the image host offers, the
     // carousel at the screen's scale.
     private static let artworkRenderVersion = 4
-    private static let carouselRenderVersion = 2
+    private static let carouselRenderVersion = 3
     /// Rendered card size. 16:9, large enough for the 2x shelf scale.
     private static let artworkSize = CGSize(width: 1_280, height: 720)
     /// Rendered carousel size: the full screen, in points. Drawn at the
@@ -642,6 +642,10 @@ public enum TopShelfFeedStore {
         return rendered.jpegData(compressionQuality: 0.85)
     }
 
+    /// Where the logo's center sits, as a fraction of the image height. Logo
+    /// and ratings end above the system's arrow at mid-height.
+    private static let logoCenterHeight: CGFloat = 0.26
+
     /// Renders a full-screen carousel image: the backdrop, darkened toward the
     /// left edge where the system draws its text, with the title's logo there
     /// and its ratings below the logo.
@@ -665,12 +669,14 @@ public enum TopShelfFeedStore {
                     gradient, start: .zero, end: CGPoint(x: size.width * 0.6, y: 0), options: [])
             }
 
-            var ratingsTop = size.height * 0.42
+            // The upper part: the system draws its previous-item arrow at the left edge
+            // around mid-height, and its buttons and summary in the lower third.
+            var ratingsTop = size.height * logoCenterHeight
             if let logo, logo.size.width > 0, logo.size.height > 0 {
-                let maximum = CGSize(width: size.width * 0.34, height: size.height * 0.2)
+                let maximum = CGSize(width: size.width * 0.34, height: size.height * 0.18)
                 let logoScale = min(maximum.width / logo.size.width, maximum.height / logo.size.height)
                 let logoSize = CGSize(width: logo.size.width * logoScale, height: logo.size.height * logoScale)
-                let origin = CGPoint(x: 120, y: size.height * 0.42 - logoSize.height / 2)
+                let origin = CGPoint(x: 120, y: size.height * logoCenterHeight - logoSize.height / 2)
                 logo.draw(in: CGRect(origin: origin, size: logoSize))
                 ratingsTop = origin.y + logoSize.height + 32
             }
