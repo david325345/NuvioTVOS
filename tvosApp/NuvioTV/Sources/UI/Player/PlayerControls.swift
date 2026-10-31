@@ -490,7 +490,7 @@ struct PlayerControls: View {
                 ) {
                     viewModel.openSidePanel(.chapters)
                 } icon: {
-                    Image(systemName: "list.number")
+                    Image(systemName: "rectangle.split.3x1")
                 }
                 .id("chapters_button")
             }
