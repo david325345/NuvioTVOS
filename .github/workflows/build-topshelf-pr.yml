@@ -1,0 +1,125 @@
+name: Top Shelf PR test build (fork)
+
+# Fork only, never part of the PR: builds the unsigned IPA of the Top Shelf PR
+# branch with scripts/build-ipa.sh as it is in the PR (App Group included),
+# runs the Top Shelf tests, and the whole suite for comparison.
+on:
+  push:
+    branches: [topshelf-carousel-ci]
+  workflow_dispatch:
+
+jobs:
+  ipa:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Tuist and ldid
+        run: brew install tuist ldid
+      - name: Build unsigned IPA
+        run: |
+          set -o pipefail
+          report() {
+            grep -E "error: " build.log | grep -v "produced no further output" \
+              | sort -u | head -40 | while IFS= read -r line; do echo "::error::$line"; done
+          }
+          trap 'report' ERR
+          bash scripts/build-ipa.sh 2>&1 | tee build.log
+      - name: Check the embedded App Group
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          unzip -q build-ipa/NuvioTV-unsigned.ipa -d "$work"
+          for bundle in "$work"/Payload/NuvioTV.app/PlugIns/*.appex "$work"/Payload/NuvioTV.app; do
+            exe=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$bundle/Info.plist")
+            group=$(ldid -e "$bundle/$exe" | tr -d '\n' | grep -o 'group\.[^<]*' || true)
+            if [[ -z "$group" ]]; then
+              echo "::error::$(basename "$bundle"): no App Group"
+              exit 1
+            fi
+            echo "::notice::$(basename "$bundle"): $group"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NuvioTV-topshelf-pr-unsigned-ipa
+          path: build-ipa/NuvioTV-unsigned.ipa
+          retention-days: 7
+
+  topshelf-tests:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Tuist
+        run: brew install tuist
+      - name: Generate Xcode project
+        run: tuist generate --path tvosApp --no-open
+      - name: Top Shelf tests
+        env:
+          NUVIO_TEST_ARTIFACTS: ${{ runner.temp }}/nuvio-tests
+          NUVIO_DERIVED_DATA: ${{ runner.temp }}/NuvioTVDerivedData
+        run: |
+          set -o pipefail
+          report() {
+            grep -E "error: |XCTAssert|failed \(" "$NUVIO_TEST_ARTIFACTS/xcodebuild.log" 2>/dev/null \
+              | grep -v "produced no further output" \
+              | sort -u | head -40 | while IFS= read -r line; do echo "::error::$line"; done
+          }
+          trap 'report' ERR
+          bash scripts/test-tvos.sh \
+            -only-testing:NuvioTVTests/TopShelfLayoutTests \
+            -only-testing:NuvioTVTests/TopShelfArtworkPrunerTests \
+            -only-testing:NuvioTVTests/TopShelfWriteCoordinatorTests
+      - name: Top Shelf test results
+        if: always()
+        env:
+          NUVIO_TEST_ARTIFACTS: ${{ runner.temp }}/nuvio-tests
+        run: |
+          xcrun xcresulttool get test-results tests \
+            --path "$NUVIO_TEST_ARTIFACTS/Tests.xcresult" --format json > tests.json || exit 0
+          ruby -rjson -e '
+            suites = ["TopShelfLayoutTests", "TopShelfArtworkPrunerTests", "TopShelfWriteCoordinatorTests"]
+            def walk(node, suite, suites, out)
+              name = node["name"].to_s
+              suite = name if node["nodeType"] == "Test Suite"
+              if node["nodeType"] == "Test Case" && suites.include?(suite)
+                out << ["#{suite}.#{name}", node["result"]]
+              end
+              (node["children"] || []).each { |child| walk(child, suite, suites, out) }
+            end
+            out = []
+            JSON.parse(File.read("tests.json")).fetch("testNodes", []).each { |n| walk(n, nil, suites, out) }
+            passed = out.count { |_, r| r == "Passed" }
+            puts "::notice::Top Shelf tests #{passed}/#{out.size} passed"
+            out.reject { |_, r| r == "Passed" }.each { |n, r| puts "::error::#{n}: #{r}" }
+          '
+
+  all-tests:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Tuist
+        run: brew install tuist
+      - name: Generate Xcode project
+        run: tuist generate --path tvosApp --no-open
+      - name: Whole test suite
+        env:
+          NUVIO_TEST_ARTIFACTS: ${{ runner.temp }}/nuvio-tests
+          NUVIO_DERIVED_DATA: ${{ runner.temp }}/NuvioTVDerivedData
+        run: |
+          set -o pipefail
+          report() {
+            grep -E "error: |XCTAssert|failed \(" "$NUVIO_TEST_ARTIFACTS/xcodebuild.log" 2>/dev/null \
+              | grep -v "produced no further output" \
+              | sort -u | head -60 | while IFS= read -r line; do echo "::error::$line"; done
+          }
+          trap 'report' ERR
+          bash scripts/test-tvos.sh
