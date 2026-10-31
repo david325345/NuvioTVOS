@@ -8,6 +8,17 @@ protocol ScrubThumbnailProviding: AnyObject {
     var supportsScrubThumbnails: Bool { get }
     func cachedScrubThumbnail(atSeconds seconds: Double, duration: Double) async -> CGImage?
     func scrubThumbnail(atSeconds seconds: Double, maxWidth: Int, precise: Bool) async -> CGImage?
+    /// A chapter's still for the Chapters panel.
+    func chapterThumbnail(atSeconds seconds: Double, duration: Double) async -> CGImage?
+}
+
+extension ScrubThumbnailProviding {
+    /// What the seek preview has for that time: an external storyboard, a still held, or
+    /// one read from what the player holds.
+    func chapterThumbnail(atSeconds seconds: Double, duration: Double) async -> CGImage? {
+        if let cached = await cachedScrubThumbnail(atSeconds: seconds, duration: duration) { return cached }
+        return await scrubThumbnail(atSeconds: seconds, maxWidth: 320, precise: false)
+    }
 }
 
 struct LiveStreamFailoverPolicy {
@@ -206,6 +217,17 @@ class PlayerViewModel: ObservableObject {
     let clock = PlaybackClock()
     @Published var subtitles: [SubtitleTrack] = []
     @Published var audioTracks: [AudioTrack] = []
+    /// Container chapters of the playing file (empty when it has none).
+    @Published var chapters: [PlaybackChapter] = [] {
+        didSet {
+            if !PlaybackChapters.isSameList(chapters, oldValue) { resetChapterThumbnails() }
+        }
+    }
+    /// Stills for the Chapters panel: loaded for every chapter after the panel's first open.
+    let chapterThumbnails = ChapterThumbnailStore()
+    private var chapterThumbnailTask: Task<Void, Never>?
+    private var chapterThumbnailToken: UInt64 = 0
+    private var chapterThumbnailFocusIndex: Int?
     @Published var discTitles: [PlaybackDiscTitleInfo] = []
     @Published var selectedDiscTitleId: Int? = nil
     @Published var playbackSpeed: PlaybackSpeed = .normal
@@ -518,7 +540,28 @@ class PlayerViewModel: ObservableObject {
     private var traktProgressTask: Task<Void, Never>?
     private static let traktProgressReportInterval: TimeInterval = 30
     private(set) var controlsAutoHideSuspended = false
-    private var skipIntervals: [SkipInterval] = []
+    private var skipIntervals: [SkipInterval] = [] {
+        didSet { publishSkipSegments() }
+    }
+    /// Skip Intro / Skip Ending from chapter names ("Opening", "ED"…): exact for
+    /// the file, so they take the place of IntroDB's opening or ending.
+    private var chapterSkipIntervals: [SkipInterval] = [] {
+        didSet { publishSkipSegments() }
+    }
+    /// IntroDB's segments on the file's chapters (named ones first, the others
+    /// aligned to the chapter they line up with). The IntroDB season template
+    /// keeps learning from `skipIntervals` alone.
+    private var effectiveSkipIntervals: [SkipInterval] {
+        PlaybackChapters.merged(introDB: skipIntervals, chapters: chapterSkipIntervals, chapterList: chapters)
+    }
+    /// The same segments for the views: the opening and the ending colored on
+    /// the timeline, their badges in the chapter list.
+    @Published private(set) var skipSegments: [SkipInterval] = []
+
+    private func publishSkipSegments() {
+        let latest = effectiveSkipIntervals
+        if latest != skipSegments { skipSegments = latest }
+    }
     private var autoHiddenSkipIntervalId: String?
     /// Segments the user skipped during this playback item. Keep these hidden
     /// even while the asynchronous seek is still reporting the old position.
@@ -867,6 +910,8 @@ class PlayerViewModel: ObservableObject {
             self.addedExternalSubtitleURLs = Set(self.sessionCoordinator.lastRequest?.externalSubtitles.map(\.url) ?? [])
             self.didAddExternalSubtitles = true
             self.audioTracks = []
+            self.chapters = []
+            self.chapterSkipIntervals = []
             self.subtitles = []
             self.discTitles = []
             self.selectedDiscTitleId = nil
@@ -1577,6 +1622,7 @@ class PlayerViewModel: ObservableObject {
             self.audioAmplificationDb = 0
         }
         self.skipIntervals = []
+        self.chapterSkipIntervals = []
         self.didSeedIntroDBSeasonTemplate = false
         self.didRefreshIntroDBForKnownDuration = false
         self.activeSkipInterval = nil
@@ -2070,7 +2116,7 @@ class PlayerViewModel: ObservableObject {
               time.current / time.duration >= 0.5 else {
             return false
         }
-        if let ending = skipIntervals.first(where: \.isEnding) {
+        if let ending = effectiveSkipIntervals.first(where: \.isEnding) {
             return time.current >= max(ending.startTime - Self.skipSegmentStartLead, 0)
         }
         return time.remaining <= Self.nextCardLeadSeconds
@@ -2270,7 +2316,8 @@ class PlayerViewModel: ObservableObject {
             )
             didSeedIntroDBSeasonTemplate = true
         }
-        guard !skipIntervals.isEmpty,
+        let segments = effectiveSkipIntervals
+        guard !segments.isEmpty,
               time.current > 0,
               status != .ended,
               !isStandalonePlaybackSession,
@@ -2287,7 +2334,7 @@ class PlayerViewModel: ObservableObject {
         }
 
         let current = time.current
-        for segment in skipIntervals {
+        for segment in segments {
             if current < max(segment.startTime - 0.35, 0) {
                 dismissedSkipIntervalIds.remove(segment.id)
                 autoSkippedIntervalIds.remove(segment.id)
@@ -2297,7 +2344,7 @@ class PlayerViewModel: ObservableObject {
             }
         }
 
-        let interval = skipIntervals.first { segment in
+        let interval = segments.first { segment in
             !segment.isPostCredits &&
             current >= max(segment.startTime - 0.35, 0) && current < segment.endTime - 0.25
         }
@@ -2310,7 +2357,7 @@ class PlayerViewModel: ObservableObject {
             return
         }
 
-        let postCredits = interval.followingPostCreditsScene(intervals: skipIntervals, duration: time.duration)
+        let postCredits = interval.followingPostCreditsScene(intervals: effectiveSkipIntervals, duration: time.duration)
         let targetsPostCredits = (postCredits != nil)
         if activeSkipTargetsPostCredits != targetsPostCredits {
             activeSkipTargetsPostCredits = targetsPostCredits
@@ -3789,8 +3836,8 @@ class PlayerViewModel: ObservableObject {
         if !isStandalonePlaybackSession && !isLiveStream && watchPartyPlayerBridge == nil {
             let postPlayEnabled = ProfileSettings.current.object(forKey: SettingsKey.postPlayRecommendationsEnabled) as? Bool ?? true
             let hasBlockingOverlay = showSettingsPanel || showScenePanel || isSceneDetailVisible || sidePanel != nil || isScrubbing || showPauseOverlay
-            let endingInterval = skipIntervals.first(where: \.isEnding)
-            let postCredits = endingInterval?.followingPostCreditsScene(intervals: skipIntervals, duration: time.duration)
+            let endingInterval = effectiveSkipIntervals.first(where: \.isEnding)
+            let postCredits = endingInterval?.followingPostCreditsScene(intervals: effectiveSkipIntervals, duration: time.duration)
             let endingStartTime: Double? = (postCredits == nil) ? endingInterval?.startTime : nil
             postPlayController.updateTimeline(
                 position: time.current,
@@ -3831,6 +3878,12 @@ class PlayerViewModel: ObservableObject {
                        languageName: $0.languageName, detail: $0.detail)
         }
         if audioTracks != latestAudioTracks { audioTracks = latestAudioTracks }
+
+        let latestChapters = c.chapters
+        if !PlaybackChapters.isSameList(chapters, latestChapters) {
+            chapters = latestChapters
+            chapterSkipIntervals = PlaybackChapters.skipIntervals(from: latestChapters)
+        }
 
         var subs = c.subtitleTracks.map { track in
             let externalSubtitle = availableExternalSubtitles.first {
@@ -4485,6 +4538,100 @@ class PlayerViewModel: ObservableObject {
         }
     }
 
+    /// The chapter at the playhead, for the chapter list and the timeline.
+    var currentChapterIndex: Int? {
+        PlaybackChapters.index(at: time.current, in: chapters)
+    }
+
+    func seekToChapter(_ chapter: PlaybackChapter) {
+        seek(to: chapter.startSeconds)
+    }
+
+    /// Whether the Chapters panel shows stills: seek previews are on and the player can make
+    /// them for this stream.
+    var canShowChapterThumbnails: Bool {
+        guard isSeekPreviewEnabled, let provider = scrubThumbnailProvider else { return false }
+        return provider.supportsScrubThumbnails
+    }
+
+    /// Loads every chapter's still after the Chapters panel's first open, a few seconds into
+    /// each chapter: the chapter under the focus first (the playing one until the panel reports
+    /// focus), then outward. While the panel is open nothing holds it back; closed, it carries on
+    /// only while paused or with a healthy buffer, so playback keeps its bandwidth. Scrubbing
+    /// pauses it. A chapter the player has no still for is tried a few times, then keeps its
+    /// placeholder until the panel opens again.
+    func startChapterThumbnails() {
+        guard chapterThumbnailTask == nil, canShowChapterThumbnails,
+              let provider = scrubThumbnailProvider, !chapters.isEmpty else { return }
+        let chapters = self.chapters
+        let store = chapterThumbnails
+        chapterThumbnailToken &+= 1
+        let token = chapterThumbnailToken
+        chapterThumbnailTask = Task { @MainActor [weak self, weak provider] in
+            defer {
+                if let self, self.chapterThumbnailToken == token { self.chapterThumbnailTask = nil }
+            }
+            var attempts: [Int: Int] = [:]
+            var retryAfter: [Int: Date] = [:]
+            while true {
+                guard !Task.isCancelled, let self, let provider,
+                      PlaybackChapters.isSameList(self.chapters, chapters),
+                      self.scrubThumbnailProvider === provider, self.canShowChapterThumbnails else { return }
+                let missing = chapters.indices.filter {
+                    store.images[chapters[$0].id] == nil
+                        && (attempts[$0] ?? 0) < PlaybackChapters.thumbnailAttempts
+                }
+                guard !missing.isEmpty else { return }
+                let now = Date()
+                let ready = missing.filter { (retryAfter[$0] ?? .distantPast) <= now }
+                // A seek preview owns the still decoder while the user scrubs.
+                let scrubbing = self.isScrubbing || self.isHoldingSeek || self.pendingSeekDelta != 0
+                let waitsForBuffer = self.sidePanel != .chapters && !self.chapterThumbnailsMayLoadInBackground
+                guard !scrubbing, !waitsForBuffer, !ready.isEmpty else {
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    continue
+                }
+                let anchor = self.chapterThumbnailFocusIndex ?? self.currentChapterIndex ?? 0
+                guard let index = PlaybackChapters.nextThumbnailIndex(missing: ready, anchor: anchor) else { continue }
+                let chapter = chapters[index]
+                let image = await provider.chapterThumbnail(
+                    atSeconds: PlaybackChapters.thumbnailTime(for: chapter),
+                    duration: self.playbackDuration)
+                guard !Task.isCancelled, PlaybackChapters.isSameList(self.chapters, chapters) else { return }
+                if let image {
+                    store.set(image, for: chapter.id)
+                    retryAfter[index] = nil
+                } else {
+                    // Stills held during playback and scrubbing can cover it later.
+                    let tries = (attempts[index] ?? 0) + 1
+                    attempts[index] = tries
+                    retryAfter[index] = Date().addingTimeInterval(PlaybackChapters.thumbnailRetryDelay(afterAttempts: tries))
+                }
+                // Leave room for playback between stills.
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
+    }
+
+    /// The panel's focused chapter, which loads next.
+    func focusChapterThumbnail(id: Int?) {
+        chapterThumbnailFocusIndex = id.flatMap { id in chapters.firstIndex { $0.id == id } }
+    }
+
+    /// With the panel closed, stills load only while they cannot cost playback its bandwidth.
+    private var chapterThumbnailsMayLoadInBackground: Bool {
+        if status == .paused { return true }
+        return clock.buffered - clock.position >= PlaybackChapters.backgroundThumbnailBufferSeconds
+    }
+
+    private func resetChapterThumbnails() {
+        chapterThumbnailToken &+= 1
+        chapterThumbnailTask?.cancel()
+        chapterThumbnailTask = nil
+        chapterThumbnailFocusIndex = nil
+        chapterThumbnails.reset()
+    }
+
     func seek(to seconds: Double) {
         guard !isLiveStream, seconds.isFinite else { return }
         recordWatchPartyTransportIntent()
@@ -4588,7 +4735,7 @@ class PlayerViewModel: ObservableObject {
             activeSkipInterval = nil
         }
         activeSkipTargetsPostCredits = false
-        let postCredits = interval.followingPostCreditsScene(intervals: skipIntervals, duration: time.duration)
+        let postCredits = interval.followingPostCreditsScene(intervals: effectiveSkipIntervals, duration: time.duration)
         if interval.isEnding && postCredits == nil {
             postPlayController.showImmediately()
         }
@@ -4603,7 +4750,7 @@ class PlayerViewModel: ObservableObject {
             autoSkippedIntervalIds.removeAll()
         }
         // Reset auto-hidden or dismissed skip intervals only when rewinding before their start
-        for segment in skipIntervals {
+        for segment in effectiveSkipIntervals {
             if target < max(segment.startTime - 0.35, 0) {
                 dismissedSkipIntervalIds.remove(segment.id)
                 autoSkippedIntervalIds.remove(segment.id)
@@ -7715,7 +7862,7 @@ class PlayerViewModel: ObservableObject {
               playbackTime.current / playbackTime.duration >= 0.5 else {
             return false
         }
-        if let ending = skipIntervals.first(where: \.isEnding),
+        if let ending = effectiveSkipIntervals.first(where: \.isEnding),
            playbackTime.current >= max(ending.startTime - Self.skipSegmentStartLead, 0) {
             print("[ContinueWatching][Player] shouldMarkAsWatched=true due to ending skip interval at \(ending.startTime)s")
             return true
