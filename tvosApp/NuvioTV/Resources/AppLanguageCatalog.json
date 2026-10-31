@@ -8949,7 +8949,13 @@
     "tvos_settings_seekr_checking": "Ověřuji klíč u Seekru…",
     "tvos_settings_seekr_valid": "Seekr klíč přijal.",
     "tvos_settings_seekr_invalid": "Seekr tento klíč nepřijal.",
-    "tvos_settings_seekr_unreachable": "Seekr se nepodařilo kontaktovat kvůli ověření klíče."
+    "tvos_settings_seekr_unreachable": "Seekr se nepodařilo kontaktovat kvůli ověření klíče.",
+    "tvos_settings_player_panel": "Spodní panel",
+    "tvos_settings_player_panel_subtitle": "Šipka dolů během přehrávání. Otevře se na první zobrazené kartě; skryj, co nepoužíváš.",
+    "tvos_settings_player_panel_chapters": "Kapitoly souboru s náhledy",
+    "tvos_settings_player_panel_info": "Engine, obraz a zvuk",
+    "tvos_settings_player_panel_up_next": "Další díl",
+    "tvos_settings_player_panel_watch_party": "Sledování společně s přáteli"
   },
   "da": {
     "sidebar_genres_title": "Genrer",
@@ -17887,7 +17893,13 @@
     "tvos_settings_seekr_checking": "Checking the key with Seekr…",
     "tvos_settings_seekr_valid": "Seekr accepts the key.",
     "tvos_settings_seekr_invalid": "Seekr doesn't accept this key.",
-    "tvos_settings_seekr_unreachable": "Seekr couldn't be reached to check the key."
+    "tvos_settings_seekr_unreachable": "Seekr couldn't be reached to check the key.",
+    "tvos_settings_player_panel": "Bottom Panel",
+    "tvos_settings_player_panel_subtitle": "Press Down during playback. It opens on the first tab shown; hide the ones you don't use.",
+    "tvos_settings_player_panel_chapters": "The file's chapters, with stills",
+    "tvos_settings_player_panel_info": "Engine, video and audio details",
+    "tvos_settings_player_panel_up_next": "The next episode",
+    "tvos_settings_player_panel_watch_party": "Watch together with friends"
   },
   "es": {
     "sidebar_genres_title": "Géneros",

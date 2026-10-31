@@ -452,7 +452,7 @@ extension PlayerView {
                     // Discrete seeking is exclusively triggered by physical button / D-pad taps via RemoteSeekPressCatcher.
                     break
                 case .down:
-                    if viewModel.isSceneEnabled {
+                    if viewModel.canOpenScenePanel {
                         viewModel.openScene()
                     } else {
                         viewModel.revealControls()
@@ -501,6 +501,32 @@ extension PlayerView {
                     if watchPartyOwner?.presentation?.mount.isCurrent == true { return "party.catchUp" }
                     guard let room = watchPartyOwner?.service?.session, let party = room.party else { return "party.create" }
                     return party.hostMemberID == room.memberID ? "party.hostOnly" : "party.lobby"
+                }(),
+                chaptersContent: viewModel.chapters.isEmpty ? nil : { focus, focusContext in
+                    AnyView(PlayerChaptersRow(
+                        viewModel: viewModel,
+                        clock: viewModel.clock,
+                        thumbnails: viewModel.chapterThumbnails,
+                        focusedCardID: focus,
+                        focusContext: focusContext,
+                        onSelect: {
+                            withAnimation(.playerControls) {
+                                viewModel.closeScene()
+                                focusRemoteInput()
+                            }
+                        },
+                        onDismiss: {
+                            withAnimation(.playerControls) {
+                                viewModel.closeScene()
+                                focusRemoteInput()
+                            }
+                        }
+                    ))
+                },
+                chaptersFocusTarget: {
+                    let chapters = viewModel.chapters
+                    guard !chapters.isEmpty else { return "chapter-0" }
+                    return PlayerChaptersRow.focusID(of: chapters[viewModel.currentChapterIndex ?? 0])
                 }()
             )
             .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -577,7 +603,7 @@ extension PlayerView {
                     }
                 case .down:
                     if !viewModel.showControls {
-                        if viewModel.isSceneEnabled {
+                        if viewModel.canOpenScenePanel {
                             skipSegmentFocused = false
                             viewModel.openScene()
                         } else {
@@ -653,7 +679,7 @@ extension PlayerView {
                             nextEpisodeFocused = false
                             cancelAutoPlayFocused = true
                         } else if !viewModel.showControls {
-                            if viewModel.isSceneEnabled {
+                            if viewModel.canOpenScenePanel {
                                 nextEpisodeFocused = false
                                 viewModel.openScene()
                             } else {
@@ -705,7 +731,7 @@ extension PlayerView {
                             nextEpisodeFocused = true
                         case .down:
                             if !viewModel.showControls {
-                                if viewModel.isSceneEnabled {
+                                if viewModel.canOpenScenePanel {
                                     cancelAutoPlayFocused = false
                                     viewModel.openScene()
                                 } else {
@@ -812,9 +838,6 @@ extension PlayerView {
                 .zIndex(25)
         } else if viewModel.sidePanel == .sources {
             PlayerSourcesPanel(viewModel: viewModel)
-                .zIndex(25)
-        } else if viewModel.sidePanel == .chapters {
-            PlayerChaptersPanel(viewModel: viewModel, clock: viewModel.clock, thumbnails: viewModel.chapterThumbnails)
                 .zIndex(25)
         }
     }

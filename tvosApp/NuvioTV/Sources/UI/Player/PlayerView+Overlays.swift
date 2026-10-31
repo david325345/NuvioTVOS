@@ -24,7 +24,7 @@ extension PlayerView {
         case .up:
             break
         case .down:
-            if viewModel.isSceneEnabled && !isLoadingOverlayVisible {
+            if viewModel.canOpenScenePanel && !isLoadingOverlayVisible {
                 viewModel.openScene()
             }
         default:

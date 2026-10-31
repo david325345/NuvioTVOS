@@ -348,6 +348,8 @@ enum SettingsKey {
     static let seekPreviewBeyondBuffer = "nuvio.tv.settings.playback.seekPreviewBeyondBuffer"
     /// Seekr (seekr.tv) API key for seek previews; kept in the Nuvio account like the other settings.
     static let seekrApiKey = "nuvio.tv.settings.playback.seekrApiKey"
+    /// The bottom panel's tabs and their order (see `PlayerPanelTabs`).
+    static let playerPanelTabs = "nuvio.tv.settings.playback.playerPanelTabs"
     static let showLoadingStatus = "nuvio.tv.settings.playback.showLoadingStatus"
     static let audioDelayPersistEnabled = "nuvio.tv.settings.playback.audioDelayPersistEnabled"
     static let persistentAudioDelayMs = "nuvio.tv.settings.playback.persistentAudioDelayMs"
@@ -417,7 +419,7 @@ enum SettingsKey {
         subtitleLanguages, subtitleLanguage, subtitleLanguageSecondary, subtitleLanguageTertiary,
         forcedSubtitles, subtitleSize, frameRateMatching, networkCache, hybridDiskCacheEnabled, hybridDiskCacheLimitGB, playbackTrackSelections, showAudioLanguages,
         externalPlayerForwardSubtitles, assOverrideMode,
-        playerShowPiP, playerShowEpisodes, playerShowSources, playerShowSubtitles, playerShowAudio, playerShowChapters, seekPreviewEnabled, seekPreviewBeyondBuffer, seekrApiKey, showLoadingStatus,
+        playerShowPiP, playerShowEpisodes, playerShowSources, playerShowSubtitles, playerShowAudio, playerShowChapters, seekPreviewEnabled, seekPreviewBeyondBuffer, seekrApiKey, playerPanelTabs, showLoadingStatus,
         audioDelayPersistEnabled, persistentAudioDelayMs,
         sceneFeatureEnabled,
         fastNavigation, smoothFocus, playbackDiagnostics, playbackDebug, focusHighlighter,
@@ -8607,6 +8609,7 @@ private struct PlaybackSettingsView: View {
     @AppStorage(SettingsKey.seekPreviewEnabled) private var seekPreviewEnabled = true
     @AppStorage(SettingsKey.seekPreviewBeyondBuffer) private var seekPreviewBeyondBuffer = false
     @AppStorage(SettingsKey.seekrApiKey) private var seekrApiKey = ""
+    @AppStorage(SettingsKey.playerPanelTabs) private var playerPanelTabs = ""
     @State private var seekrKeyCheck: SeekrKeyCheck = .unchecked
     @State private var seekrKeyCheckTask: Task<Void, Never>?
     @AppStorage(SettingsKey.showLoadingStatus) private var showLoadingStatus = true
@@ -8650,6 +8653,39 @@ private struct PlaybackSettingsView: View {
     private let diskCacheLimitOptions = ["5 GB", "10 GB", "20 GB", "30 GB", "50 GB"]
     private let streamSortModes = StreamSortOption.allCases.map(\.rawValue)
     private let lastLinkCacheOptions = ["1 Hour", "6 Hours", "12 Hours", "1 Day", "2 Days", "3 Days", "7 Days"]
+
+    private func panelTabSubtitle(_ tab: SceneTab) -> String {
+        switch tab {
+        case .chapters:
+            return L10n.string("tvos_settings_player_panel_chapters", fallback: "The file's chapters, with stills")
+        case .scene:
+            return L10n.string(
+                "tvos_settings_player_scene_subtitle",
+                fallback: "Press Down during playback to recognize cast members and songs currently playing"
+            )
+        case .info:
+            return L10n.string("tvos_settings_player_panel_info", fallback: "Engine, video and audio details")
+        case .upNext:
+            return L10n.string("tvos_settings_player_panel_up_next", fallback: "The next episode")
+        case .watchParty:
+            return L10n.string("tvos_settings_player_panel_watch_party", fallback: "Watch together with friends")
+        }
+    }
+
+    /// InSight's switch is the "Scene (InSight)" setting, which also runs its recognition.
+    private func togglePanelTab(_ tab: SceneTab) {
+        if tab == .scene {
+            sceneFeatureEnabled.toggle()
+            return
+        }
+        var config = PlayerPanelTabs.decode(playerPanelTabs)
+        if config.hidden.contains(tab) {
+            config.hidden.remove(tab)
+        } else {
+            config.hidden.insert(tab)
+        }
+        playerPanelTabs = PlayerPanelTabs.encode(config)
+    }
 
     private enum SeekrKeyCheck {
         case unchecked, checking, valid, invalid, unreachable
@@ -8997,16 +9033,35 @@ private struct PlaybackSettingsView: View {
                     accentColor: accentColor
                 )
 
-                SettingsToggleRow(
-                    title: L10n.string("tvos_settings_player_scene", fallback: "Scene (InSight)"),
-                    subtitle: L10n.string(
-                        "tvos_settings_player_scene_subtitle",
-                        fallback: "Press Down during playback to recognize cast members and songs currently playing"
-                    ),
-                    isOn: $sceneFeatureEnabled,
-                    accentColor: accentColor
-                )
+            }
 
+            SettingsGroup(
+                title: L10n.string("tvos_settings_player_panel", fallback: "Bottom Panel"),
+                subtitle: L10n.string(
+                    "tvos_settings_player_panel_subtitle",
+                    fallback: "Press Down during playback. It opens on the first tab shown; hide the ones you don't use."
+                )
+            ) {
+                let config = PlayerPanelTabs.decode(playerPanelTabs)
+                ForEach(Array(config.order.enumerated()), id: \.element) { index, tab in
+                    RatingProviderOrderRow(
+                        item: RatingProviderRowItem(
+                            id: PlayerPanelTabs.key(for: tab),
+                            title: tab.localizedTitle,
+                            subtitle: panelTabSubtitle(tab),
+                            isAddon: false,
+                            isEnabled: tab == .scene ? sceneFeatureEnabled : !config.hidden.contains(tab)
+                        ),
+                        accentColor: accentColor,
+                        canToggle: true,
+                        canMoveUp: index > 0,
+                        canMoveDown: index < config.order.count - 1,
+                        onToggle: { togglePanelTab(tab) },
+                        onMove: { up in
+                            playerPanelTabs = PlayerPanelTabs.encode(PlayerPanelTabs.moving(tab, up: up, in: config))
+                        }
+                    )
+                }
             }
 
             SettingsGroup(

@@ -2015,8 +2015,7 @@ class PlayerViewModel: ObservableObject {
     }
 
     func openWatchPartyScene() {
-        openScene()
-        sceneViewModel.selectTab(.watchParty)
+        openScene(tab: .watchParty)
     }
 
     func isCurrentWatchPartyPlayerSurface() -> Bool {
@@ -4533,7 +4532,7 @@ class PlayerViewModel: ObservableObject {
                 if self.isScrubbing || self.isHoldingSeek || self.pendingSeekDelta != 0 {
                     // A seek preview owns the still decoder while the user scrubs.
                     waitReason = "waiting (scrubbing)"
-                } else if self.sidePanel != .chapters, !self.chapterThumbnailsMayLoadInBackground {
+                } else if !self.isChaptersTabOpen, !self.chapterThumbnailsMayLoadInBackground {
                     waitReason = "waiting (playback buffer)"
                 } else if ready.isEmpty {
                     waitReason = "waiting (retry)"
@@ -7508,8 +7507,35 @@ class PlayerViewModel: ObservableObject {
         return gap
     }
 
-    func openScene() {
-        guard isSceneEnabled else { return }
+    /// The bottom panel's tabs for this playback, in the order of the settings.
+    var scenePanelTabs: [SceneTab] {
+        PlayerPanelTabs.tabs(
+            config: PlayerPanelTabs.decode(ProfileSettings.current.string(forKey: SettingsKey.playerPanelTabs)),
+            sceneEnabled: isSceneEnabled,
+            hasChapters: !chapters.isEmpty,
+            hasNextEpisode: nextEpisode != nil,
+            watchPartyAvailable: WatchPartyConfiguration.isEnabled && !isStandalonePlaybackSession
+        )
+    }
+
+    /// Whether Down during playback has a bottom panel to open.
+    var canOpenScenePanel: Bool {
+        !scenePanelTabs.isEmpty
+    }
+
+    /// Whether the Chapters tab is on screen (its stills then load whatever the buffer).
+    var isChaptersTabOpen: Bool {
+        showScenePanel && sceneViewModel.selectedTab == .chapters
+    }
+
+    /// Opens the bottom panel on `tab`, or on its first tab. Watch Party asked for by its own
+    /// flow opens even when the settings hide its tab.
+    func openScene(tab: SceneTab? = nil) {
+        var tabs = scenePanelTabs
+        if tab == .watchParty, !tabs.contains(.watchParty), WatchPartyConfiguration.isEnabled {
+            tabs.append(.watchParty)
+        }
+        guard !tabs.isEmpty else { return }
         cancelMoveSeekTracking()
         if isScrubbing {
             cancelScrub()
@@ -7518,11 +7544,13 @@ class PlayerViewModel: ObservableObject {
         setControlsAutoHideSuspended(true)
         hideControls()
         
-        let context = buildSceneContext()
-        sceneAudioTapBroker.updateEngine(aetherController?.engine)
-        sceneCoordinator.updateContext(context)
-        if !availableExternalSubtitles.isEmpty {
-            sceneCoordinator.updateAvailableSubtitles(availableExternalSubtitles)
+        if tabs.contains(.scene) {
+            let context = buildSceneContext()
+            sceneAudioTapBroker.updateEngine(aetherController?.engine)
+            sceneCoordinator.updateContext(context)
+            if !availableExternalSubtitles.isEmpty {
+                sceneCoordinator.updateAvailableSubtitles(availableExternalSubtitles)
+            }
         }
         let playbackInfo = buildScenePlaybackInfo()
         sceneViewModel.setMetadata(
@@ -7533,7 +7561,8 @@ class PlayerViewModel: ObservableObject {
             nextEpisode: nextEpisode,
             playbackInfo: playbackInfo
         )
-        sceneViewModel.open()
+        sceneViewModel.configureTabs(tabs)
+        sceneViewModel.open(tab: tab)
     }
     
     func closeScene() {

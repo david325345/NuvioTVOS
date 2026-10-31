@@ -7,6 +7,8 @@ final class SceneViewModel: ObservableObject {
     @Published var isVisible: Bool = false
     @Published var selectedTab: SceneTab = .scene
     @Published var availableTabs: [SceneTab] = [.scene, .info]
+    /// Whether InSight is one of the tabs: only then does opening the panel start its recognition.
+    @Published private(set) var includesScene = true
     @Published var snapshot: SceneSnapshot = .empty
     @Published var selectedDetailItem: SceneDetailItem? = nil
     @Published var focusedCardID: String? = nil
@@ -70,23 +72,28 @@ final class SceneViewModel: ObservableObject {
         if let playbackInfo {
             self.playbackInfo = playbackInfo
         }
-        
-        var tabs: [SceneTab] = [.scene, .info]
-        if nextEpisode != nil {
-            tabs.append(.upNext)
-        }
-        self.availableTabs = tabs
+    }
+
+    /// The tabs to show, in order (see `PlayerPanelTabs`).
+    func configureTabs(_ tabs: [SceneTab]) {
+        availableTabs = tabs
+        includesScene = tabs.contains(.scene)
     }
     
     func updatePlaybackInfo(_ playbackInfo: ScenePlaybackInfo) {
         self.playbackInfo = playbackInfo
     }
     
-    func open() {
-        guard !isVisible else { return }
+    /// Opens on `tab` when it is shown, else on the first tab.
+    func open(tab: SceneTab? = nil) {
+        let wanted = tab.flatMap { availableTabs.contains($0) ? $0 : nil }
+        guard !isVisible else {
+            if let wanted { selectedTab = wanted }
+            return
+        }
         isVisible = true
-        selectedTab = .scene
-        coordinator.openPanel()
+        selectedTab = wanted ?? availableTabs.first ?? .scene
+        if includesScene { coordinator.openPanel() }
     }
     
     func close() {

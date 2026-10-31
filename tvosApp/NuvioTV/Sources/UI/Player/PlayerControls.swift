@@ -381,7 +381,7 @@ struct PlayerControls: View {
                 if didReportPlaybackStarted {
                     moveFocus(to: .timeline)
                 }
-            } else if origin == .timeline, viewModel.isSceneEnabled {
+            } else if origin == .timeline, viewModel.canOpenScenePanel {
                 viewModel.openScene()
             }
         case .left:
@@ -488,7 +488,7 @@ struct PlayerControls: View {
                     focusKey: .chapters,
                     isFocused: focusedControl == .chapters
                 ) {
-                    viewModel.openSidePanel(.chapters)
+                    viewModel.openScene(tab: .chapters)
                 } icon: {
                     Image(systemName: "rectangle.split.3x1")
                 }

@@ -19,6 +19,13 @@ struct ScenePanelView: View {
         ScenePanelWatchPartyFocusContext
     ) -> AnyView)?
     let watchPartyFocusTarget: String
+    /// The Chapters tab's row, given the card focus and how to leave it (like Watch Party).
+    let chaptersContent: ((
+        FocusState<String?>.Binding,
+        ScenePanelWatchPartyFocusContext
+    ) -> AnyView)?
+    /// The card the Chapters tab enters on: the playing chapter's.
+    let chaptersFocusTarget: String
 
     private enum FocusSection: Equatable { case tabs, content }
     
@@ -38,7 +45,12 @@ struct ScenePanelView: View {
             FocusState<String?>.Binding,
             ScenePanelWatchPartyFocusContext
         ) -> AnyView)? = nil,
-        watchPartyFocusTarget: String = "party.start"
+        watchPartyFocusTarget: String = "party.start",
+        chaptersContent: ((
+            FocusState<String?>.Binding,
+            ScenePanelWatchPartyFocusContext
+        ) -> AnyView)? = nil,
+        chaptersFocusTarget: String = "chapter-0"
     ) {
         self.viewModel = viewModel
         self.isAdvancing = isAdvancing
@@ -46,6 +58,8 @@ struct ScenePanelView: View {
         self.onPlayNextEpisode = onPlayNextEpisode
         self.watchPartyContent = watchPartyContent
         self.watchPartyFocusTarget = watchPartyFocusTarget
+        self.chaptersContent = chaptersContent
+        self.chaptersFocusTarget = chaptersFocusTarget
     }
     
     var body: some View {
@@ -62,6 +76,18 @@ struct ScenePanelView: View {
                 // Active Tab Content
                 Group {
                     switch viewModel.selectedTab {
+                    case .chapters:
+                        chaptersContent?(
+                            $focusedCardID,
+                            ScenePanelWatchPartyFocusContext(
+                                entryLocked: activeFocusSection != .content,
+                                entryFocusTarget: contentFocusAnchor(for: .chapters) ?? chaptersFocusTarget,
+                                entryFallbackTarget: chaptersFocusTarget,
+                                onFocusChanged: { rememberContentFocus($0, for: .chapters) },
+                                onMoveUpFromContent: focusSelectedTabFromContent,
+                                focusTab: requestTabFocus
+                            )
+                        ) ?? AnyView(EmptyView())
                     case .scene:
                         sceneTabContent
                     case .info:
@@ -75,7 +101,7 @@ struct ScenePanelView: View {
                                 entryLocked: activeFocusSection != .content,
                                 entryFocusTarget: contentFocusAnchor(for: .watchParty) ?? watchPartyFocusTarget,
                                 entryFallbackTarget: watchPartyFocusTarget,
-                                onFocusChanged: rememberWatchPartyFocus,
+                                onFocusChanged: { rememberContentFocus($0, for: .watchParty) },
                                 onMoveUpFromContent: focusSelectedTabFromContent,
                                 focusTab: requestTabFocus
                             )
@@ -212,9 +238,9 @@ struct ScenePanelView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    /// The tabs in the order of the settings; Watch Party only when the player can show it.
     private var visibleTabs: [SceneTab] {
-        guard watchPartyContent != nil else { return viewModel.availableTabs }
-        return viewModel.availableTabs + [.watchParty]
+        viewModel.availableTabs.filter { $0 != .watchParty || watchPartyContent != nil }
     }
     
     // MARK: - Scene Tab Content
@@ -609,6 +635,8 @@ struct ScenePanelView: View {
     private func contentFocusAnchor(for tab: SceneTab) -> String? {
         let anchors: [String]
         switch tab {
+        case .chapters:
+            anchors = [contentFocusAnchors[.chapters] ?? chaptersFocusTarget]
         case .scene:
             let actors = viewModel.snapshot.actors.map { "actor-\($0.id)" }
             let song = viewModel.snapshot.song.map { "song-\($0.id)" }
@@ -628,6 +656,8 @@ struct ScenePanelView: View {
 
     private func isValidContentAnchor(_ id: String, for tab: SceneTab) -> Bool {
         switch tab {
+        case .chapters:
+            return id.hasPrefix("chapter-")
         case .scene:
             return contentFocusAnchorCandidates(for: tab).contains(id)
         case .info:
@@ -646,13 +676,14 @@ struct ScenePanelView: View {
         return actors + (song.map { [$0] } ?? [])
     }
 
-    private func rememberWatchPartyFocus(_ id: String?) {
+    /// A tab's own content reports its focus (Watch Party's controls, the chapter cards).
+    private func rememberContentFocus(_ id: String?, for tab: SceneTab) {
         if let pending = pendingTabFocusTarget {
             reassertPendingTabFocus(pending)
             return
         }
-        guard let id, isValidContentAnchor(id, for: .watchParty) else { return }
-        contentFocusAnchors[.watchParty] = id
+        guard let id, isValidContentAnchor(id, for: tab) else { return }
+        contentFocusAnchors[tab] = id
         activeFocusSection = .content
     }
 
