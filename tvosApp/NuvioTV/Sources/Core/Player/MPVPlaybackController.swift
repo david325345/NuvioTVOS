@@ -850,11 +850,15 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
         SeekPreviewLaneHost.mayServe(thumbnailSourceContext)
     }
 
-    /// A chapter's still for the Chapters panel: one held near it, else the preview lane's
-    /// keyframe; sources the lane does not serve keep the ordinary preview path.
+    /// A chapter's still for the Chapters panel: the external storyboard's (the add-on's
+    /// trickplay, the trickplay server or Seekr), else one held near it, else the preview
+    /// lane's keyframe; sources the lane does not serve keep the ordinary preview path.
     func chapterThumbnail(atSeconds seconds: Double, duration: Double) async -> CGImage? {
         let generation = loadGeneration
         guard let context = thumbnailSourceContext else { return nil }
+        if let external = externalTrickplayProvider, let image = await external.thumbnail(at: seconds) {
+            return loadGeneration == generation ? image : nil
+        }
         if let near = await hybridThumbnailIndex.nearest(seconds: seconds, maxDistance: 2.5, generation: generation) {
             return near
         }
