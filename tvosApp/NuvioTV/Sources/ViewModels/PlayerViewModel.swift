@@ -549,15 +549,16 @@ class PlayerViewModel: ObservableObject {
     private var skipIntervals: [SkipInterval] = [] {
         didSet { publishSkipSegments() }
     }
-    /// Skip Intro / Skip Ending from chapter names ("Opening", "ED"…), used
-    /// only for what IntroDB doesn't have.
+    /// Skip Intro / Skip Ending from chapter names ("Opening", "ED"…): exact for
+    /// the file, so they take the place of IntroDB's opening or ending.
     private var chapterSkipIntervals: [SkipInterval] = [] {
         didSet { publishSkipSegments() }
     }
-    /// IntroDB's segments, completed from the chapters. The IntroDB season
-    /// template keeps learning from `skipIntervals` alone.
+    /// IntroDB's segments on the file's chapters (named ones first, the others
+    /// aligned to the chapter they line up with). The IntroDB season template
+    /// keeps learning from `skipIntervals` alone.
     private var effectiveSkipIntervals: [SkipInterval] {
-        PlaybackChapters.merged(introDB: skipIntervals, chapters: chapterSkipIntervals)
+        PlaybackChapters.merged(introDB: skipIntervals, chapters: chapterSkipIntervals, chapterList: chapters)
     }
     /// The same segments for the views: the opening and the ending colored on
     /// the timeline, their badges in the chapter list.

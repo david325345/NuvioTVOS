@@ -153,16 +153,50 @@ final class PlaybackChaptersTests: XCTestCase {
         XCTAssertEqual(PlaybackChapters.thumbnailOrder(count: 0, from: 0), [])
     }
 
-    func testIntroDBComesFirstAndChaptersFillTheRest() {
-        let introDB = [SkipInterval(startTime: 80, endTime: 168, type: "intro", provider: "introdb")]
-        let fromChapters = [
-            SkipInterval(startTime: 75, endTime: 165, type: "intro", provider: "chapters"),
-            SkipInterval(startTime: 1290, endTime: 1380, type: "outro", provider: "chapters"),
+    func testNamedChaptersTakeThePlaceOfIntroDB() {
+        let introDB = [
+            SkipInterval(startTime: 80, endTime: 168, type: "intro", provider: "introdb"),
+            SkipInterval(startTime: 1300, endTime: 1385, type: "outro", provider: "introdb"),
         ]
+        let fromChapters = [SkipInterval(startTime: 75, endTime: 165, type: "intro", provider: "chapters")]
         let merged = PlaybackChapters.merged(introDB: introDB, chapters: fromChapters)
-        XCTAssertEqual(merged.map(\.provider), ["introdb", "chapters"])
-        XCTAssertEqual(merged.map(\.startTime), [80, 1290])
+        // The file's "Opening" replaces IntroDB's; IntroDB keeps the ending the names don't have.
+        XCTAssertEqual(merged.map(\.provider), ["chapters", "introdb"])
+        XCTAssertEqual(merged.map(\.startTime), [75, 1300])
         XCTAssertEqual(PlaybackChapters.merged(introDB: [], chapters: fromChapters), fromChapters)
         XCTAssertEqual(PlaybackChapters.merged(introDB: introDB, chapters: []), introDB)
+    }
+
+    func testIntroDBLinesUpWithTheFileChapters() {
+        let chapters = [
+            chapter(0, "Chapter 1", 0, 92),
+            chapter(1, "Chapter 2", 92, 182),     // the opening, unnamed
+            chapter(2, "Chapter 3", 182, 1290),
+            chapter(3, "Chapter 4", 1290, 1380),  // the ending, unnamed
+            chapter(4, "Chapter 5", 1380, 1420),
+        ]
+        // IntroDB from another release: the opening 20 s late, the ending a few seconds off.
+        let introDB = [
+            SkipInterval(startTime: 112, endTime: 182, type: "intro", provider: "introdb"),
+            SkipInterval(startTime: 1286, endTime: 1377, type: "outro", provider: "introdb"),
+        ]
+        let merged = PlaybackChapters.merged(introDB: introDB, chapters: [], chapterList: chapters)
+        XCTAssertEqual(merged.map(\.startTime), [92, 1290])
+        XCTAssertEqual(merged.map(\.endTime), [182, 1380])
+        XCTAssertEqual(merged.map(\.provider), ["introdb", "introdb"])
+        XCTAssertEqual(merged.map(\.type), ["intro", "outro"])
+    }
+
+    func testIntroDBKeepsItsTimesWithoutAMatchingChapter() {
+        // The opening sits inside a long part: no chapter to line it up with.
+        let long = [chapter(0, "Part A", 0, 600), chapter(1, "Part B", 600, 1400)]
+        let opening = SkipInterval(startTime: 90, endTime: 180, type: "intro", provider: "introdb")
+        XCTAssertEqual(PlaybackChapters.aligned(opening, to: long), opening)
+        // A chapter of the right length that covers too little of it.
+        let shifted = [chapter(0, "Chapter 1", 0, 150), chapter(1, "Chapter 2", 150, 240), chapter(2, "Chapter 3", 240, 1400)]
+        XCTAssertEqual(PlaybackChapters.aligned(opening, to: shifted), opening)
+        // Recaps and other kinds are left alone.
+        let recap = SkipInterval(startTime: 0, endTime: 90, type: "recap", provider: "introdb")
+        XCTAssertEqual(PlaybackChapters.aligned(recap, to: [chapter(0, "Chapter 1", 0, 92), chapter(1, "Chapter 2", 92, 900)]), recap)
     }
 }

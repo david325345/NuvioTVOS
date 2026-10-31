@@ -170,13 +170,47 @@ enum PlaybackChapters {
         return match.isIntro ? .opening : (match.isEnding ? .ending : nil)
     }
 
-    /// IntroDB first; chapters only fill an opening or an ending IntroDB
-    /// doesn't have.
-    static func merged(introDB: [SkipInterval], chapters: [SkipInterval]) -> [SkipInterval] {
-        let hasIntro = introDB.contains(where: \.isIntro)
-        let hasEnding = introDB.contains(where: \.isEnding)
-        let extra = chapters.filter { ($0.isIntro && !hasIntro) || ($0.isEnding && !hasEnding) }
-        guard !extra.isEmpty else { return introDB }
-        return (introDB + extra).sorted { $0.startTime < $1.startTime }
+    /// The opening and the ending in use, on the file's own cut: IntroDB's times come from
+    /// another release (or the season's template), so they can sit seconds off this file.
+    /// - An opening or ending chapter by name (`chapters`, from `skipIntervals(from:)`) takes
+    ///   the place of IntroDB's segment of that kind.
+    /// - IntroDB's other segments take the start and end of the chapter they line up with
+    ///   (`chapterList`, see `aligned(_:to:)`).
+    static func merged(
+        introDB: [SkipInterval],
+        chapters: [SkipInterval],
+        chapterList: [PlaybackChapter] = []
+    ) -> [SkipInterval] {
+        let namedIntro = chapters.contains(where: \.isIntro)
+        let namedEnding = chapters.contains(where: \.isEnding)
+        let fromIntroDB = introDB
+            .filter { !($0.isIntro && namedIntro) && !($0.isEnding && namedEnding) }
+            .map { aligned($0, to: chapterList) }
+        return (fromIntroDB + chapters).sorted { $0.startTime < $1.startTime }
+    }
+
+    /// Share of both IntroDB's segment and the chapter that must overlap for the segment to
+    /// take the chapter's start and end.
+    static let alignmentOverlap: Double = 0.7
+
+    /// IntroDB's opening or ending on the chapter it lines up with: one of an opening's or an
+    /// ending's length that covers most of the segment, and the segment most of it. Anything
+    /// else (no such chapter, a long part that holds the opening) keeps IntroDB's times.
+    static func aligned(_ interval: SkipInterval, to chapters: [PlaybackChapter]) -> SkipInterval {
+        guard interval.isIntro || interval.isEnding else { return interval }
+        let length = interval.endTime - interval.startTime
+        guard length > 0 else { return interval }
+        let longest = interval.isIntro ? maxOpeningSeconds : maxEndingSeconds
+        var best: (chapter: PlaybackChapter, overlap: Double)?
+        for chapter in chapters where chapter.durationSeconds >= minSegmentSeconds && chapter.durationSeconds <= longest {
+            let overlap = min(chapter.endSeconds, interval.endTime) - max(chapter.startSeconds, interval.startTime)
+            guard overlap >= alignmentOverlap * length,
+                  overlap >= alignmentOverlap * chapter.durationSeconds,
+                  overlap > (best?.overlap ?? 0) else { continue }
+            best = (chapter, overlap)
+        }
+        guard let chapter = best?.chapter else { return interval }
+        return SkipInterval(startTime: chapter.startSeconds, endTime: chapter.endSeconds,
+                            type: interval.type, provider: interval.provider)
     }
 }
