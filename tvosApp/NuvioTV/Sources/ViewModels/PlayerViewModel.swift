@@ -238,6 +238,10 @@ class PlayerViewModel: ObservableObject {
     private var chapterThumbnailTask: Task<Void, Never>?
     private var chapterThumbnailToken: UInt64 = 0
     private var chapterThumbnailFocusIndex: Int?
+    /// The stills started loading on their own for this chapter list (see
+    /// `autoStartChapterThumbnailsIfReady`), and since when playback could let them.
+    private var chapterThumbnailsAutoStarted = false
+    private var chapterThumbnailsEligibleSince: Date?
     @Published var discTitles: [PlaybackDiscTitleInfo] = []
     @Published var selectedDiscTitleId: Int? = nil
     @Published var playbackSpeed: PlaybackSpeed = .normal
@@ -3827,6 +3831,7 @@ class PlayerViewModel: ObservableObject {
             chapters = latestChapters
             chapterSkipIntervals = PlaybackChapters.skipIntervals(from: latestChapters)
         }
+        autoStartChapterThumbnailsIfReady()
 
         var subs = c.subtitleTracks.map { track in
             let externalSubtitle = availableExternalSubtitles.first {
@@ -4497,9 +4502,9 @@ class PlayerViewModel: ObservableObject {
         return provider.supportsScrubThumbnails
     }
 
-    /// Loads every chapter's still after the Chapters panel's first open, a few seconds into
-    /// each chapter: the chapter under the focus first (the playing one until the panel reports
-    /// focus), then outward. While the panel is open nothing holds it back; closed, it carries on
+    /// Loads every chapter's still, on its own a while into playback or when the Chapters tab
+    /// first opens, a few seconds into each chapter: the chapter under the focus first (the
+    /// playing one until the panel reports focus), then outward. While the panel is open nothing holds it back; closed, it carries on
     /// only while paused or with a healthy buffer, so playback keeps its bandwidth. Scrubbing
     /// pauses it, a chapter that fails is tried again a little later, and it runs until every
     /// chapter has its still.
@@ -4567,6 +4572,32 @@ class PlayerViewModel: ObservableObject {
         }
     }
 
+    /// Chapter stills load without the panel, so it opens with them: once playback has run
+    /// 10 s, and then only while paused or with a healthy buffer (the loader's own rule), not
+    /// while scrubbing. Not when seek previews are off or the Chapters tab is hidden.
+    private func autoStartChapterThumbnailsIfReady() {
+        guard !chapterThumbnailsAutoStarted, chapterThumbnailTask == nil, !chapters.isEmpty else { return }
+        guard status == .playing || status == .paused else {
+            chapterThumbnailsEligibleSince = nil
+            return
+        }
+        let now = Date()
+        guard let since = chapterThumbnailsEligibleSince else {
+            chapterThumbnailsEligibleSince = now
+            return
+        }
+        guard now.timeIntervalSince(since) >= Self.chapterThumbnailsAutoStartDelay,
+              canShowChapterThumbnails,
+              !PlayerPanelTabs.decode(ProfileSettings.current.string(forKey: SettingsKey.playerPanelTabs))
+                .hidden.contains(.chapters),
+              !isScrubbing, !isHoldingSeek, pendingSeekDelta == 0,
+              chapterThumbnailsMayLoadInBackground else { return }
+        chapterThumbnailsAutoStarted = true
+        startChapterThumbnails()
+    }
+
+    static let chapterThumbnailsAutoStartDelay: TimeInterval = 10
+
     /// The panel's focused chapter, which loads next.
     func focusChapterThumbnail(id: Int?) {
         chapterThumbnailFocusIndex = id.flatMap { id in chapters.firstIndex { $0.id == id } }
@@ -4593,6 +4624,8 @@ class PlayerViewModel: ObservableObject {
         chapterThumbnailTask?.cancel()
         chapterThumbnailTask = nil
         chapterThumbnailFocusIndex = nil
+        chapterThumbnailsAutoStarted = false
+        chapterThumbnailsEligibleSince = nil
         chapterThumbnails.reset()
         SeekPreviewDiagnostics.shared.updateChapters("")
     }
