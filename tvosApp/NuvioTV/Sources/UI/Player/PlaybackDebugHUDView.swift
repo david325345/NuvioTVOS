@@ -225,6 +225,16 @@ struct PlaybackDebugHUDView: View {
                         dotColor: chapterStills.contains("done") ? .green : (chapterStills.contains("waiting") ? .yellow : .gray)
                     )
                 }
+                let seekr = SeekPreviewDiagnostics.shared.seekrLine
+                if !seekr.isEmpty {
+                    hudRow(
+                        label: "Seekr",
+                        value: seekr,
+                        hasDot: true,
+                        dotColor: seekr.hasPrefix("found") ? .green
+                            : (seekr.contains("401") || seekr.contains("limit") ? .red : (seekr.hasSuffix("…") ? .yellow : .gray))
+                    )
+                }
                 let previews = SeekPreviewDiagnostics.shared.line
                 if !previews.isEmpty {
                     hudRow(

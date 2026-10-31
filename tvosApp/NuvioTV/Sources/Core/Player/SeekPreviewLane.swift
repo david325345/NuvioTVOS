@@ -748,6 +748,8 @@ final class SeekPreviewDiagnostics {
     static let shared = SeekPreviewDiagnostics()
     private(set) var line = ""
     private(set) var chapterLine = ""
+    /// What Seekr answered for the playing title, empty without a Seekr key.
+    private(set) var seekrLine = ""
     /// The last stills the preview card showed, newest first: target, how the loop got it,
     /// where it came from and how far its frame is from the target.
     private(set) var shown: [String] = []
@@ -755,6 +757,7 @@ final class SeekPreviewDiagnostics {
     func update(_ line: String) { self.line = line }
     func clear() { line = "" }
     func updateChapters(_ line: String) { chapterLine = line }
+    func updateSeekr(_ line: String) { seekrLine = line }
 
     func noteShown(_ image: CGImage, target: Double, path: String) {
         let origin = SeekPreviewOriginTags.shared.tag(of: image)
