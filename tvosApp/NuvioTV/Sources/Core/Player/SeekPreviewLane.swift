@@ -243,8 +243,8 @@ final class SeekPreviewRangeTransport: NSObject, URLSessionDataDelegate, @unchec
         let queue = OperationQueue()
         queue.maxConcurrentOperationCount = 1
         queue.name = "nuvio.seek-preview.transport"
-        // Test build: the network reads at the default priority, to compare preview times with
-        // .utility (the still decoder stays at .utility, two threads).
+        // The network reads keep the default priority: at .utility, stills over NNTP came
+        // noticeably slower. The still decoder is what yields to playback (two threads, .utility).
         session = URLSession(configuration: configuration, delegate: self, delegateQueue: queue)
     }
 
