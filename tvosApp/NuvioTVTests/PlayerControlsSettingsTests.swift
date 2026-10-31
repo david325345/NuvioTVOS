@@ -623,9 +623,17 @@ final class PlayerControlsSettingsTests: XCTestCase {
         profileStore.set(false, forKey: SettingsKey.sceneFeatureEnabled)
         XCTAssertFalse(model.isSceneEnabled)
 
-        // openScene() should be blocked
+        // The bottom panel still opens for its other tabs, without InSight
+        model.openScene()
+        XCTAssertTrue(model.showScenePanel)
+        XCTAssertFalse(model.sceneViewModel.availableTabs.contains(.scene))
+        model.closeScene()
+
+        // With every other tab hidden as well, openScene() is blocked
+        profileStore.set("-chapters,scene,-info,-upNext,-watchParty", forKey: SettingsKey.playerPanelTabs)
         model.openScene()
         XCTAssertFalse(model.showScenePanel)
+        profileStore.removeObject(forKey: SettingsKey.playerPanelTabs)
 
         // When re-enabled via setSceneEnabled
         model.setSceneEnabled(true)
