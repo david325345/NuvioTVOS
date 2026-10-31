@@ -302,6 +302,9 @@ actor UsenetStreamSession {
     private var previewOrder: [Int] = []
     private var previewCachedBytes = 0
     private var previewConnection: UsenetNNTPConnection?
+    /// Since when the reserved connection waits unused: past `UsenetConnectionPool.maxIdle` the
+    /// server has likely dropped it, so a fresh one is opened before the next preview.
+    private var previewIdleSince: ContinuousClock.Instant?
     private var previewSlotReserved = false
     private var previewUnavailable = false
     private var previewStopped = false
@@ -370,7 +373,9 @@ actor UsenetStreamSession {
         for attempt in 0..<2 {
             let connection = try await readyPreviewConnection()
             do {
-                return try await connection.fetchBody(messageID: messageID)
+                let body = try await connection.fetchBody(messageID: messageID)
+                if previewConnection === connection { previewIdleSince = .now }
+                return body
             } catch let error as UsenetNNTPError where error.isTransient && attempt == 0 {
                 // The server dropped the idle connection: open a replacement once.
                 await connection.close()
@@ -382,7 +387,15 @@ actor UsenetStreamSession {
 
     private func readyPreviewConnection() async throws -> UsenetNNTPConnection {
         guard !previewStopped, !previewUnavailable else { throw UsenetNNTPError.notConnected }
-        if let connection = previewConnection, !(await connection.isClosed) { return connection }
+        if let connection = previewConnection, !(await connection.isClosed) {
+            guard let since = previewIdleSince, ContinuousClock.now - since > UsenetConnectionPool.maxIdle else {
+                return connection
+            }
+            // Idle too long (a pause, a while without previews): replace it rather than
+            // have the first preview wait for it to fail.
+            await connection.close()
+            if previewConnection === connection { previewConnection = nil }
+        }
         let connection: UsenetNNTPConnection
         if previewSlotReserved {
             connection = try await pool.reopenPreviewConnection()
@@ -399,6 +412,7 @@ actor UsenetStreamSession {
             throw CancellationError()
         }
         previewConnection = connection
+        previewIdleSince = .now
         return connection
     }
 
