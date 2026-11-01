@@ -15,6 +15,11 @@ struct PlayerGestureCapture: UIViewRepresentable {
     let onBack: () -> Void
     /// Hands the pad feed to the GameController handler (nil when this view goes away).
     let setPadObserver: (((Double, Double) -> Void)?) -> Void
+    /// Every input as the recognizer gets it (no ticks), and how each touch went: for a live drawing.
+    var onInput: ((InputEvent) -> Void)?
+    var onTouchSummary: ((TouchSummary) -> Void)?
+    /// The sensitivity chosen in the Gestures tab.
+    var tuning = RemoteGestureTuning()
 
     func makeUIView(context: Context) -> GestureCaptureView {
         let view = GestureCaptureView()
@@ -39,6 +44,10 @@ final class GestureCaptureView: UIView {
     private var onGesture: (RemoteGesture) -> Void = { _ in }
     private var onPressEnded: (RemoteButton) -> Void = { _ in }
     private var onBack: () -> Void = {}
+    private var onInput: ((InputEvent) -> Void)?
+    private var onTouchSummary: ((TouchSummary) -> Void)?
+    /// When the focus was last asked for, so a lost focus is asked for again (not every frame).
+    private var lastFocusRequest: CFTimeInterval = 0
     fileprivate var detachPadObserver: ((((Double, Double) -> Void)?) -> Void)?
     private var touchOrigin: CGPoint?
     private var displayLink: CADisplayLink?
@@ -47,9 +56,14 @@ final class GestureCaptureView: UIView {
 
     fileprivate func configure(_ capture: PlayerGestureCapture) {
         recognizer.waitsForDouble = capture.waitsForDouble
+        if recognizer.tuning != capture.tuning {
+            recognizer.tuning = capture.tuning
+        }
         onGesture = capture.onGesture
         onPressEnded = capture.onPressEnded
         onBack = capture.onBack
+        onInput = capture.onInput
+        onTouchSummary = capture.onTouchSummary
         detachPadObserver = capture.setPadObserver
         setActive(capture.isActive)
     }
@@ -63,11 +77,26 @@ final class GestureCaptureView: UIView {
         if active {
             // Take the focus, so the remote's touches and presses come here.
             DispatchQueue.main.async { [weak self] in
-                guard let self, self.isActive, self.window != nil else { return }
-                UIFocusSystem.focusSystem(for: self)?.requestFocusUpdate(to: self)
-                UIFocusSystem.focusSystem(for: self)?.updateFocusIfNeeded()
+                self?.takeFocus()
             }
         }
+    }
+
+    private func takeFocus() {
+        guard isActive, window != nil, !isFocused else { return }
+        lastFocusRequest = CACurrentMediaTime()
+        UIFocusSystem.focusSystem(for: self)?.requestFocusUpdate(to: self)
+        UIFocusSystem.focusSystem(for: self)?.updateFocusIfNeeded()
+    }
+
+    /// tvOS also turns touchpad swipes into focus moves: while capturing, a swipe must not carry
+    /// the focus off to whatever is focusable that way (it would take the remote with it). Moves
+    /// asked for in code (the controls or a panel taking over) have no heading and still go through.
+    override func shouldUpdateFocus(in context: UIFocusUpdateContext) -> Bool {
+        if isActive, (context.previouslyFocusedItem as? UIView) === self, !context.focusHeading.isEmpty {
+            return false
+        }
+        return super.shouldUpdateFocus(in: context)
     }
 
     override func didMoveToWindow() {
@@ -97,13 +126,23 @@ final class GestureCaptureView: UIView {
 
     @objc private func tick() {
         guard isActive else { return }
+        // Whatever took the focus while this was supposed to hold the remote, take it back.
+        if !isFocused, CACurrentMediaTime() - lastFocusRequest > Self.focusRetryInterval {
+            takeFocus()
+        }
         feed(.tick(ProcessInfo.processInfo.systemUptime))
     }
 
+    static let focusRetryInterval: CFTimeInterval = 0.3
+
     private func feed(_ event: InputEvent) {
+        if case .tick = event {} else { onInput?(event) }
         for output in recognizer.handle(event) {
-            if case let .gesture(gesture, _, _) = output {
+            switch output {
+            case let .gesture(gesture, _, _):
                 onGesture(gesture)
+            case let .touchSummary(summary):
+                onTouchSummary?(summary)
             }
         }
     }

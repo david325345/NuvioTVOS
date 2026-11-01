@@ -1860,6 +1860,8 @@ struct PlayerSettingsPanel: View {
         case gestureReset
         case gestureAction(String)
         case gestureClear(String)
+        case gestureGallery
+        case gestureSensitivity(String)
     }
 
     /// Swatches shown in the Text Color row (white, gray, yellow, blue, red, green).
@@ -1871,6 +1873,8 @@ struct PlayerSettingsPanel: View {
     @State private var gestureBindings = PlayerGestureSettings.bindings()
     @State private var recordingGestureAction: PlayerGestureAction?
     @State private var gestureNote: String?
+    @State private var isShowingGestureGallery = false
+    @State private var gestureSensitivity = PlayerGestureSettings.sensitivity()
     @State private var selectedLanguage: String?
     @State private var style = SubtitleStyle.current
     @FocusState private var focus: Focus?
@@ -1915,9 +1919,27 @@ struct PlayerSettingsPanel: View {
             .padding(.top, 64)
             .padding(.bottom, 44)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            // Recording or the overview: nothing behind can take the focus (a swipe moved it there).
+            .disabled(recordingGestureAction != nil || isShowingGestureGallery)
 
             if let action = recordingGestureAction {
-                gestureRecorder(action)
+                PlayerGestureRecorderView(
+                    action: action,
+                    bindings: gestureBindings,
+                    tuning: gestureSensitivity.tuning,
+                    setPadObserver: { observer in
+                        viewModel.gesturePadObservers["recorder"] = observer
+                    },
+                    onSave: { gesture in finishRecording(gesture, for: action) },
+                    onCancel: { endRecording(action) }
+                )
+            }
+
+            if isShowingGestureGallery {
+                PlayerGestureGalleryView(bindings: gestureBindings) {
+                    isShowingGestureGallery = false
+                    DispatchQueue.main.async { focus = .gestureGallery }
+                }
             }
         }
         .onAppear {
@@ -1951,6 +1973,7 @@ struct PlayerSettingsPanel: View {
                 focus = .discTitle(viewModel.selectedDiscTitleId ?? first.id)
             } else if newTab == .gestures {
                 gestureBindings = PlayerGestureSettings.bindings()
+                gestureSensitivity = PlayerGestureSettings.sensitivity()
             }
         }
         .onChange(of: didReportPlaybackStarted) { _, isReady in
@@ -3032,10 +3055,16 @@ struct PlayerSettingsPanel: View {
                             viewModel.setGesturesEnabled(!viewModel.areGesturesEnabled)
                         }
 
+                        simpleRow(title: "Přehled gest", isSelected: false, focusKey: .gestureGallery) {
+                            isShowingGestureGallery = true
+                        }
+
                         simpleRow(title: "Obnovit výchozí", isSelected: false, focusKey: .gestureReset) {
                             gestureBindings = .defaults
                             PlayerGestureSettings.save(.defaults)
-                            gestureNote = "Výchozí: dlouhý tah doprava / doleva = další / předchozí kapitola"
+                            gestureSensitivity = PlayerGestureSensitivity()
+                            viewModel.setGestureSensitivity(gestureSensitivity)
+                            gestureNote = "Výchozí gesta i citlivost: dlouhý tah doprava / doleva = další / předchozí kapitola"
                         }
 
                         Text("Fungují při přehrávání se skrytým ovládáním. Gesto s akcí nahradí to, co s ním dělá přehrávač (třeba klik vpravo = skok). Když přiřadíš dvojklik, jednoduchý klik počká, jestli nepřijde druhý.")
@@ -3049,6 +3078,15 @@ struct PlayerSettingsPanel: View {
                                 .font(.system(size: 20, weight: .semibold))
                                 .foregroundColor(Color(red: 1.0, green: 0.82, blue: 0.55))
                                 .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        Text("Citlivost (ladění)")
+                            .font(.system(size: 22, weight: .bold))
+                            .foregroundColor(.white.opacity(0.55))
+                            .padding(.top, 14)
+
+                        ForEach(PlayerGestureSensitivityKnob.allCases) { knob in
+                            gestureSensitivityRow(knob)
                         }
                     }
                     .padding(.vertical, 6)
@@ -3072,6 +3110,38 @@ struct PlayerSettingsPanel: View {
             .frame(width: 900, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// A press moves to the next step; it applies at once (and the recorder shows the zones).
+    private func gestureSensitivityRow(_ knob: PlayerGestureSensitivityKnob) -> some View {
+        let key = Focus.gestureSensitivity(knob.rawValue)
+        let isFocused = focus == key
+        return Button {
+            gestureSensitivity.cycle(knob)
+            viewModel.setGestureSensitivity(gestureSensitivity)
+        } label: {
+            HStack(spacing: 12) {
+                Text(knob.title)
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundColor(isFocused ? .black : .white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                Spacer(minLength: 8)
+                Text(knob.steps[gestureSensitivity.step(knob)])
+                    .font(.system(size: 20, weight: .bold))
+                    .foregroundColor(isFocused ? .black.opacity(0.75) : .white.opacity(0.7))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 22)
+            .frame(height: 58)
+            .background(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(isFocused ? Color.white : Color.white.opacity(0.07))
+            )
+        }
+        .buttonStyle(PosterCardButtonStyle())
+        .focused($focus, equals: key)
+        .focusEffectDisabledIfAvailable()
     }
 
     private func gestureActionRow(_ action: PlayerGestureAction) -> some View {
@@ -3124,41 +3194,6 @@ struct PlayerSettingsPanel: View {
             .focusEffectDisabledIfAvailable()
             .disabled(gesture == nil)
         }
-    }
-
-    /// Full screen: the next gesture goes to `action`; Back cancels.
-    private func gestureRecorder(_ action: PlayerGestureAction) -> some View {
-        ZStack {
-            Color.black.opacity(0.88)
-                .ignoresSafeArea()
-
-            PlayerGestureCapture(
-                isActive: true,
-                waitsForDouble: { _ in true },
-                onGesture: { gesture in finishRecording(gesture, for: action) },
-                onBack: { endRecording(action) },
-                setPadObserver: { observer in
-                    viewModel.gesturePadObservers["recorder"] = observer
-                }
-            )
-            .ignoresSafeArea()
-
-            VStack(spacing: 22) {
-                Text("Proveď gesto pro")
-                    .font(.system(size: 28, weight: .semibold))
-                    .foregroundColor(.white.opacity(0.6))
-                Text(action.title)
-                    .font(.system(size: 46, weight: .bold))
-                    .foregroundColor(.white)
-                Text("Klik, dvojklik nebo dlouhý stisk, tah, tah tam a zpět, dotyk, přidržení prstu nebo kroužek · Zpět zruší")
-                    .font(.system(size: 22, weight: .medium))
-                    .foregroundColor(.white.opacity(0.5))
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 1100)
-            }
-            .allowsHitTesting(false)
-        }
-        .transition(.opacity)
     }
 
     private func finishRecording(_ gesture: RemoteGesture, for action: PlayerGestureAction) {

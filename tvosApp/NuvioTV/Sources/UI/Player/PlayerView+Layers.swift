@@ -315,7 +315,8 @@ extension PlayerView {
     }
 
     private var canRevealControlsFromRemotePress: Bool {
-        !viewModel.showControls
+        !isGestureCaptureActive
+            && !viewModel.showControls
             && !viewModel.showSettingsPanel
             && !viewModel.showScenePanel
             && !viewModel.isSceneDetailVisible
