@@ -1155,6 +1155,30 @@ private struct PlayerTimelineBar: View {
         isScrubbing || isHoldingSeek || pendingSeekDelta != 0
     }
 
+    /// Beside the time while seeking: the direction and speed while holding, the skip step
+    /// for single presses.
+    @ViewBuilder
+    private var seekIndicator: some View {
+        if isHoldingSeek || speedMultiplier != nil {
+            HStack(spacing: 8) {
+                Image(systemName: pendingSeekDelta >= 0 ? "forward.fill" : "backward.fill")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundColor(.white)
+                    .frame(width: 26, height: 26)
+                    .background(Color.white.opacity(0.22), in: Circle())
+                if let speedMultiplier {
+                    Text("\(speedMultiplier)")
+                        .font(.system(size: 26, weight: .bold).monospacedDigit())
+                        .foregroundColor(.white)
+                }
+            }
+        } else if pendingSeekDelta != 0 {
+            Image(systemName: skipIconName)
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundColor(.white)
+        }
+    }
+
     private var targetPosition: Double {
         if isScrubbing {
             return clock.scrubTarget ?? clock.position
@@ -1217,84 +1241,53 @@ private struct PlayerTimelineBar: View {
                             .background(Rectangle().fill(Color.black.opacity(0.8)).padding(-1.5))
                             .shadow(color: .black.opacity(0.55), radius: 3)
                             .position(x: targetX, y: bottomOfTrack + needleOverhang - needleHeight / 2)
+                            // Gone the moment the seek lands, where the red mark then stands.
+                            .transition(.identity)
                     }
                 }
             }
             .frame(height: 16)
 
-            // Timestamps: when seeking or scrubbing, center the time and direction/speed directly beneath the needle
-            if isSeekingOrScrubbing {
-                GeometryReader { geo in
-                    let w = geo.size.width
-                    let targetChapter = chapterName(at: targetPosition)
-                    let margin: CGFloat = targetChapter == nil ? 60 : 240
-                    let targetX = min(max(w * progress, margin), max(margin, w - margin))
-                    HStack(spacing: 8) {
-                        Text(PlayerTime.formatted(time: targetPosition))
-                            .font(.system(size: 22, weight: .bold).monospacedDigit())
-                            .foregroundColor(.white)
-                        if let targetChapter {
-                            Text("· " + targetChapter)
-                                .font(.system(size: 22, weight: .semibold))
-                                .foregroundColor(.white.opacity(0.85))
-                                .lineLimit(1)
-                                .frame(maxWidth: 320)
-                                .fixedSize(horizontal: true, vertical: false)
-                        }
-
-                        if isHoldingSeek || speedMultiplier != nil {
-                            let isForward = pendingSeekDelta >= 0
-                            Image(systemName: isForward ? "forward.fill" : "backward.fill")
-                                .font(.system(size: 14, weight: .bold))
-                                .foregroundColor(.white)
-                                .frame(width: 26, height: 26)
-                                .background(Color.white.opacity(0.22), in: Circle())
-
-                            if let speedMultiplier {
-                                Text("\(speedMultiplier)")
-                                    .font(.system(size: 26, weight: .bold).monospacedDigit())
-                                    .foregroundColor(.white)
-                            }
-                        } else if pendingSeekDelta != 0 {
-                            Image(systemName: skipIconName)
-                                .font(.system(size: 20, weight: .semibold))
-                                .foregroundColor(.white)
-                        }
-                    }
-                    .position(x: targetX, y: 14)
+            // One time label, seeking or not: the elapsed time with the chapter's name, under the
+            // needle while seeking (brighter, with the direction / speed beside it), otherwise with
+            // the time left on the right. One label means no cross-fade of two slightly offset ones.
+            GeometryReader { geo in
+                let chapter = chapterName(at: targetPosition).map { name in
+                    name.count > 32 ? String(name.prefix(31)) + "…" : name
                 }
-                .frame(height: 28)
-            } else {
-                GeometryReader { geo in
-                    // The chapter's name rides with the elapsed time (shortened to stay on the bar).
-                    let chapter = chapterName(at: targetPosition).map { name in
-                        name.count > 32 ? String(name.prefix(31)) + "…" : name
-                    }
-                    let elapsed = PlayerTime.formatted(time: targetPosition) + (chapter.map { " · " + $0 } ?? "")
-                    let remaining = "-" + PlayerTime.formatted(time: max(0, duration - targetPosition))
-                    let elapsedHalfWidth = CGFloat(elapsed.count) * 6.5
-                    let remainingWidth = CGFloat(remaining.count) * 13
-                    let elapsedX = min(
-                        max(geo.size.width * progress, elapsedHalfWidth),
-                        max(elapsedHalfWidth, geo.size.width - elapsedHalfWidth - remainingWidth - 12)
-                    )
+                let elapsed = PlayerTime.formatted(time: targetPosition) + (chapter.map { " · " + $0 } ?? "")
+                let remaining = "-" + PlayerTime.formatted(time: max(0, duration - targetPosition))
+                let elapsedHalfWidth = CGFloat(elapsed.count) * 6.5
+                let remainingWidth = CGFloat(remaining.count) * 13
+                let elapsedX = min(
+                    max(geo.size.width * progress, elapsedHalfWidth),
+                    max(elapsedHalfWidth, geo.size.width - elapsedHalfWidth - remainingWidth - 12)
+                )
 
-                    ZStack {
-                        HStack {
-                            Spacer(minLength: 0)
-                            Text(remaining)
-                                .fixedSize()
-                        }
-                        Text(elapsed)
+                ZStack {
+                    HStack {
+                        Spacer(minLength: 0)
+                        Text(remaining)
                             .fixedSize()
-                            .position(x: elapsedX, y: 14)
                     }
-                    .frame(width: geo.size.width, height: 28)
+                    .opacity(isSeekingOrScrubbing ? 0 : 1)
+                    Text(elapsed)
+                        .fixedSize()
+                        .foregroundColor(isSeekingOrScrubbing ? .white : .white.opacity(isTimelineFocused ? 0.82 : 0.54))
+                        // Beside the text, so the text stays put when it comes and goes.
+                        .overlay(alignment: .trailing) {
+                            seekIndicator
+                                .fixedSize()
+                                .alignmentGuide(.trailing) { d in d[.leading] - 10 }
+                                .transition(.identity)
+                        }
+                        .position(x: elapsedX, y: 14)
                 }
-                .frame(height: 28)
-                .font(.system(size: 22, weight: .bold).monospacedDigit())
-                .foregroundColor(.white.opacity(isTimelineFocused ? 0.82 : 0.54))
+                .frame(width: geo.size.width, height: 28)
             }
+            .frame(height: 28)
+            .font(.system(size: 22, weight: .bold).monospacedDigit())
+            .foregroundColor(.white.opacity(isTimelineFocused ? 0.82 : 0.54))
         }
     }
 }

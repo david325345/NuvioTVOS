@@ -157,6 +157,8 @@ struct PlayerProgressTrack: View {
                                 .frame(width: 4, height: markHeight)
                         }
                         .position(x: min(max(w * x, 3.5), w - 3.5), y: full / 2)
+                        // Where a seek lands it stands at once, in the needle's place, not sliding there.
+                        .animation(nil, value: position)
                         .animation(.easeOut(duration: 0.2), value: markHeight)
                     }
                 }
