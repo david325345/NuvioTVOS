@@ -1803,6 +1803,7 @@ struct PlayerSettingsPanel: View {
         case audio = "Audio"
         case speed = "Speed"
         case picture = "Picture"
+        case gestures = "Gestures"
         case logs = "Logs"
     }
 
@@ -1845,6 +1846,10 @@ struct PlayerSettingsPanel: View {
         case debugOverlay
         case aspect(String)
         case style(StyleControl)
+        case gesturesSwitch
+        case gestureReset
+        case gestureAction(String)
+        case gestureClear(String)
     }
 
     /// Swatches shown in the Text Color row (white, gray, yellow, blue, red, green).
@@ -1852,6 +1857,10 @@ struct PlayerSettingsPanel: View {
     private static let backgroundPalette = ["#000000", "#303030", "#FFFFFF", "#1F3A5F", "#5A1F2B", "#214D35"]
 
     @State private var tab: Tab = .subtitles
+    /// Gestures tab: the bindings, the action being recorded, and what the last change did.
+    @State private var gestureBindings = PlayerGestureSettings.bindings()
+    @State private var recordingGestureAction: PlayerGestureAction?
+    @State private var gestureNote: String?
     @State private var selectedLanguage: String?
     @State private var style = SubtitleStyle.current
     @FocusState private var focus: Focus?
@@ -1862,7 +1871,7 @@ struct PlayerSettingsPanel: View {
         if !viewModel.discTitles.isEmpty {
             tabs.append(.titles)
         }
-        tabs.append(contentsOf: [.subtitles, .audio, .speed, .picture, .logs])
+        tabs.append(contentsOf: [.subtitles, .audio, .speed, .picture, .gestures, .logs])
         return tabs
     }
 
@@ -1888,6 +1897,7 @@ struct PlayerSettingsPanel: View {
                 case .audio: audioPage
                 case .speed: speedPage
                 case .picture: picturePage
+                case .gestures: gesturesPage
                 case .logs: PlaybackLogsPage()
                 }
             }
@@ -1895,6 +1905,10 @@ struct PlayerSettingsPanel: View {
             .padding(.top, 64)
             .padding(.bottom, 44)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+            if let action = recordingGestureAction {
+                gestureRecorder(action)
+            }
         }
         .onAppear {
             style = SubtitleStyle.current
@@ -1925,6 +1939,8 @@ struct PlayerSettingsPanel: View {
                 focus = .audioControl(.delayMinus)
             } else if newTab == .titles, let first = viewModel.discTitles.first {
                 focus = .discTitle(viewModel.selectedDiscTitleId ?? first.id)
+            } else if newTab == .gestures {
+                gestureBindings = PlayerGestureSettings.bindings()
             }
         }
         .onChange(of: didReportPlaybackStarted) { _, isReady in
@@ -2988,6 +3004,169 @@ struct PlayerSettingsPanel: View {
             .frame(width: 420, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: Gestures (fork test build)
+
+    private var gesturesPage: some View {
+        HStack(alignment: .top, spacing: 56) {
+            VStack(alignment: .leading, spacing: 18) {
+                columnHeader("Gesta ovladače")
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        toggleRow(
+                            title: "Gesta při přehrávání",
+                            isOn: viewModel.areGesturesEnabled,
+                            focusKey: .gesturesSwitch
+                        ) {
+                            viewModel.setGesturesEnabled(!viewModel.areGesturesEnabled)
+                        }
+
+                        simpleRow(title: "Obnovit výchozí", isSelected: false, focusKey: .gestureReset) {
+                            gestureBindings = .defaults
+                            PlayerGestureSettings.save(.defaults)
+                            gestureNote = "Výchozí: dlouhý tah doprava / doleva = další / předchozí kapitola"
+                        }
+
+                        Text("Fungují při přehrávání se skrytým ovládáním. Gesto s akcí nahradí to, co s ním dělá přehrávač (třeba klik vpravo = skok). Když přiřadíš dvojklik, jednoduchý klik počká, jestli nepřijde druhý.")
+                            .font(.system(size: 20, weight: .medium))
+                            .foregroundColor(.white.opacity(0.5))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.top, 8)
+
+                        if let gestureNote {
+                            Text(gestureNote)
+                                .font(.system(size: 20, weight: .semibold))
+                                .foregroundColor(Color(red: 1.0, green: 0.82, blue: 0.55))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .padding(.vertical, 6)
+                }
+                .focusSection()
+            }
+            .frame(width: 520, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 18) {
+                columnHeader("Akce · stiskem nahraješ gesto")
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 12) {
+                        ForEach(PlayerGestureAction.allCases) { action in
+                            gestureActionRow(action)
+                        }
+                    }
+                    .padding(.vertical, 6)
+                }
+                .focusSection()
+            }
+            .frame(width: 900, alignment: .leading)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func gestureActionRow(_ action: PlayerGestureAction) -> some View {
+        let isFocused = focus == .gestureAction(action.rawValue)
+        let gesture = gestureBindings.gesture(for: action)
+        let isClearFocused = focus == .gestureClear(action.rawValue)
+        return HStack(spacing: 12) {
+            Button {
+                gestureNote = nil
+                recordingGestureAction = action
+            } label: {
+                HStack(spacing: 14) {
+                    Text(action.title)
+                        .font(.system(size: 25, weight: .semibold))
+                        .foregroundColor(isFocused ? .black : .white)
+                        .lineLimit(1)
+                    Spacer(minLength: 8)
+                    Text(gesture?.title ?? "—")
+                        .font(.system(size: 21, weight: .bold))
+                        .foregroundColor(isFocused ? .black.opacity(0.8) : .white.opacity(gesture == nil ? 0.35 : 0.75))
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, 26)
+                .frame(height: 62)
+                .background(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(isFocused ? Color.white : Color.white.opacity(0.07))
+                )
+            }
+            .buttonStyle(PosterCardButtonStyle())
+            .focused($focus, equals: .gestureAction(action.rawValue))
+            .focusEffectDisabledIfAvailable()
+
+            Button {
+                gestureBindings.unbind(action)
+                PlayerGestureSettings.save(gestureBindings)
+                gestureNote = "\(action.title): bez gesta"
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 20, weight: .bold))
+                    .foregroundColor(isClearFocused ? .black : .white.opacity(gesture == nil ? 0.25 : 0.8))
+                    .frame(width: 62, height: 62)
+                    .background(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .fill(isClearFocused ? Color.white : Color.white.opacity(0.07))
+                    )
+            }
+            .buttonStyle(PosterCardButtonStyle())
+            .focused($focus, equals: .gestureClear(action.rawValue))
+            .focusEffectDisabledIfAvailable()
+            .disabled(gesture == nil)
+        }
+    }
+
+    /// Full screen: the next gesture goes to `action`; Back cancels.
+    private func gestureRecorder(_ action: PlayerGestureAction) -> some View {
+        ZStack {
+            Color.black.opacity(0.88)
+                .ignoresSafeArea()
+
+            PlayerGestureCapture(
+                isActive: true,
+                waitsForDouble: { _ in true },
+                onGesture: { gesture in finishRecording(gesture, for: action) },
+                onBack: { endRecording(action) },
+                setPadObserver: { observer in
+                    viewModel.gesturePadObservers["recorder"] = observer
+                }
+            )
+            .ignoresSafeArea()
+
+            VStack(spacing: 22) {
+                Text("Proveď gesto pro")
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.6))
+                Text(action.title)
+                    .font(.system(size: 46, weight: .bold))
+                    .foregroundColor(.white)
+                Text("Klik, dvojklik nebo dlouhý stisk, tah, tah tam a zpět, dotyk, přidržení prstu nebo kroužek · Zpět zruší")
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundColor(.white.opacity(0.5))
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 1100)
+            }
+            .allowsHitTesting(false)
+        }
+        .transition(.opacity)
+    }
+
+    private func finishRecording(_ gesture: RemoteGesture, for action: PlayerGestureAction) {
+        let builtIn = PlayerBuiltInGesture.action(for: gesture)
+        let previous = gestureBindings.bind(gesture, to: action)
+        PlayerGestureSettings.save(gestureBindings)
+        var parts = ["\(gesture.title) → \(action.title)"]
+        if let previous { parts.append("\(previous.title) už gesto nemá") }
+        if let builtIn { parts.append("nahrazuje: \(builtIn.title)") }
+        gestureNote = parts.joined(separator: " · ")
+        endRecording(action)
+    }
+
+    private func endRecording(_ action: PlayerGestureAction) {
+        recordingGestureAction = nil
+        DispatchQueue.main.async {
+            focus = .gestureAction(action.rawValue)
+        }
     }
 
     private var picturePage: some View {

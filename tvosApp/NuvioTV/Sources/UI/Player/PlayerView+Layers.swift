@@ -45,6 +45,7 @@ extension PlayerView {
             playerToastLayer
                 .zIndex(22)
             focusSinkLayer
+            gestureCaptureLayer
             pauseOverlayLayer
             skipSegmentLayer
             nextEpisodeLayer
@@ -237,7 +238,8 @@ extension PlayerView {
                     && !viewModel.isHoldingSeek
                     && viewModel.pendingSeekDelta == 0
                     && (!viewModel.showControls || viewModel.isScrubbing || viewModel.isTimelineFocused)
-                    && !viewModel.controlsAutoHideSuspended,
+                    && !viewModel.controlsAutoHideSuspended
+                    && !isGestureCaptureActive,
                     isNextEpisodeFocused: nextEpisodeFocused,
                     isCancelAutoPlayFocused: cancelAutoPlayFocused,
                     isSkipSegmentFocused: skipSegmentFocused
@@ -273,7 +275,8 @@ extension PlayerView {
                 && viewModel.sidePanel == nil
                 && !viewModel.isScrubbing
                 && !viewModel.postPlayState.isVisible
-                && (!viewModel.showControls || viewModel.isTimelineFocused),
+                && (!viewModel.showControls || viewModel.isTimelineFocused)
+                && !isGestureCaptureActive,
                 isNextEpisodeFocused: nextEpisodeFocused,
                 isCancelAutoPlayFocused: cancelAutoPlayFocused,
                 isSkipSegmentFocused: skipSegmentFocused
@@ -432,20 +435,7 @@ extension PlayerView {
         Color.clear
             .ignoresSafeArea()
             .contentShape(Rectangle())
-            .focusable(
-                didReportPlaybackStarted
-                    && (!viewModel.showControls || viewModel.isSwitchingSource || viewModel.showPauseOverlay)
-                    && !viewModel.isScrubbing
-                    && !viewModel.isHoldingSeek
-                    && viewModel.currentErrorDiagnostic == nil
-                    && !viewModel.showNextEpisodeCard
-                    && !viewModel.showSkipSegmentCard
-                    && !viewModel.showSettingsPanel
-                    && !viewModel.showScenePanel
-                    && !viewModel.isSceneDetailVisible
-                    && !viewModel.postPlayState.isVisible
-                    && viewModel.sidePanel == nil
-            )
+            .focusable(isFocusSinkEligible && !isGestureCaptureActive)
             .focused($remoteInputFocused)
             .onTapGesture {
                 let elapsedWake = Date().timeIntervalSince(lastBecameActiveAt)
