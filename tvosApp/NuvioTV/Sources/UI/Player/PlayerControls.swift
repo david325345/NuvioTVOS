@@ -3039,30 +3039,30 @@ struct PlayerSettingsPanel: View {
     private var gesturesPage: some View {
         HStack(alignment: .top, spacing: 56) {
             VStack(alignment: .leading, spacing: 18) {
-                columnHeader("Gesta ovladače")
+                columnHeader("Remote gestures")
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 12) {
                         toggleRow(
-                            title: "Gesta při přehrávání",
+                            title: "Gestures during playback",
                             isOn: viewModel.areGesturesEnabled,
                             focusKey: .gesturesSwitch
                         ) {
                             viewModel.setGesturesEnabled(!viewModel.areGesturesEnabled)
                         }
 
-                        simpleRow(title: "Přehled gest", isSelected: false, focusKey: .gestureGallery) {
+                        simpleRow(title: "Gesture overview", isSelected: false, focusKey: .gestureGallery) {
                             isShowingGestureGallery = true
                         }
 
-                        simpleRow(title: "Obnovit výchozí", isSelected: false, focusKey: .gestureReset) {
+                        simpleRow(title: "Reset to defaults", isSelected: false, focusKey: .gestureReset) {
                             gestureBindings = .defaults
                             PlayerGestureSettings.save(.defaults)
                             gestureSensitivity = PlayerGestureSensitivity()
                             viewModel.setGestureSensitivity(gestureSensitivity)
-                            gestureNote = "Výchozí gesta i citlivost: dlouhý tah doprava / doleva = další / předchozí kapitola"
+                            gestureNote = "Default gestures and sensitivity: long swipe right / left = next / previous chapter"
                         }
 
-                        Text("Fungují při přehrávání se skrytým ovládáním. Gesto s akcí nahradí to, co s ním dělá přehrávač (třeba klik vpravo = skok). Když přiřadíš dvojklik, jednoduchý klik počká, jestli nepřijde druhý.")
+                        Text("They work during playback with the controls hidden. A gesture with an action replaces what the player does with it (like click right = seek). With a double click set, a single click waits to see whether a second one follows.")
                             .font(.system(size: 20, weight: .medium))
                             .foregroundColor(.white.opacity(0.5))
                             .fixedSize(horizontal: false, vertical: true)
@@ -3075,7 +3075,7 @@ struct PlayerSettingsPanel: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
 
-                        Text("Citlivost (ladění)")
+                        Text("Sensitivity (testing)")
                             .font(.system(size: 22, weight: .bold))
                             .foregroundColor(.white.opacity(0.55))
                             .padding(.top, 14)
@@ -3091,7 +3091,7 @@ struct PlayerSettingsPanel: View {
             .frame(width: 520, alignment: .leading)
 
             VStack(alignment: .leading, spacing: 18) {
-                columnHeader("Akce · stiskem nahraješ gesto")
+                columnHeader("Actions · press to record a gesture")
                 ScrollView(showsIndicators: false) {
                     VStack(spacing: 12) {
                         ForEach(PlayerGestureAction.allCases) { action in
@@ -3173,7 +3173,7 @@ struct PlayerSettingsPanel: View {
             Button {
                 gestureBindings.unbind(action)
                 PlayerGestureSettings.save(gestureBindings)
-                gestureNote = "\(action.title): bez gesta"
+                gestureNote = "\(action.title): no gesture"
             } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 20, weight: .bold))
@@ -3196,8 +3196,8 @@ struct PlayerSettingsPanel: View {
         let previous = gestureBindings.bind(gesture, to: action)
         PlayerGestureSettings.save(gestureBindings)
         var parts = ["\(gesture.title) → \(action.title)"]
-        if let previous { parts.append("\(previous.title) už gesto nemá") }
-        if let builtIn { parts.append("nahrazuje: \(builtIn.title)") }
+        if let previous { parts.append("\(previous.title) no longer has a gesture") }
+        if let builtIn { parts.append("replaces: \(builtIn.title)") }
         gestureNote = parts.joined(separator: " · ")
         endRecording(action)
     }

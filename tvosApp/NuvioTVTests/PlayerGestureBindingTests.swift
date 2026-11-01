@@ -57,9 +57,12 @@ final class PlayerGestureBindingTests: XCTestCase {
     }
 
     func testTitles() {
-        XCTAssertEqual(RemoteGesture.click(.right, .double).title, "Dvojklik vpravo")
-        XCTAssertEqual(RemoteGesture.swipe(.left, long: true).title, "Dlouhý tah doleva")
-        XCTAssertEqual(RemoteGesture.swipeBack(.right).title, "Tah doprava a zpět")
-        XCTAssertEqual(PlayerGestureAction.nextChapter.title, "Další kapitola")
+        XCTAssertEqual(RemoteGesture.click(.right, .double).title, "Double click right")
+        XCTAssertEqual(RemoteGesture.click(.select, .single).title, "Click center")
+        XCTAssertEqual(RemoteGesture.swipe(.left, long: true).title, "Long swipe left")
+        XCTAssertEqual(RemoteGesture.swipeBack(.right).title, "Swipe right and back")
+        XCTAssertEqual(RemoteGesture.tap(.center, double: true).title, "Double tap center")
+        XCTAssertEqual(RemoteGesture.hold(.top).title, "Touch and hold top")
+        XCTAssertEqual(PlayerGestureAction.nextChapter.title, "Next chapter")
     }
 }

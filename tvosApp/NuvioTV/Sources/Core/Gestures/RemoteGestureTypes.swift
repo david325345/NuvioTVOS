@@ -28,11 +28,11 @@ enum RemoteButton: String, Codable, CaseIterable, Sendable {
 
     var title: String {
         switch self {
-        case .select: return "na střed"
-        case .up: return "nahoru"
-        case .down: return "dolů"
-        case .left: return "vlevo"
-        case .right: return "vpravo"
+        case .select: return "center"
+        case .up: return "up"
+        case .down: return "down"
+        case .left: return "left"
+        case .right: return "right"
         case .playPause: return "Play/Pause"
         }
     }
@@ -47,10 +47,10 @@ enum SwipeDirection: String, Codable, CaseIterable, Sendable {
 
     var title: String {
         switch self {
-        case .left: return "doleva"
-        case .right: return "doprava"
-        case .up: return "nahoru"
-        case .down: return "dolů"
+        case .left: return "left"
+        case .right: return "right"
+        case .up: return "up"
+        case .down: return "down"
         }
     }
 }
@@ -62,15 +62,15 @@ enum PadSide: String, Codable, CaseIterable, Sendable {
 
     var title: String {
         switch self {
-        case .left: return "vlevo"
-        case .center: return "uprostřed"
-        case .right: return "vpravo"
-        case .top: return "nahoře"
-        case .bottom: return "dole"
-        case .topLeft: return "vlevo nahoře"
-        case .topRight: return "vpravo nahoře"
-        case .bottomLeft: return "vlevo dole"
-        case .bottomRight: return "vpravo dole"
+        case .left: return "left"
+        case .center: return "center"
+        case .right: return "right"
+        case .top: return "top"
+        case .bottom: return "bottom"
+        case .topLeft: return "top left"
+        case .topRight: return "top right"
+        case .bottomLeft: return "bottom left"
+        case .bottomRight: return "bottom right"
         }
     }
 }
@@ -90,20 +90,20 @@ enum RemoteGesture: Hashable, Codable, Sendable {
         switch self {
         case let .click(button, kind):
             switch kind {
-            case .single: return "Klik \(button.title)"
-            case .double: return "Dvojklik \(button.title)"
-            case .long: return "Dlouhý stisk \(button.title)"
+            case .single: return "Click \(button.title)"
+            case .double: return "Double click \(button.title)"
+            case .long: return "Long press \(button.title)"
             }
         case let .swipe(direction, long):
-            return (long ? "Dlouhý tah " : "Tah ") + direction.title
+            return (long ? "Long swipe " : "Swipe ") + direction.title
         case let .swipeBack(direction):
-            return "Tah \(direction.title) a zpět"
+            return "Swipe \(direction.title) and back"
         case let .tap(side, double):
-            return (double ? "Dvojí dotyk " : "Dotyk ") + side.title
+            return (double ? "Double tap " : "Tap ") + side.title
         case let .hold(side):
-            return "Přidržení " + side.title
+            return "Touch and hold " + side.title
         case let .circle(clockwise):
-            return clockwise ? "Kroužek po směru hodin" : "Kroužek proti směru hodin"
+            return clockwise ? "Circle clockwise" : "Circle counterclockwise"
         }
     }
 

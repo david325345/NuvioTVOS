@@ -13,17 +13,17 @@ enum PlayerGestureAction: String, Codable, CaseIterable, Identifiable, Sendable 
 
     var title: String {
         switch self {
-        case .nextChapter: return "Další kapitola"
-        case .previousChapter: return "Předchozí kapitola"
-        case .openChapters: return "Otevřít kapitoly"
-        case .skipIntro: return "Přeskočit úvod / závěr"
-        case .forward30: return "Skok +30 s"
-        case .back30: return "Skok −30 s"
-        case .playPause: return "Přehrát / pauza"
-        case .nextEpisode: return "Další díl"
-        case .toggleSubtitles: return "Titulky zap/vyp"
-        case .cycleAudio: return "Přepnout zvukovou stopu"
-        case .faster: return "Rychlost přehrávání"
+        case .nextChapter: return "Next chapter"
+        case .previousChapter: return "Previous chapter"
+        case .openChapters: return "Open chapters"
+        case .skipIntro: return "Skip intro / outro"
+        case .forward30: return "Jump +30 s"
+        case .back30: return "Jump −30 s"
+        case .playPause: return "Play / pause"
+        case .nextEpisode: return "Next episode"
+        case .toggleSubtitles: return "Subtitles on / off"
+        case .cycleAudio: return "Next audio track"
+        case .faster: return "Playback speed"
         }
     }
 }
@@ -115,34 +115,34 @@ enum PlayerGestureSettings {
 /// The few recognizer settings the Gestures tab offers for trying out (Gesture Lab had them all),
 /// each in a handful of steps.
 enum PlayerGestureSensitivityKnob: String, CaseIterable, Codable, Identifiable, Sendable {
-    case doubleWindow, longPress, swipeLength, circle, centerSize, corners
+    case doubleWindow, longPress, swipeLength, circle, centerSize
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .doubleWindow: return "Dvojklik / dvojí dotyk"
-        case .longPress: return "Dlouhý stisk / přidržení"
-        case .swipeLength: return "Tah"
-        case .circle: return "Kroužek"
-        case .centerSize: return "Střed plochy"
-        case .corners: return "Rohy plochy"
+        case .doubleWindow: return "Double click / tap"
+        case .longPress: return "Long press / hold"
+        case .swipeLength: return "Swipe"
+        case .circle: return "Circle"
+        case .centerSize: return "Center area"
         }
     }
 
     var steps: [String] {
         switch self {
-        case .doubleWindow: return ["rychlý 0,25 s", "normální 0,35 s", "pomalý 0,45 s"]
-        case .longPress: return ["0,4 s", "0,5 s", "0,7 s"]
-        case .swipeLength: return ["citlivý", "normální", "tvrdý"]
-        case .circle: return ["¾ otočky", "normální 300°", "celý kruh"]
-        case .centerSize: return ["malý", "normální", "velký"]
-        case .corners: return ["vypnuté", "normální 40°", "široké 60°"]
+        case .doubleWindow: return ["fast 0.25 s", "normal 0.35 s", "slow 0.45 s"]
+        case .longPress: return ["0.4 s", "0.5 s", "0.7 s"]
+        case .swipeLength: return ["sensitive", "normal", "firm"]
+        case .circle: return ["¾ turn", "normal 300°", "full turn"]
+        case .centerSize: return ["small", "normal", "large"]
         }
     }
 
-    /// Every knob starts in the middle: the values tried in Gesture Lab.
-    static let defaultStep = 1
+    /// The values tried in Gesture Lab, but a large middle (taps on the sides went to the middle).
+    var defaultStep: Int {
+        self == .centerSize ? 2 : 1
+    }
 
     func apply(step: Int, to tuning: inout RemoteGestureTuning) {
         let step = min(max(step, 0), steps.count - 1)
@@ -161,9 +161,6 @@ enum PlayerGestureSensitivityKnob: String, CaseIterable, Codable, Identifiable, 
             tuning.circleDegrees = [270, 300, 350][step]
         case .centerSize:
             tuning.sideThreshold = [0.15, 0.20, 0.30][step]
-        case .corners:
-            tuning.cornerTouches = step > 0
-            tuning.cornerWidth = step == 2 ? 60 : 40
         }
     }
 }
@@ -175,7 +172,7 @@ struct PlayerGestureSensitivity: Codable, Equatable, Sendable {
     init() {}
 
     func step(_ knob: PlayerGestureSensitivityKnob) -> Int {
-        min(max(steps[knob.rawValue] ?? PlayerGestureSensitivityKnob.defaultStep, 0), knob.steps.count - 1)
+        min(max(steps[knob.rawValue] ?? knob.defaultStep, 0), knob.steps.count - 1)
     }
 
     /// The next step, round to the first after the last.
@@ -183,8 +180,10 @@ struct PlayerGestureSensitivity: Codable, Equatable, Sendable {
         steps[knob.rawValue] = (step(knob) + 1) % knob.steps.count
     }
 
+    /// No corners in the player: a touch is in the middle or on one of the four sides.
     var tuning: RemoteGestureTuning {
         var tuning = RemoteGestureTuning()
+        tuning.cornerTouches = false
         for knob in PlayerGestureSensitivityKnob.allCases {
             knob.apply(step: step(knob), to: &tuning)
         }
@@ -223,15 +222,15 @@ enum PlayerBuiltInGesture {
     /// For the Gestures tab: what binding this gesture takes away.
     var title: String {
         switch self {
-        case .seekBack: return "skok zpět"
-        case .seekForward: return "skok vpřed"
-        case .holdSeekBack: return "přetáčení zpět"
-        case .holdSeekForward: return "přetáčení vpřed"
-        case .select: return "pauza"
-        case .playPause: return "přehrát / pauza"
-        case .revealControls: return "ukázat ovládání"
+        case .seekBack: return "seek back"
+        case .seekForward: return "seek forward"
+        case .holdSeekBack: return "rewind"
+        case .holdSeekForward: return "fast forward"
+        case .select: return "pause"
+        case .playPause: return "play / pause"
+        case .revealControls: return "show controls"
         case .openPanel: return "InSight"
-        case .peek: return "krátký přehled"
+        case .peek: return "peek"
         }
     }
 }
