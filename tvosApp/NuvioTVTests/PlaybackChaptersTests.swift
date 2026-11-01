@@ -199,4 +199,58 @@ final class PlaybackChaptersTests: XCTestCase {
         let recap = SkipInterval(startTime: 0, endTime: 90, type: "recap", provider: "introdb")
         XCTAssertEqual(PlaybackChapters.aligned(recap, to: [chapter(0, "Chapter 1", 0, 92), chapter(1, "Chapter 2", 92, 900)]), recap)
     }
+
+    func testTheTimelineIsCutWhereChaptersStart() {
+        let pieces = PlaybackChapters.timelinePieces(markers: [0.5, 0.25, 0.75], segments: [(start: 0.1, end: 0.2)])
+        XCTAssertEqual(pieces.map(\.start), [0, 0.25, 0.5, 0.75])
+        XCTAssertEqual(pieces.map(\.end), [0.25, 0.5, 0.75, 1])
+    }
+
+    func testWithoutChaptersTheOpeningAndEndingCutTheTimeline() {
+        let pieces = PlaybackChapters.timelinePieces(
+            markers: [],
+            segments: [(start: 0.05, end: 0.12), (start: 0.9, end: 1)]
+        )
+        // The ending runs to the very end: no piece after it.
+        XCTAssertEqual(pieces.map(\.start), [0, 0.05, 0.12, 0.9])
+        XCTAssertEqual(pieces.map(\.end), [0.05, 0.12, 0.9, 1])
+    }
+
+    func testNothingToCutAtLeavesOneBar() {
+        XCTAssertEqual(PlaybackChapters.timelinePieces(markers: [], segments: []), [])
+        XCTAssertEqual(PlaybackChapters.timelinePieces(markers: [], segments: [(start: 0, end: 1)]), [])
+        // Cuts on top of each other make one cut.
+        XCTAssertEqual(PlaybackChapters.timelinePieces(markers: [0.4, 0.4005], segments: []).count, 2)
+    }
+
+    func testThePieceUnderThePlayhead() {
+        let pieces = PlaybackChapters.timelinePieces(markers: [0.25, 0.5], segments: [])
+        XCTAssertEqual(PlaybackChapters.pieceIndex(at: 0, in: pieces), 0)
+        XCTAssertEqual(PlaybackChapters.pieceIndex(at: 0.3, in: pieces), 1)
+        XCTAssertEqual(PlaybackChapters.pieceIndex(at: 0.5, in: pieces), 2, "a chapter's start belongs to it")
+        XCTAssertEqual(PlaybackChapters.pieceIndex(at: 1, in: pieces), 2)
+        XCTAssertNil(PlaybackChapters.pieceIndex(at: 0.3, in: []))
+    }
+
+    func testOpeningAndEndingColorsFromTheSettings() throws {
+        let suite = "PlaybackChaptersTests.colors"
+        let settings = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { settings.removePersistentDomain(forName: suite) }
+        XCTAssertEqual(PlaybackChapters.colorHex(for: .opening, in: settings), PlaybackChapters.defaultOpeningColor)
+        XCTAssertEqual(PlaybackChapters.colorHex(for: .ending, in: settings), PlaybackChapters.defaultEndingColor)
+        settings.set("#EB5757", forKey: SettingsKey.timelineOpeningColor)
+        settings.set("blue", forKey: SettingsKey.timelineEndingColor)
+        XCTAssertEqual(PlaybackChapters.colorHex(for: .opening, in: settings), "#EB5757")
+        XCTAssertEqual(PlaybackChapters.colorHex(for: .ending, in: settings), PlaybackChapters.defaultEndingColor)
+        XCTAssertTrue(PlaybackChapters.colorChoices.contains(PlaybackChapters.defaultOpeningColor))
+        XCTAssertTrue(PlaybackChapters.colorChoices.contains(PlaybackChapters.defaultEndingColor))
+        XCTAssertTrue(SettingsKey.all.contains(SettingsKey.timelineOpeningColor))
+        XCTAssertTrue(SettingsKey.all.contains(SettingsKey.timelineEndingColor))
+    }
+
+    func testBadgeTextReadsOnEveryColor() {
+        // Black on the light colors, white on the dark ones.
+        let dark = PlaybackChapters.colorChoices.filter { PlaybackChapters.prefersDarkText(on: $0) }
+        XCTAssertEqual(dark, ["#F2C94C", "#56CCF2", "#6FCF97", "#F2994A"])
+    }
 }

@@ -1161,7 +1161,16 @@ private struct PlayerTimelineBar: View {
                 let needleHeight: CGFloat = 22
                 let originalProgress = CGFloat(min(max(clock.position / duration, 0), 1))
                 let originalX = min(max(w * originalProgress, 0), w)
-                let bottomOfTrack = geo.size.height / 2 + h / 2
+                let markers = PlaybackChapters.markers(chapters, duration: clock.duration)
+                let segments = PlaybackChapters.timelineSegments(skipSegments, duration: clock.duration).map {
+                    PlayerTrackSegment(start: $0.start, end: $0.end, color: $0.kind.color)
+                }
+                // The needle stands on the piece it points at, which is the lifted one.
+                let isCut = !PlaybackChapters.timelinePieces(
+                    markers: markers,
+                    segments: segments.map { (start: $0.start, end: $0.end) }
+                ).isEmpty
+                let bottomOfTrack = geo.size.height / 2 + (h + (isCut ? PlayerProgressTrack.currentPieceLift : 0)) / 2
 
                 ZStack(alignment: .leading) {
                     PlayerProgressTrack(
@@ -1171,10 +1180,8 @@ private struct PlayerTimelineBar: View {
                         showThumb: false,
                         emphasized: isTimelineFocused || isSeekingOrScrubbing,
                         glassTrack: true,
-                        markers: PlaybackChapters.markers(chapters, duration: clock.duration),
-                        segments: PlaybackChapters.timelineSegments(skipSegments, duration: clock.duration).map {
-                            PlayerTrackSegment(start: $0.start, end: $0.end, color: $0.kind.color)
-                        }
+                        markers: markers,
+                        segments: segments
                     )
 
                     if isScrubbing || isHoldingSeek {

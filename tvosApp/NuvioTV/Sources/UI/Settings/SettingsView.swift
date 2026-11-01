@@ -348,6 +348,11 @@ enum SettingsKey {
     static let seekPreviewBeyondBuffer = "nuvio.tv.settings.playback.seekPreviewBeyondBuffer"
     /// Seekr (seekr.tv) API key for seek previews; kept in the Nuvio account like the other settings.
     static let seekrApiKey = "nuvio.tv.settings.playback.seekrApiKey"
+    /// Whether Seekr is asked at all (on by default); the key stays saved while it is off.
+    static let seekrEnabled = "nuvio.tv.settings.playback.seekrEnabled"
+    /// The opening's and the ending's color on the timeline ("#RRGGBB", see `PlaybackChapters.colorChoices`).
+    static let timelineOpeningColor = "nuvio.tv.settings.playback.timelineOpeningColor"
+    static let timelineEndingColor = "nuvio.tv.settings.playback.timelineEndingColor"
     /// The bottom panel's tabs and their order (see `PlayerPanelTabs`).
     static let playerPanelTabs = "nuvio.tv.settings.playback.playerPanelTabs"
     static let showLoadingStatus = "nuvio.tv.settings.playback.showLoadingStatus"
@@ -419,7 +424,8 @@ enum SettingsKey {
         subtitleLanguages, subtitleLanguage, subtitleLanguageSecondary, subtitleLanguageTertiary,
         forcedSubtitles, subtitleSize, frameRateMatching, networkCache, hybridDiskCacheEnabled, hybridDiskCacheLimitGB, playbackTrackSelections, showAudioLanguages,
         externalPlayerForwardSubtitles, assOverrideMode,
-        playerShowPiP, playerShowEpisodes, playerShowSources, playerShowSubtitles, playerShowAudio, playerShowChapters, seekPreviewEnabled, seekPreviewBeyondBuffer, seekrApiKey, playerPanelTabs, showLoadingStatus,
+        playerShowPiP, playerShowEpisodes, playerShowSources, playerShowSubtitles, playerShowAudio, playerShowChapters, seekPreviewEnabled, seekPreviewBeyondBuffer, seekrApiKey, seekrEnabled, playerPanelTabs, showLoadingStatus,
+        timelineOpeningColor, timelineEndingColor,
         audioDelayPersistEnabled, persistentAudioDelayMs,
         sceneFeatureEnabled,
         fastNavigation, smoothFocus, playbackDiagnostics, playbackDebug, focusHighlighter,
@@ -8609,6 +8615,9 @@ private struct PlaybackSettingsView: View {
     @AppStorage(SettingsKey.seekPreviewEnabled) private var seekPreviewEnabled = true
     @AppStorage(SettingsKey.seekPreviewBeyondBuffer) private var seekPreviewBeyondBuffer = false
     @AppStorage(SettingsKey.seekrApiKey) private var seekrApiKey = ""
+    @AppStorage(SettingsKey.seekrEnabled) private var seekrEnabled = true
+    @AppStorage(SettingsKey.timelineOpeningColor) private var timelineOpeningColor = PlaybackChapters.defaultOpeningColor
+    @AppStorage(SettingsKey.timelineEndingColor) private var timelineEndingColor = PlaybackChapters.defaultEndingColor
     @AppStorage(SettingsKey.playerPanelTabs) private var playerPanelTabs = ""
     @State private var seekrKeyCheck: SeekrKeyCheck = .unchecked
     @State private var seekrKeyCheckTask: Task<Void, Never>?
@@ -8863,6 +8872,28 @@ private struct PlaybackSettingsView: View {
                 )
                 .disabled(!seekPreviewEnabled)
 
+                SubtitleColorRow(
+                    title: L10n.string("tvos_settings_timeline_opening_color", fallback: "Opening Color"),
+                    subtitle: L10n.string(
+                        "tvos_settings_timeline_opening_color_subtitle",
+                        fallback: "The opening on the timeline and its badge in Chapters"
+                    ),
+                    selection: $timelineOpeningColor,
+                    accentColor: accentColor,
+                    colors: PlaybackChapters.colorChoices
+                )
+
+                SubtitleColorRow(
+                    title: L10n.string("tvos_settings_timeline_ending_color", fallback: "Ending Color"),
+                    subtitle: L10n.string(
+                        "tvos_settings_timeline_ending_color_subtitle",
+                        fallback: "The ending on the timeline and its badge in Chapters"
+                    ),
+                    selection: $timelineEndingColor,
+                    accentColor: accentColor,
+                    colors: PlaybackChapters.colorChoices
+                )
+
                 SettingsToggleRow(
                     title: L10n.string("playback_show_loading_status", fallback: "Show loading status"),
                     subtitle: L10n.string(
@@ -8946,6 +8977,17 @@ private struct PlaybackSettingsView: View {
                     RoundedRectangle(cornerRadius: 24, style: .continuous)
                         .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
                 )
+
+                SettingsToggleRow(
+                    title: L10n.string("tvos_settings_seekr_enabled", fallback: "Use Seekr"),
+                    subtitle: L10n.string(
+                        "tvos_settings_seekr_enabled_subtitle",
+                        fallback: "Off: the player makes its own previews; the key stays saved."
+                    ),
+                    isOn: $seekrEnabled,
+                    accentColor: accentColor
+                )
+                .disabled(!seekPreviewEnabled)
 
                 SettingsNativeTextFieldRow(
                     title: L10n.string("tvos_settings_seekr_api_key", fallback: "Seekr API Key"),
@@ -9902,6 +9944,7 @@ private struct SubtitleColorRow: View {
     let subtitle: String
     @Binding var selection: String
     let accentColor: Color
+    var colors: [String] = SubtitlePalette.colors
 
     var body: some View {
         HStack(spacing: 20) {
@@ -9909,7 +9952,7 @@ private struct SubtitleColorRow: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             HStack(spacing: 12) {
-                ForEach(SubtitlePalette.colors, id: \.self) { hex in
+                ForEach(colors, id: \.self) { hex in
                     SubtitleColorSwatchButton(
                         hex: hex,
                         isSelected: selection.caseInsensitiveCompare(hex) == .orderedSame,

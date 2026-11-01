@@ -8955,7 +8955,13 @@
     "tvos_settings_player_panel_chapters": "Kapitoly souboru s náhledy",
     "tvos_settings_player_panel_info": "Engine, obraz a zvuk",
     "tvos_settings_player_panel_up_next": "Další díl",
-    "tvos_settings_player_panel_watch_party": "Sledování společně s přáteli"
+    "tvos_settings_player_panel_watch_party": "Sledování společně s přáteli",
+    "tvos_settings_timeline_opening_color": "Barva úvodu",
+    "tvos_settings_timeline_opening_color_subtitle": "Úvod na časové ose a jeho štítek v Kapitolách",
+    "tvos_settings_timeline_ending_color": "Barva závěru",
+    "tvos_settings_timeline_ending_color_subtitle": "Závěr na časové ose a jeho štítek v Kapitolách",
+    "tvos_settings_seekr_enabled": "Používat Seekr",
+    "tvos_settings_seekr_enabled_subtitle": "Vypnuto: náhledy si přehrávač dělá sám, klíč zůstane uložený."
   },
   "da": {
     "sidebar_genres_title": "Genrer",
@@ -17899,7 +17905,13 @@
     "tvos_settings_player_panel_chapters": "The file's chapters, with stills",
     "tvos_settings_player_panel_info": "Engine, video and audio details",
     "tvos_settings_player_panel_up_next": "The next episode",
-    "tvos_settings_player_panel_watch_party": "Watch together with friends"
+    "tvos_settings_player_panel_watch_party": "Watch together with friends",
+    "tvos_settings_timeline_opening_color": "Opening Color",
+    "tvos_settings_timeline_opening_color_subtitle": "The opening on the timeline and its badge in Chapters",
+    "tvos_settings_timeline_ending_color": "Ending Color",
+    "tvos_settings_timeline_ending_color_subtitle": "The ending on the timeline and its badge in Chapters",
+    "tvos_settings_seekr_enabled": "Use Seekr",
+    "tvos_settings_seekr_enabled_subtitle": "Off: the player makes its own previews; the key stays saved."
   },
   "es": {
     "sidebar_genres_title": "Géneros",

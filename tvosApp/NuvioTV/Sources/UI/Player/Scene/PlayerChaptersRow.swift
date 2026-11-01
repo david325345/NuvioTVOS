@@ -112,7 +112,7 @@ struct PlayerChaptersRow: View {
                              ? L10n.string("player_chapter_opening", fallback: "Opening")
                              : L10n.string("player_chapter_ending", fallback: "Ending"))
                             .font(.system(size: 14, weight: .bold))
-                            .foregroundStyle(Color.black)
+                            .foregroundStyle(kind.labelColor)
                             .padding(.horizontal, 9)
                             .padding(.vertical, 2)
                             .background(Capsule().fill(kind.color))

@@ -79,6 +79,38 @@ enum PlaybackChapters {
             .filter { $0 > 0.002 && $0 < 0.998 }
     }
 
+    // MARK: - Timeline pieces
+
+    /// A stretch of the timeline between two cuts, as fractions of the duration.
+    struct TimelinePiece: Equatable {
+        let start: Double
+        let end: Double
+    }
+
+    /// Cuts closer than this to each other or to either end make no piece of their own.
+    static let minPieceFraction: Double = 0.002
+
+    /// The pieces the timeline is drawn in, with a gap between them: cut where chapters
+    /// start (`markers`) or, in a file without chapters, at the opening's and the ending's
+    /// edges. Empty when there is nothing to cut at: the track is then one bar.
+    static func timelinePieces(markers: [Double], segments: [(start: Double, end: Double)]) -> [TimelinePiece] {
+        let cuts = markers.isEmpty ? segments.flatMap { [$0.start, $0.end] } : markers
+        var edges: [Double] = [0]
+        for cut in cuts.filter(\.isFinite).sorted()
+        where cut >= minPieceFraction && cut <= 1 - minPieceFraction && cut - edges[edges.count - 1] >= minPieceFraction {
+            edges.append(cut)
+        }
+        guard edges.count > 1 else { return [] }
+        edges.append(1)
+        return zip(edges, edges.dropFirst()).map { TimelinePiece(start: $0, end: $1) }
+    }
+
+    /// The piece that holds `fraction`: the playhead, or where a seek is headed.
+    static func pieceIndex(at fraction: Double, in pieces: [TimelinePiece]) -> Int? {
+        guard !pieces.isEmpty, fraction.isFinite else { return nil }
+        return pieces.lastIndex { fraction >= $0.start } ?? 0
+    }
+
     // MARK: - Skip from chapter names
 
     enum Kind: Equatable {
@@ -157,6 +189,36 @@ enum PlaybackChapters {
             guard end - start > 0.001 else { return nil }
             return TimelineSegment(start: start, end: end, kind: kind)
         }
+    }
+
+    // MARK: - Colors
+
+    /// The colors the opening and the ending can take (Settings → Player): the subtitle
+    /// palette without white, which reads as the played part, and black.
+    static let colorChoices = ["#F2C94C", "#56CCF2", "#EB5757", "#6FCF97", "#9B51E0", "#F2994A", "#27AE60", "#2F80ED"]
+    static let defaultOpeningColor = "#F2C94C"
+    static let defaultEndingColor = "#56CCF2"
+
+    static func colorKey(for kind: Kind) -> String {
+        kind == .opening ? SettingsKey.timelineOpeningColor : SettingsKey.timelineEndingColor
+    }
+
+    /// The color chosen for `kind`, as "#RRGGBB"; its default while none is set.
+    static func colorHex(for kind: Kind, in settings: UserDefaults) -> String {
+        let fallback = kind == .opening ? defaultOpeningColor : defaultEndingColor
+        guard let value = settings.string(forKey: colorKey(for: kind))?.trimmingCharacters(in: .whitespaces),
+              value.range(of: #"^#[0-9A-Fa-f]{6}$"#, options: .regularExpression) != nil else { return fallback }
+        return value
+    }
+
+    /// Whether black text reads better than white on `hex` (the Opening / Ending badges).
+    static func prefersDarkText(on hex: String) -> Bool {
+        var value: UInt64 = 0
+        guard Scanner(string: String(hex.drop { $0 == "#" }.prefix(6))).scanHexInt64(&value) else { return true }
+        let red = Double((value >> 16) & 0xFF) / 255
+        let green = Double((value >> 8) & 0xFF) / 255
+        let blue = Double(value & 0xFF) / 255
+        return 0.299 * red + 0.587 * green + 0.114 * blue >= 0.6
     }
 
     /// A chapter's badge in the list: from its name, or from the segment it
