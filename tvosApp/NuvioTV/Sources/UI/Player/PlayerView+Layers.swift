@@ -39,6 +39,7 @@ extension PlayerView {
             postPlayRecommendationLayer
             remoteTouchCatcherLayer
             remoteSeekPressCatcherLayer
+            remoteBackGuardLayer
             playerStatusOverlay
                 .zIndex(10)
             playerToastLayer
@@ -248,6 +249,13 @@ extension PlayerView {
         )
         .allowsHitTesting(false)
         .frame(width: 0, height: 0)
+    }
+
+    /// A quick second Back while a panel or a menu closes must not leave the app.
+    var remoteBackGuardLayer: some View {
+        RemoteBackGuard()
+            .allowsHitTesting(false)
+            .frame(width: 0, height: 0)
     }
 
     @ViewBuilder
