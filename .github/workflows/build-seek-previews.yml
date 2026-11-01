@@ -1,10 +1,10 @@
-name: Seek previews test build (fork)
+name: Subtitle Auto Sync test build (fork)
 
 # Fork only, never part of the PR: builds an unsigned IPA of the seek previews
 # branch and runs its tests, plus the whole suite for comparison.
 on:
   push:
-    branches: [seek-previews-test]
+    branches: [subtitle-autosync-test]
   workflow_dispatch:
 
 jobs:
@@ -63,7 +63,7 @@ jobs:
           cp out.ipa "$GITHUB_WORKSPACE/build-ipa/NuvioTV-unsigned.ipa"
       - uses: actions/upload-artifact@v4
         with:
-          name: NuvioTV-seek-previews-chapters-topshelf-unsigned-ipa
+          name: NuvioTV-subtitle-autosync-unsigned-ipa
           path: build-ipa/NuvioTV-unsigned.ipa
           retention-days: 7
 
@@ -99,7 +99,8 @@ jobs:
             -only-testing:NuvioTVTests/TopShelfArtworkPrunerTests \
             -only-testing:NuvioTVTests/UsenetSettingsSyncTests \
             -only-testing:NuvioTVTests/SeekrTrickplayTests \
-            -only-testing:NuvioTVTests/PlayerPanelTabsTests
+            -only-testing:NuvioTVTests/PlayerPanelTabsTests \
+            -only-testing:NuvioTVTests/SubtitleAutoSyncTests
       - name: Seek preview test results
         if: always()
         env:
@@ -111,7 +112,7 @@ jobs:
             def walk(node, suite, out)
               name = node["name"].to_s
               suite = name if node["nodeType"] == "Test Suite"
-              if node["nodeType"] == "Test Case" && ["SeekPreviewLaneTests", "UsenetPoolTests", "PlaybackChaptersTests", "PlayerControlsSettingsTests", "TopShelfLayoutTests", "TopShelfArtworkPrunerTests", "UsenetSettingsSyncTests", "SeekrTrickplayTests", "PlayerPanelTabsTests"].include?(suite)
+              if node["nodeType"] == "Test Case" && ["SeekPreviewLaneTests", "UsenetPoolTests", "PlaybackChaptersTests", "PlayerControlsSettingsTests", "TopShelfLayoutTests", "TopShelfArtworkPrunerTests", "UsenetSettingsSyncTests", "SeekrTrickplayTests", "PlayerPanelTabsTests", "SubtitleAutoSyncTests"].include?(suite)
                 out << ["#{suite}.#{name}", node["result"]]
               end
               (node["children"] || []).each { |child| walk(child, suite, out) }
