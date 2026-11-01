@@ -286,7 +286,7 @@ class PlayerViewModel: ObservableObject {
     /// Every external subtitle the stream offered (all languages), browsable in
     /// the player's subtitle panel and loaded into mpv on demand.
     @Published var availableExternalSubtitles: [NuvioSubtitle] = []
-    /// Subtitle Auto Sync per add-on subtitle URL (see `SubtitleAutoSync`).
+    /// AutoSubSync per add-on subtitle URL (see `SubtitleAutoSync`).
     @Published private(set) var subtitleAutoSyncStates: [String: SubtitleAutoSyncState] = [:]
     /// What the last Auto Sync run of each add-on subtitle looked at (the Auto Sync tab).
     @Published private(set) var subtitleAutoSyncReports: [String: SubtitleAutoSyncReport] = [:]
@@ -6204,7 +6204,7 @@ class PlayerViewModel: ObservableObject {
         engine.setAudioProcessing(dialogue: enhanceDialogueMode, reduceLoud: isReduceLoudSoundsActive)
     }
 
-    // MARK: - Subtitle Auto Sync
+    // MARK: - AutoSubSync
 
     /// A new file: forget the last one's Auto Sync, and start reading this one's subtitle index
     /// when Auto Sync is on (the Auto Sync tab resolves it on demand otherwise).
@@ -6242,8 +6242,8 @@ class PlayerViewModel: ObservableObject {
         return task
     }
 
-    /// Lines the add-on subtitle up once per file, when Auto Sync is on. `force` (the Auto Sync
-    /// tab's button) runs it anyway, again, and without the remembered answer.
+    /// Lines the add-on subtitle up once per file, when AutoSubSync is on. `force` (the
+    /// AutoSubSync tab's button) runs it anyway; pressed again, without the remembered answer.
     private func startSubtitleAutoSyncIfNeeded(for subtitle: NuvioSubtitle, force: Bool = false) {
         guard subtitleAutoSyncCopies[subtitle.url] == nil, !subtitle.url.hasPrefix("file:") else { return }
         if !force {
@@ -6251,6 +6251,7 @@ class PlayerViewModel: ObservableObject {
                   subtitleAutoSyncStates[subtitle.url] == nil else { return }
         }
         guard let sourceTask = subtitleAutoSyncSource(prefetch: false) else { return }
+        let useCache = !force || subtitleAutoSyncStates[subtitle.url] == nil
         subtitleAutoSyncTasks[subtitle.url]?.cancel()
         subtitleAutoSyncStates[subtitle.url] = .checking
         let generation = sessionCoordinator.loadGeneration
@@ -6259,7 +6260,7 @@ class PlayerViewModel: ObservableObject {
             let run: SubtitleAutoSyncRun
             if let source = await sourceTask.value {
                 run = await SubtitleAutoSync.shared.sync(
-                    subtitle: subtitle, source: source, toleranceMs: tolerance, force: force)
+                    subtitle: subtitle, source: source, toleranceMs: tolerance, useCache: useCache, force: force)
             } else {
                 run = SubtitleAutoSyncRun(
                     outcome: .kept(.unsupportedSource),
@@ -6299,7 +6300,7 @@ class PlayerViewModel: ObservableObject {
         case .kept(let issue):
             subtitleAutoSyncStates[subtitle.url] = .kept(issue)
             if announce || (issue != .inSync && issue != .unsupportedSource) {
-                showPlayerToast("Auto Sync: " + issue.message)
+                showPlayerToast("AutoSubSync: " + issue.message)
             }
         }
     }
