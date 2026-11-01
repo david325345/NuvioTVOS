@@ -1,0 +1,119 @@
+import Foundation
+
+// Ported from the fork's Gesture Lab (GestureCore), where these gestures were tried on a remote.
+
+/// A point on the remote's touch surface: x and y from −1 to 1, y pointing up
+/// (GameController's absolute d-pad values).
+struct PadPoint: Equatable, Codable, Sendable {
+    var x: Double
+    var y: Double
+
+    init(x: Double, y: Double) {
+        self.x = x
+        self.y = y
+    }
+
+    func distance(to other: PadPoint) -> Double {
+        let dx = x - other.x
+        let dy = y - other.y
+        return (dx * dx + dy * dy).squareRoot()
+    }
+}
+
+/// A button press the remote reports: the clickpad centre, the four
+/// directions (ring clicks on the silver remote, edge taps on the black one)
+/// and Play/Pause. Menu/Back is not a gesture: it keeps its own meaning.
+enum RemoteButton: String, Codable, CaseIterable, Sendable {
+    case select, up, down, left, right, playPause
+
+    var title: String {
+        switch self {
+        case .select: return "na střed"
+        case .up: return "nahoru"
+        case .down: return "dolů"
+        case .left: return "vlevo"
+        case .right: return "vpravo"
+        case .playPause: return "Play/Pause"
+        }
+    }
+}
+
+enum ClickKind: String, Codable, Sendable {
+    case single, double, long
+}
+
+enum SwipeDirection: String, Codable, CaseIterable, Sendable {
+    case left, right, up, down
+
+    var title: String {
+        switch self {
+        case .left: return "doleva"
+        case .right: return "doprava"
+        case .up: return "nahoru"
+        case .down: return "dolů"
+        }
+    }
+}
+
+/// Where a touch rested: one of eight directions from the middle, or the middle.
+enum PadSide: String, Codable, CaseIterable, Sendable {
+    case left, center, right, top, bottom
+    case topLeft, topRight, bottomLeft, bottomRight
+
+    var title: String {
+        switch self {
+        case .left: return "vlevo"
+        case .center: return "uprostřed"
+        case .right: return "vpravo"
+        case .top: return "nahoře"
+        case .bottom: return "dole"
+        case .topLeft: return "vlevo nahoře"
+        case .topRight: return "vpravo nahoře"
+        case .bottomLeft: return "vlevo dole"
+        case .bottomRight: return "vpravo dole"
+        }
+    }
+}
+
+/// Everything Gesture Lab tells apart.
+enum RemoteGesture: Hashable, Codable, Sendable {
+    case click(RemoteButton, ClickKind)
+    case swipe(SwipeDirection, long: Bool)
+    /// Out in one direction and back again (left–right or up–down).
+    case swipeBack(SwipeDirection)
+    case tap(PadSide, double: Bool)
+    /// A finger resting still (no click) for a while.
+    case hold(PadSide)
+    case circle(clockwise: Bool)
+
+    var title: String {
+        switch self {
+        case let .click(button, kind):
+            switch kind {
+            case .single: return "Klik \(button.title)"
+            case .double: return "Dvojklik \(button.title)"
+            case .long: return "Dlouhý stisk \(button.title)"
+            }
+        case let .swipe(direction, long):
+            return (long ? "Dlouhý tah " : "Tah ") + direction.title
+        case let .swipeBack(direction):
+            return "Tah \(direction.title) a zpět"
+        case let .tap(side, double):
+            return (double ? "Dvojí dotyk " : "Dotyk ") + side.title
+        case let .hold(side):
+            return "Přidržení " + side.title
+        case let .circle(clockwise):
+            return clockwise ? "Kroužek po směru hodin" : "Kroužek proti směru hodin"
+        }
+    }
+
+    /// The double version of a single click or tap, which the single one has
+    /// to wait for when it is bound.
+    var doubled: RemoteGesture? {
+        switch self {
+        case let .click(button, .single): return .click(button, .double)
+        case let .tap(side, false): return .tap(side, double: true)
+        default: return nil
+        }
+    }
+}
