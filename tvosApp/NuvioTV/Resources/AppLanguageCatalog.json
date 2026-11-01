@@ -8961,7 +8961,8 @@
     "tvos_settings_timeline_ending_color": "Barva závěru",
     "tvos_settings_timeline_ending_color_subtitle": "Závěr na časové ose a jeho štítek v Kapitolách",
     "tvos_settings_seekr_enabled": "Používat Seekr",
-    "tvos_settings_seekr_enabled_subtitle": "Vypnuto: náhledy si přehrávač dělá sám, klíč zůstane uložený."
+    "tvos_settings_seekr_enabled_subtitle": "Vypnuto: náhledy si přehrávač dělá sám, klíč zůstane uložený.",
+    "player_timeline_snapped": "přichyceno"
   },
   "da": {
     "sidebar_genres_title": "Genrer",
@@ -17911,7 +17912,8 @@
     "tvos_settings_timeline_ending_color": "Ending Color",
     "tvos_settings_timeline_ending_color_subtitle": "The ending on the timeline and its badge in Chapters",
     "tvos_settings_seekr_enabled": "Use Seekr",
-    "tvos_settings_seekr_enabled_subtitle": "Off: the player makes its own previews; the key stays saved."
+    "tvos_settings_seekr_enabled_subtitle": "Off: the player makes its own previews; the key stays saved.",
+    "player_timeline_snapped": "snapped"
   },
   "es": {
     "sidebar_genres_title": "Géneros",

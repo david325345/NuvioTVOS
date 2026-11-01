@@ -191,6 +191,36 @@ enum PlaybackChapters {
         }
     }
 
+    // MARK: - Snapping while seeking
+
+    /// Where a swipe seek stops for a moment: chapter starts and the opening's and the ending's
+    /// edges, in seconds, inside the video (not its very start or its last second).
+    static func snapEdges(chapters: [PlaybackChapter], segments: [SkipInterval], duration: Double) -> [Double] {
+        guard duration > 2 else { return [] }
+        let starts = chapters.map(\.startSeconds)
+        let edges = segments.filter { $0.isIntro || $0.isEnding }.flatMap { [$0.startTime, $0.endTime] }
+        return Array(Set((starts + edges).filter { $0.isFinite && $0 >= 1 && $0 <= duration - 1 })).sorted()
+    }
+
+    /// How close a swipe must come to an edge to stop on it: 1 % of the video, 3 to 10 s.
+    static func snapRadius(duration: Double) -> Double {
+        min(max(duration * 0.01, 3), 10)
+    }
+
+    /// `seconds` on the closest edge within `radius`, or as it is.
+    static func snapped(_ seconds: Double, to edges: [Double], radius: Double) -> Double {
+        var best: Double?
+        for edge in edges where abs(edge - seconds) <= radius {
+            if best.map({ abs(edge - seconds) < abs($0 - seconds) }) ?? true { best = edge }
+        }
+        return best ?? seconds
+    }
+
+    /// Whether `seconds` sits on one of `edges`: the seek label then says "snapped".
+    static func isOnEdge(_ seconds: Double, edges: [Double]) -> Bool {
+        edges.contains { abs($0 - seconds) < 0.001 }
+    }
+
     // MARK: - Colors
 
     /// The colors the opening and the ending can take (Settings → Player): the subtitle

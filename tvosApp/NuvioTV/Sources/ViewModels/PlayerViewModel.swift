@@ -615,6 +615,11 @@ class PlayerViewModel: ObservableObject {
     /// Coarse D-pad jump while scrubbing (seconds). Pan zooms, presses hop.
     private var scrubJumpSeconds: Double { max(Double(seekStepSeconds) * 4, 60) }
     private var scrubValue: Double?
+    /// Where the swipe has got to, before snapping: the target (`scrubValue`) stays on a chapter
+    /// or opening / ending edge while this is within the snap radius of it. Nil: same as the target.
+    private var scrubSwipeValue: Double?
+    /// The edges a swipe snaps to, taken when the scrub begins.
+    private var scrubSnapEdges: [Double] = []
     private var lastScrubPublish = Date.distantPast
     private var scrubTimeoutTask: Task<Void, Never>?
     private let suppliedScrubThumbnailProvider: (any ScrubThumbnailProviding)?
@@ -5387,6 +5392,8 @@ class PlayerViewModel: ObservableObject {
         scrubTimeoutTask?.cancel()
         resetScrubThumbnailState()
         scrubValue = nil
+        scrubSwipeValue = nil
+        scrubSnapEdges = []
         isScrubbing = false
         resetWheel()
         clock.scrubTarget = nil
@@ -5413,6 +5420,8 @@ class PlayerViewModel: ObservableObject {
         scrubThumbnailTargetSeconds = nil
         let position = playbackPosition
         scrubValue = position
+        scrubSwipeValue = nil
+        scrubSnapEdges = PlaybackChapters.snapEdges(chapters: chapters, segments: skipSegments, duration: playbackDuration)
         clock.scrubTarget = position
         isScrubbing = true
         resetWheel()
@@ -5469,6 +5478,7 @@ class PlayerViewModel: ObservableObject {
         let duration = playbackDuration
         let proposed = target + seconds
         let clamped = max(0, min(proposed, duration > 0 ? duration - 1 : proposed))
+        scrubSwipeValue = nil
         publishScrub(clamped)
         restartScrubTimeout()
     }
@@ -5548,9 +5558,15 @@ class PlayerViewModel: ObservableObject {
         let duration = playbackDuration
         let delta = scrubDeltaSeconds(for: inc, duration: duration)
         guard abs(delta) > 0.0001 else { return }
-        let proposed = target + delta
+        // The swipe moves on from where it got to; the target stops on an edge close to it.
+        let proposed = (scrubSwipeValue ?? target) + delta
         let clamped = max(0, min(proposed, duration > 0 ? duration - 1 : proposed))
-        publishScrub(clamped)
+        scrubSwipeValue = clamped
+        publishScrub(PlaybackChapters.snapped(
+            clamped,
+            to: scrubSnapEdges,
+            radius: PlaybackChapters.snapRadius(duration: duration)
+        ))
         restartScrubTimeout()
     }
 
@@ -5595,6 +5611,8 @@ class PlayerViewModel: ObservableObject {
         let duration = playbackDuration
         let proposed = target + seconds
         let clamped = max(0, min(proposed, duration > 0 ? duration - 1 : proposed))
+        // Fine-tuning goes to the exact second: no snapping, and the next swipe starts here.
+        scrubSwipeValue = nil
         publishScrub(clamped)
         restartScrubTimeout()
     }

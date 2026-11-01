@@ -253,4 +253,28 @@ final class PlaybackChaptersTests: XCTestCase {
         let dark = PlaybackChapters.colorChoices.filter { PlaybackChapters.prefersDarkText(on: $0) }
         XCTAssertEqual(dark, ["#F2C94C", "#56CCF2", "#6FCF97", "#F2994A"])
     }
+
+    func testSwipeSnapsToChapterAndOpeningEdges() {
+        let chapters = [chapter(0, "Prologue", 0, 86), chapter(1, "Opening", 86, 181), chapter(2, "Part A", 181, 1300)]
+        let segments = [
+            SkipInterval(startTime: 86, endTime: 181, type: "intro", provider: "chapters"),
+            SkipInterval(startTime: 1300, endTime: 1440, type: "outro", provider: "introdb"),
+            SkipInterval(startTime: 0, endTime: 60, type: "recap", provider: "introdb")
+        ]
+        // The very start and the end of the video are no edges; the recap is no edge.
+        let edges = PlaybackChapters.snapEdges(chapters: chapters, segments: segments, duration: 1440)
+        XCTAssertEqual(edges, [86, 181, 1300])
+        XCTAssertEqual(PlaybackChapters.snapRadius(duration: 1440), 10)
+        XCTAssertEqual(PlaybackChapters.snapRadius(duration: 120), 3)
+        XCTAssertEqual(PlaybackChapters.snapRadius(duration: 600), 6)
+        XCTAssertEqual(PlaybackChapters.snapped(175, to: edges, radius: 10), 181)
+        XCTAssertEqual(PlaybackChapters.snapped(190, to: edges, radius: 10), 181)
+        XCTAssertEqual(PlaybackChapters.snapped(192, to: edges, radius: 10), 192, "past the radius the swipe moves on")
+        XCTAssertEqual(PlaybackChapters.snapped(500, to: edges, radius: 10), 500)
+        // Two edges close together: the closer one.
+        XCTAssertEqual(PlaybackChapters.snapped(104, to: [100, 106], radius: 10), 106)
+        XCTAssertTrue(PlaybackChapters.isOnEdge(181, edges: edges))
+        XCTAssertFalse(PlaybackChapters.isOnEdge(181.5, edges: edges))
+        XCTAssertEqual(PlaybackChapters.snapEdges(chapters: [], segments: [], duration: 0), [])
+    }
 }
