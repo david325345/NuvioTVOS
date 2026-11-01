@@ -44,11 +44,13 @@ struct PlayerChaptersRow: View {
                     ForEach(Array(chapters.enumerated()), id: \.element.id) { index, chapter in
                         let id = Self.focusID(of: chapter)
                         let isFocused = focusedCardID.wrappedValue == id
+                        // With a card focused, the others step back a little (as on Apple TV).
+                        let isDimmed = !isFocused && Self.chapterID(fromFocusID: focusedCardID.wrappedValue) != nil
                         Button {
                             viewModel.seekToChapter(chapter)
                             onSelect()
                         } label: {
-                            card(chapter, index: index, isCurrent: index == current, isFocused: isFocused)
+                            card(chapter, index: index, isCurrent: index == current, isFocused: isFocused, isDimmed: isDimmed)
                         }
                         .buttonStyle(PosterCardButtonStyle())
                         .focused(focusedCardID, equals: id)
@@ -87,15 +89,21 @@ struct PlayerChaptersRow: View {
         }
     }
 
-    private func card(_ chapter: PlaybackChapter, index: Int, isCurrent: Bool, isFocused: Bool) -> some View {
+    private func card(
+        _ chapter: PlaybackChapter,
+        index: Int,
+        isCurrent: Bool,
+        isFocused: Bool,
+        isDimmed: Bool
+    ) -> some View {
         let kind = PlaybackChapters.kind(of: chapter, segments: viewModel.skipSegments)
         return VStack(alignment: .leading, spacing: 12) {
-            still(chapter, index: index, isCurrent: isCurrent, isFocused: isFocused, kind: kind)
+            still(chapter, index: index, isCurrent: isCurrent, isFocused: isFocused, isDimmed: isDimmed, kind: kind)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(PlaybackChapters.displayName(chapter, index: index))
                     .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(.white.opacity(isFocused ? 1 : 0.86))
+                    .foregroundStyle(.white.opacity(isFocused ? 1 : (isDimmed ? 0.6 : 0.86)))
                     .lineLimit(1)
 
                 HStack(spacing: 8) {
@@ -130,6 +138,7 @@ struct PlayerChaptersRow: View {
         index: Int,
         isCurrent: Bool,
         isFocused: Bool,
+        isDimmed: Bool,
         kind: PlaybackChapters.Kind?
     ) -> some View {
         let image = viewModel.canShowChapterThumbnails ? thumbnails.images[chapter.id] : nil
@@ -181,7 +190,11 @@ struct PlayerChaptersRow: View {
                 .frame(height: 5)
             }
         }
+        // The others step back while one is focused.
+        .overlay(Color.black.opacity(isDimmed ? 0.4 : 0))
         .clipShape(shape)
+        // Focused: white with a dark edge inside it, so it shows on a bright still as on a dark one.
+        .overlay(shape.strokeBorder(Color.black.opacity(isFocused ? 0.7 : 0), lineWidth: 7))
         .overlay(
             shape.strokeBorder(
                 isFocused ? Color.white : (isCurrent ? Color.white.opacity(0.35) : Color.clear),
@@ -190,6 +203,7 @@ struct PlayerChaptersRow: View {
         .shadow(color: .black.opacity(isFocused ? 0.45 : 0.2), radius: isFocused ? 16 : 6, y: isFocused ? 8 : 3)
         .scaleEffect(isFocused ? 1.07 : 1)
         .animation(.easeOut(duration: 0.14), value: isFocused)
+        .animation(.easeOut(duration: 0.14), value: isDimmed)
         .animation(.easeOut(duration: 0.2), value: image != nil)
     }
 }
