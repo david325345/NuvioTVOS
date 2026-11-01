@@ -750,7 +750,7 @@ final class SeekPreviewDiagnostics {
     private(set) var chapterLine = ""
     /// What Seekr answered for the playing title, empty without a Seekr key.
     private(set) var seekrLine = ""
-    /// What Subtitle Auto Sync did with the chosen subtitle, empty while it is off.
+    /// What AutoSubSync did with the chosen subtitle, empty while it is off.
     private(set) var syncLine = ""
     /// The last stills the preview card showed, newest first: target, how the loop got it,
     /// where it came from and how far its frame is from the target.

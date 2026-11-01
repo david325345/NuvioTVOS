@@ -364,7 +364,7 @@ enum SettingsKey {
     static let timelineSegmentsEnabled = "nuvio.tv.settings.playback.timelineSegmentsEnabled"
     /// Whether a swipe seek stops for a moment on chapter and opening / ending edges (on by default).
     static let timelineSnapEnabled = "nuvio.tv.settings.playback.timelineSnapEnabled"
-    /// Subtitle Auto Sync: line add-on subtitles up with the video's embedded subtitles (off by default).
+    /// AutoSubSync: line add-on subtitles up with the video's embedded subtitles (off by default).
     static let subtitleAutoSync = "nuvio.tv.settings.playback.subtitleAutoSync"
     /// Corrections up to this many milliseconds keep the subtitle's own timing.
     static let subtitleAutoSyncToleranceMs = "nuvio.tv.settings.playback.subtitleAutoSyncToleranceMs"
@@ -9071,14 +9071,14 @@ private struct PlaybackSettingsView: View {
             }
 
             SettingsGroup(
-                title: L10n.string("tvos_settings_subtitle_autosync_title", fallback: "Subtitle Auto Sync"),
+                title: L10n.string("tvos_settings_subtitle_autosync_title", fallback: "AutoSubSync"),
                 subtitle: L10n.string(
                     "tvos_settings_subtitle_autosync_subtitle",
-                    fallback: "Lines add-on subtitles up with the timing of the subtitles embedded in the video (MKV). Only the subtitle you play is checked; it switches to the synced copy within seconds."
+                    fallback: "Lines add-on subtitles up with the timing of the subtitles embedded in the video (MKV). Only the subtitle you play is checked; it switches to the synced copy within seconds. A different intro or a cut scene gets a shift of its own."
                 )
             ) {
                 SettingsToggleRow(
-                    title: L10n.string("tvos_settings_subtitle_autosync", fallback: "Auto Sync Subtitles"),
+                    title: L10n.string("tvos_settings_subtitle_autosync", fallback: "Use AutoSubSync"),
                     subtitle: L10n.string(
                         "tvos_settings_subtitle_autosync_toggle_subtitle",
                         fallback: "Debrid, Usenet and media servers. The original timing stays available in the player's subtitle settings."
@@ -9088,7 +9088,7 @@ private struct PlaybackSettingsView: View {
                 )
 
                 SettingsOptionRow(
-                    title: L10n.string("tvos_settings_subtitle_autosync_tolerance", fallback: "Auto Sync Tolerance"),
+                    title: L10n.string("tvos_settings_subtitle_autosync_tolerance", fallback: "AutoSubSync Tolerance"),
                     subtitle: L10n.string(
                         "tvos_settings_subtitle_autosync_tolerance_subtitle",
                         fallback: "Keep the subtitle's own timing when the correction is this small or smaller."

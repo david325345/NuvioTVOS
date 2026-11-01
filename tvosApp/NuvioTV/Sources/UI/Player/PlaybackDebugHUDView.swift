@@ -244,7 +244,7 @@ struct PlaybackDebugHUDView: View {
                 let sync = SeekPreviewDiagnostics.shared.syncLine
                 if !sync.isEmpty {
                     hudRow(
-                        label: "Sync",
+                        label: "AutoSubSync",
                         value: sync,
                         hasDot: true,
                         dotColor: sync.hasPrefix("ok") || sync.hasPrefix("in sync") ? .green
