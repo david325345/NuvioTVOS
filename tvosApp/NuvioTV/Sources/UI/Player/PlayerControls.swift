@@ -2287,7 +2287,7 @@ struct PlayerSettingsPanel: View {
                     if let subtitle = viewModel.activeAddonSubtitle,
                        let state = viewModel.subtitleAutoSyncStates[subtitle.url] {
                         cycleRow(
-                            title: L10n.string("player_subtitle_autosync", fallback: "Auto Sync"),
+                            title: L10n.string("player_subtitle_autosync", fallback: "AutoSubSync"),
                             value: autoSyncValue(state, usingOriginal: viewModel.isSubtitleAutoSyncUsingOriginal(subtitle.url)),
                             focusKey: .autoSync
                         ) {

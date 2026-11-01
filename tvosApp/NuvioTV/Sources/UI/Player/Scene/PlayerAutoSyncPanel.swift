@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// The Auto Sync tab of the bottom panel: run Auto Sync on the playing add-on subtitle by hand,
-/// switch between its synced copy and its own timing, and see what the last run looked at.
+/// The AutoSubSync tab of the bottom panel: run AutoSubSync on the playing add-on subtitle by
+/// hand, switch between its synced copy and its own timing, and see what the last run looked at:
+/// the reference tried, the parts with shifts of their own, and what couldn't be checked.
 struct PlayerAutoSyncPanel: View {
     @ObservedObject var viewModel: PlayerViewModel
     let focusedControlID: FocusState<String?>.Binding
@@ -16,7 +17,7 @@ struct PlayerAutoSyncPanel: View {
         let state = subtitle.flatMap { viewModel.subtitleAutoSyncStates[$0.url] }
         let report = subtitle.flatMap { viewModel.subtitleAutoSyncReports[$0.url] }
         let usingOriginal = subtitle.map { viewModel.isSubtitleAutoSyncUsingOriginal($0.url) } ?? false
-        return HStack(alignment: .top, spacing: 56) {
+        return HStack(alignment: .top, spacing: 40) {
             VStack(alignment: .leading, spacing: 16) {
                 Text(subtitleTitle(subtitle))
                     .font(.system(size: 24, weight: .semibold))
@@ -52,7 +53,7 @@ struct PlayerAutoSyncPanel: View {
                 }
                 .padding(.top, 6)
             }
-            .frame(width: 560, alignment: .leading)
+            .frame(width: 480, alignment: .leading)
 
             diagnostics(report, hasSubtitle: subtitle != nil, checked: state != nil)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -145,18 +146,34 @@ struct PlayerAutoSyncPanel: View {
     @ViewBuilder
     private func diagnostics(_ report: SubtitleAutoSyncReport?, hasSubtitle: Bool, checked: Bool) -> some View {
         if let report {
-            VStack(alignment: .leading, spacing: 9) {
-                row(L10n.string("player_autosync_source", fallback: "Source"), report.source)
-                row(L10n.string("player_autosync_subtitles", fallback: "Subtitles"), report.subtitle)
-                row(L10n.string("player_autosync_index", fallback: "Index"), report.index)
-                if !report.tracks.isEmpty {
-                    row("", report.tracks.joined(separator: ", "), secondary: true)
+            HStack(alignment: .top, spacing: 28) {
+                VStack(alignment: .leading, spacing: 8) {
+                    row(L10n.string("player_autosync_source", fallback: "Source"), report.source)
+                    row(L10n.string("player_autosync_subtitles", fallback: "Subtitles"), report.subtitle)
+                    row(L10n.string("player_autosync_index", fallback: "Index"), report.index)
+                    if !report.tracks.isEmpty {
+                        row("", report.tracks.joined(separator: ", "), secondary: true)
+                    }
+                    ForEach(Array(report.attempts.prefix(3).enumerated()), id: \.offset) { index, attempt in
+                        row(index == 0 ? L10n.string("player_autosync_reference", fallback: "Reference") : "", attempt)
+                    }
                 }
-                ForEach(Array(report.attempts.prefix(3).enumerated()), id: \.offset) { index, attempt in
-                    row(index == 0 ? L10n.string("player_autosync_reference", fallback: "Reference") : "", attempt)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    row(L10n.string("player_autosync_result", fallback: "Result"),
+                        report.result + (report.fromCache ? " · " + L10n.string("player_autosync_cached", fallback: "remembered") : ""))
+                    ForEach(Array(report.parts.prefix(3).enumerated()), id: \.offset) { index, line in
+                        row(index == 0 ? L10n.string("player_autosync_parts", fallback: "Parts") : "", line)
+                    }
+                    ForEach(Array(report.warnings.prefix(3).enumerated()), id: \.offset) { index, line in
+                        row(index == 0 ? "⚠" : "", line, warning: true)
+                    }
+                    ForEach(Array(report.notes.prefix(3).enumerated()), id: \.offset) { index, line in
+                        row(index == 0 ? L10n.string("player_autosync_notes", fallback: "Notes") : "", line, secondary: true)
+                    }
                 }
-                row(L10n.string("player_autosync_result", fallback: "Result"),
-                    report.result + (report.fromCache ? " · " + L10n.string("player_autosync_cached", fallback: "remembered") : ""))
+                .frame(maxWidth: .infinity, alignment: .topLeading)
             }
         } else {
             Text(hasSubtitle && !checked
@@ -168,16 +185,16 @@ struct PlayerAutoSyncPanel: View {
         }
     }
 
-    private func row(_ label: String, _ value: String, secondary: Bool = false) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 16) {
+    private func row(_ label: String, _ value: String, secondary: Bool = false, warning: Bool = false) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 14) {
             Text(label)
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.55))
-                .frame(width: 130, alignment: .leading)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(warning ? Color(red: 1.0, green: 0.74, blue: 0.36) : .white.opacity(0.55))
+                .frame(width: 104, alignment: .leading)
             Text(value.isEmpty ? "–" : value)
-                .font(.system(size: secondary ? 16 : 18, weight: .regular).monospacedDigit())
-                .foregroundStyle(.white.opacity(secondary ? 0.55 : 0.85))
-                .lineLimit(secondary ? 2 : 1)
+                .font(.system(size: secondary ? 15 : 17, weight: .regular).monospacedDigit())
+                .foregroundStyle(warning ? Color(red: 1.0, green: 0.82, blue: 0.55) : .white.opacity(secondary ? 0.55 : 0.85))
+                .lineLimit(1)
                 .truncationMode(.tail)
         }
     }

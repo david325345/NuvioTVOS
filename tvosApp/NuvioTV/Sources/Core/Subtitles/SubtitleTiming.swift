@@ -3,10 +3,13 @@ import Foundation
 
 /// One subtitle line on the timeline, in seconds. `isDialogue` is false for the lines Auto Sync
 /// does not match on (ASS signs, songs, karaoke, typesetting); they still move with the rest.
+/// `isSongLike` marks the lines whose dense runs are the songs (opening, ending): a song style
+/// or karaoke tags. Everything inside a song is left out of matching, its translation too.
 struct SubtitleTimingCue: Equatable, Sendable {
     var start: Double
     var end: Double
     var isDialogue: Bool = true
+    var isSongLike: Bool = false
 }
 
 enum SubtitleTextFormat: String, Sendable {
@@ -170,8 +173,19 @@ enum SubtitleTiming {
 
     /// Styles of signs, songs, karaoke and typesetting, by the names fansubs give them.
     static let nonDialogueStyle = try! NSRegularExpression(
-        pattern: #"sign|song|kara|lyric|romaji|kanji|title|typeset|insert|logo|note|^ts\b|\bop\b|\bed\b|opening|ending"#,
+        pattern: #"sign|song|kara|lyric|romaji|kanji|title|typeset|insert|logo|note|credit|next ?ep|eyecatch|^ts\b|\bop\b|\bed\b|^(op|ed)(\d|[\W_]|jp|cz|sk|en|ro|kar|tl|$)|opening|ending"#,
         options: [.caseInsensitive])
+    /// The song lines (NimeToDex anime-titulky, czmask.js): opening / ending styles in all the
+    /// spellings fansubs use ("OPJP", "ED-romaji"), signs, karaoke; and any line with \k tags.
+    static let songStyle = try! NSRegularExpression(
+        pattern: #"sign|song|kara|\bop\b|\bed\b|^(op|ed)(\d|[\W_]|jp|cz|sk|en|ro|kar|tl|$)|title|note|typeset|lyric|credit|insert|next ?ep|eyecatch"#,
+        options: [.caseInsensitive])
+    static let karaokeTag = try! NSRegularExpression(pattern: #"\\k"#, options: [.caseInsensitive])
+
+    static func isSongLike(style: String, text: String) -> Bool {
+        songStyle.firstMatch(in: style, range: NSRange(style.startIndex..., in: style)) != nil
+            || karaokeTag.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+    }
     /// Positioned, moving, karaoke or drawn lines: typesetting, not dialogue.
     static let nonDialogueTags = try! NSRegularExpression(
         pattern: #"\\(pos|move)\s*\(|\\[kK][fo]?\d|\\p[1-9]"#)
@@ -198,7 +212,11 @@ enum SubtitleTiming {
                   let end = assTime(fields[layout.end]) else { continue }
             let style = layout.style >= 0 ? fields[layout.style] : ""
             let body = fields[layout.text]
-            cues.append(SubtitleTimingCue(start: start, end: end, isDialogue: isDialogue(style: style, text: body)))
+            let songLike = isSongLike(style: style, text: body)
+            cues.append(SubtitleTimingCue(
+                start: start, end: end,
+                isDialogue: !songLike && isDialogue(style: style, text: body),
+                isSongLike: songLike))
         }
         return cues
     }

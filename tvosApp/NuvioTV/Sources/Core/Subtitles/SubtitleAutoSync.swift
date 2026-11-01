@@ -70,17 +70,32 @@ enum SubtitleAutoSyncIssue: String, Codable, Sendable {
 }
 
 struct SubtitleAutoSyncResult: Codable, Equatable, Sendable {
+    /// The main mapping (the part with most lines).
     var mapping: SubtitleSyncMapping
     var coverage: Double
     /// The embedded track it was lined up with ("ASS eng").
     var reference: String
     var elapsedMs: Int
     var fromCache: Bool = false
+    /// Parts with shifts of their own; nil when the whole subtitle moves alike.
+    var parts: [SubtitleSyncPart]? = nil
+    /// What was done and noticed, in the words of the run (for the diagnostics, also from cache).
+    var partNotes: [String]? = nil
+    var notes: [String]? = nil
+    var warnings: [String]? = nil
 
-    /// "−2.4 s", "+0.8 s ×1.043" (the scale only for a frame rate change).
+    var plan: SubtitleSyncPlan {
+        guard let parts, parts.count > 1 else { return .single(mapping) }
+        return SubtitleSyncPlan(parts: parts)
+    }
+
+    /// "−2.4 s", "+0.8 s ×1.043" (the scale only for a frame rate change), "· 2 parts".
     var shortLabel: String {
         var label = String(format: "%@%.1f s", mapping.offset < 0 ? "−" : "+", abs(mapping.offset))
         if abs(mapping.scale - 1) > 0.0001 { label += String(format: " ×%.3f", mapping.scale) }
+        if let parts, parts.count > 1 {
+            label += " · " + L10n.format("subtitle_autosync_parts_short", fallback: "%d parts", parts.count)
+        }
         return label
     }
 }
@@ -105,6 +120,12 @@ struct SubtitleAutoSyncReport: Equatable, Sendable {
     /// The answer and how long the run took.
     var result = ""
     var fromCache = false
+    /// The parts with shifts of their own ("0:00–0:42 (8 lines): −0.9 s instead of −9.3 s…").
+    var parts: [String] = []
+    /// What else was done (songs left out, fine-tuning, the match score).
+    var notes: [String] = []
+    /// Lines whose shift couldn't be checked well.
+    var warnings: [String] = []
 }
 
 struct SubtitleAutoSyncRun: Equatable, Sendable {
@@ -198,12 +219,13 @@ actor SubtitleAutoSync {
         return task
     }
 
-    /// Lines `subtitle` up with the file behind `source`. `force` (the Auto Sync tab's button)
-    /// skips the remembered answer and reads the index again when the last read failed.
+    /// Lines `subtitle` up with the file behind `source`. `useCache` false skips the remembered
+    /// answer; `force` (the AutoSubSync tab's button) reads the index again when the last read failed.
     func sync(
         subtitle: NuvioSubtitle,
         source: SubtitleAutoSyncSource,
         toleranceMs: Int,
+        useCache: Bool = true,
         force: Bool = false
     ) async -> SubtitleAutoSyncRun {
         let started = Date()
@@ -211,9 +233,14 @@ actor SubtitleAutoSync {
         var report = SubtitleAutoSyncReport(source: source.description)
         let key = Self.cacheKey(fileKey: source.fileKey, subtitleURL: subtitle.url)
         let tolerance = max(Double(toleranceMs) / 1000, SubtitleAutoSyncSettings.minimumCorrection)
-        if !force, let cached = Self.cachedOutcome(key: key, tolerance: tolerance) {
+        if useCache, let cached = Self.cachedOutcome(key: key, tolerance: tolerance) {
             report.fromCache = true
             report.result = Self.describe(cached, elapsed: started)
+            if case .synced(_, let result) = cached {
+                report.parts = result.partNotes ?? []
+                report.notes = result.notes ?? []
+                report.warnings = result.warnings ?? []
+            }
             await Self.reportLine(Self.hudLine(cached, started: started, cached: true))
             return SubtitleAutoSyncRun(outcome: cached, report: report)
         }
@@ -267,13 +294,13 @@ actor SubtitleAutoSync {
         let candidates = SubtitleSyncReference.candidates(in: index, targetLineCount: dialogue.count)
         guard !candidates.isEmpty else { return await finish(.noEmbeddedSubtitles) }
 
-        var match: (fit: SubtitleSyncFit, reference: MatroskaSubtitleTrack)?
+        var match: (reference: MatroskaSubtitleTrack, alignment: SubtitleSyncAlignment, fit: SubtitleSyncFit)?
         var verdict = SubtitleSyncVerdict.tooFewLines
         for candidate in candidates {
             let alignment = SubtitleSyncAligner.align(target: cues, reference: candidate.cues)
             report.attempts.append(Self.describe(alignment, reference: candidate))
             if alignment.verdict == .confident, let fit = alignment.fit {
-                match = (fit, candidate.track)
+                match = (candidate.track, alignment, fit)
                 break
             }
             verdict = Self.stronger(verdict, alignment.verdict)
@@ -282,19 +309,28 @@ actor SubtitleAutoSync {
             return await finish(verdict == .ambiguous ? .ambiguous : (verdict == .noMatch ? .noMatch : .tooFewLines))
         }
 
+        let plan = chosen.alignment.plan ?? .single(chosen.fit.mapping)
+        let remarks = chosen.alignment.remarks
+        report.parts = remarks.filter(\.isPart).map(\.text)
+        report.notes = remarks.filter { !$0.isPart && !$0.isWarning }.map(\.text)
+        report.warnings = remarks.filter(\.isWarning).map(\.text)
         let span = first.start...max(dialogue.last?.end ?? first.end, first.start + 1)
-        let result = SubtitleAutoSyncResult(
-            mapping: chosen.fit.mapping, coverage: chosen.fit.coverage,
+        var result = SubtitleAutoSyncResult(
+            mapping: plan.main, coverage: chosen.fit.coverage,
             reference: chosen.reference.summary, elapsedMs: Int(Date().timeIntervalSince(started) * 1000))
-        if chosen.fit.mapping.largestShift(over: span) <= tolerance {
+        result.parts = plan.isSplit ? plan.parts : nil
+        result.partNotes = report.parts.isEmpty ? nil : report.parts
+        result.notes = report.notes.isEmpty ? nil : report.notes
+        result.warnings = report.warnings.isEmpty ? nil : report.warnings
+        if plan.largestShift(over: span) <= tolerance {
             Self.store(key: key, entry: CacheEntry(issue: .inSync, result: result, file: nil, span: [span.lowerBound, span.upperBound]))
             let outcome = SubtitleAutoSyncOutcome.kept(.inSync)
             report.result = Self.describe(outcome, elapsed: started) + " (\(result.shortLabel))"
             await Self.reportLine(Self.hudLine(outcome, started: started, cached: false) + " (\(result.shortLabel))")
             return SubtitleAutoSyncRun(outcome: outcome, report: report)
         }
-        guard let retimed = SubtitleRetimer.retime(text, format: format, mapping: chosen.fit.mapping),
-              let fileURL = Self.writeCopy(retimed, key: key, mapping: chosen.fit.mapping, format: format) else {
+        guard let retimed = SubtitleRetimer.retime(text, format: format, plan: plan),
+              let fileURL = Self.writeCopy(retimed, key: key, plan: plan, format: format) else {
             return await finish(.unsupportedFormat)
         }
         Self.store(key: key, entry: CacheEntry(
@@ -345,9 +381,11 @@ actor SubtitleAutoSync {
         guard let fit = alignment.fit else { return "\(name): \(alignment.verdict)" }
         let mark = alignment.verdict == .confident ? "✓" : "✗ \(alignment.verdict)"
         var text = "\(name): \(mark) · \(Int((fit.coverage * 100).rounded())) % · "
-            + "starts \(fit.startMatches)/\(fit.lineCount) · gap \(fit.longestMiss) · "
+            + "starts \(fit.startMatches)/\(fit.checkable) · gap \(fit.longestMiss) · "
             + String(format: "%+.2f s", fit.mapping.offset)
         if abs(fit.mapping.scale - 1) > 0.0001 { text += String(format: " ×%.4f", fit.mapping.scale) }
+        if let plan = alignment.plan, plan.isSplit { text += " · \(plan.parts.count) parts" }
+        text += " · match \(Int((fit.match * 100).rounded()))/\(Int((fit.chance * 100).rounded())) %"
         text += String(format: " · median %d ms", Int((fit.medianError * 1000).rounded()))
         return text
     }
@@ -366,7 +404,9 @@ actor SubtitleAutoSync {
         let seconds = String(format: "%.1f s", Date().timeIntervalSince(started))
         switch outcome {
         case .synced(_, let result):
+            let warnings = result.warnings?.count ?? 0
             return "ok \(result.shortLabel) · \(Int((result.coverage * 100).rounded())) % · \(result.reference)"
+                + (warnings > 0 ? " · ⚠\(warnings)" : "")
                 + (cached ? " · cached" : " · \(seconds)")
         case .kept(.inSync):
             return "in sync" + (cached ? " · cached" : "")
@@ -394,8 +434,9 @@ actor SubtitleAutoSync {
         return base.appendingPathComponent("SubtitleAutoSync", isDirectory: true)
     }
 
+    /// "v2": answers from before the parts (phase 1) are not reused.
     static func cacheKey(fileKey: String, subtitleURL: String) -> String {
-        hex(SHA256.hash(data: Data("\(fileKey)|\(subtitleURL)".utf8)), bytes: 12)
+        hex(SHA256.hash(data: Data("v2|\(fileKey)|\(subtitleURL)".utf8)), bytes: 12)
     }
 
     private static func hex<D: Sequence>(_ digest: D, bytes: Int) -> String where D.Element == UInt8 {
@@ -409,7 +450,7 @@ actor SubtitleAutoSync {
         if let issue = entry.issue { return .kept(issue) }
         guard var result = entry.result, let name = entry.file else { return nil }
         if let span = entry.span, span.count == 2, span[0] <= span[1],
-           result.mapping.largestShift(over: span[0]...span[1]) <= tolerance {
+           result.plan.largestShift(over: span[0]...span[1]) <= tolerance {
             return .kept(.inSync)
         }
         let file = cacheDirectory.appendingPathComponent(name)
@@ -426,9 +467,9 @@ actor SubtitleAutoSync {
 
     /// The copy is named after the mapping too: a different answer is a different file, so a
     /// player that already loaded the old copy loads the new one instead of reusing it.
-    static func writeCopy(_ text: String, key: String, mapping: SubtitleSyncMapping, format: SubtitleTextFormat) -> URL? {
+    static func writeCopy(_ text: String, key: String, plan: SubtitleSyncPlan, format: SubtitleTextFormat) -> URL? {
         try? FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
-        let signature = hex(SHA256.hash(data: Data(String(format: "%.3f|%.6f", mapping.offset, mapping.scale).utf8)), bytes: 3)
+        let signature = hex(SHA256.hash(data: Data(plan.signature.utf8)), bytes: 3)
         let file = cacheDirectory.appendingPathComponent("\(key)-\(signature).\(format.fileExtension)")
         do {
             try Data(text.utf8).write(to: file, options: .atomic)
