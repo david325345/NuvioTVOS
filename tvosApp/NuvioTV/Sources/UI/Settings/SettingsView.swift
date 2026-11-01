@@ -353,6 +353,10 @@ enum SettingsKey {
     /// The opening's and the ending's color on the timeline ("#RRGGBB", see `PlaybackChapters.colorChoices`).
     static let timelineOpeningColor = "nuvio.tv.settings.playback.timelineOpeningColor"
     static let timelineEndingColor = "nuvio.tv.settings.playback.timelineEndingColor"
+    /// Whether the opening and the ending are colored on the timeline (on by default).
+    static let timelineSegmentsEnabled = "nuvio.tv.settings.playback.timelineSegmentsEnabled"
+    /// Whether a swipe seek stops for a moment on chapter and opening / ending edges (on by default).
+    static let timelineSnapEnabled = "nuvio.tv.settings.playback.timelineSnapEnabled"
     /// The bottom panel's tabs and their order (see `PlayerPanelTabs`).
     static let playerPanelTabs = "nuvio.tv.settings.playback.playerPanelTabs"
     static let showLoadingStatus = "nuvio.tv.settings.playback.showLoadingStatus"
@@ -425,7 +429,7 @@ enum SettingsKey {
         forcedSubtitles, subtitleSize, frameRateMatching, networkCache, hybridDiskCacheEnabled, hybridDiskCacheLimitGB, playbackTrackSelections, showAudioLanguages,
         externalPlayerForwardSubtitles, assOverrideMode,
         playerShowPiP, playerShowEpisodes, playerShowSources, playerShowSubtitles, playerShowAudio, playerShowChapters, seekPreviewEnabled, seekPreviewBeyondBuffer, seekrApiKey, seekrEnabled, playerPanelTabs, showLoadingStatus,
-        timelineOpeningColor, timelineEndingColor,
+        timelineOpeningColor, timelineEndingColor, timelineSegmentsEnabled, timelineSnapEnabled,
         audioDelayPersistEnabled, persistentAudioDelayMs,
         sceneFeatureEnabled,
         fastNavigation, smoothFocus, playbackDiagnostics, playbackDebug, focusHighlighter,
@@ -8618,6 +8622,8 @@ private struct PlaybackSettingsView: View {
     @AppStorage(SettingsKey.seekrEnabled) private var seekrEnabled = true
     @AppStorage(SettingsKey.timelineOpeningColor) private var timelineOpeningColor = PlaybackChapters.defaultOpeningColor
     @AppStorage(SettingsKey.timelineEndingColor) private var timelineEndingColor = PlaybackChapters.defaultEndingColor
+    @AppStorage(SettingsKey.timelineSegmentsEnabled) private var timelineSegmentsEnabled = true
+    @AppStorage(SettingsKey.timelineSnapEnabled) private var timelineSnapEnabled = true
     @AppStorage(SettingsKey.playerPanelTabs) private var playerPanelTabs = ""
     @State private var seekrKeyCheck: SeekrKeyCheck = .unchecked
     @State private var seekrKeyCheckTask: Task<Void, Never>?
@@ -8872,6 +8878,16 @@ private struct PlaybackSettingsView: View {
                 )
                 .disabled(!seekPreviewEnabled)
 
+                SettingsToggleRow(
+                    title: L10n.string("tvos_settings_timeline_segments", fallback: "Opening & Ending on the Timeline"),
+                    subtitle: L10n.string(
+                        "tvos_settings_timeline_segments_subtitle",
+                        fallback: "Color the opening and the ending on the timeline"
+                    ),
+                    isOn: $timelineSegmentsEnabled,
+                    accentColor: accentColor
+                )
+
                 SubtitleColorRow(
                     title: L10n.string("tvos_settings_timeline_opening_color", fallback: "Opening Color"),
                     subtitle: L10n.string(
@@ -8892,6 +8908,16 @@ private struct PlaybackSettingsView: View {
                     selection: $timelineEndingColor,
                     accentColor: accentColor,
                     colors: PlaybackChapters.colorChoices
+                )
+
+                SettingsToggleRow(
+                    title: L10n.string("tvos_settings_timeline_snap", fallback: "Snap While Seeking"),
+                    subtitle: L10n.string(
+                        "tvos_settings_timeline_snap_subtitle",
+                        fallback: "A swipe stops for a moment at chapter starts and at the opening's and the ending's edges"
+                    ),
+                    isOn: $timelineSnapEnabled,
+                    accentColor: accentColor
                 )
 
                 SettingsToggleRow(

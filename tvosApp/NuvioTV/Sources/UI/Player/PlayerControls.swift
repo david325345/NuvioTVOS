@@ -1163,9 +1163,12 @@ private struct PlayerTimelineBar: View {
                 let needleOverhang: CGFloat = 4
                 let originalProgress = CGFloat(min(max(clock.position / duration, 0), 1))
                 let markers = PlaybackChapters.markers(chapters, duration: clock.duration)
-                let segments = PlaybackChapters.timelineSegments(skipSegments, duration: clock.duration).map {
-                    PlayerTrackSegment(start: $0.start, end: $0.end, color: $0.kind.color)
-                }
+                // The opening and the ending, colored unless that is off in Settings → Player.
+                let segments = PlaybackChapters.showsSegmentsOnTimeline(in: ProfileSettings.current)
+                    ? PlaybackChapters.timelineSegments(skipSegments, duration: clock.duration).map {
+                        PlayerTrackSegment(start: $0.start, end: $0.end, color: $0.kind.color)
+                    }
+                    : []
                 // The needle stands on the piece it points at, which is the lifted one.
                 let isCut = !PlaybackChapters.timelinePieces(
                     markers: markers,
@@ -1207,12 +1210,7 @@ private struct PlayerTimelineBar: View {
                 GeometryReader { geo in
                     let w = geo.size.width
                     let targetChapter = chapterName(at: targetPosition)
-                    // The swipe stopped on a chapter or opening / ending edge.
-                    let isSnapped = isScrubbing && PlaybackChapters.isOnEdge(
-                        targetPosition,
-                        edges: PlaybackChapters.snapEdges(chapters: chapters, segments: skipSegments, duration: clock.duration)
-                    )
-                    let margin: CGFloat = targetChapter == nil ? 60 : (isSnapped ? 320 : 240)
+                    let margin: CGFloat = targetChapter == nil ? 60 : 240
                     let targetX = min(max(w * progress, margin), max(margin, w - margin))
                     HStack(spacing: 8) {
                         Text(PlayerTime.formatted(time: targetPosition))
@@ -1225,13 +1223,6 @@ private struct PlayerTimelineBar: View {
                                 .lineLimit(1)
                                 .frame(maxWidth: 320)
                                 .fixedSize(horizontal: true, vertical: false)
-                        }
-                        if isSnapped {
-                            Text("· " + L10n.string("player_timeline_snapped", fallback: "snapped"))
-                                .font(.system(size: 18, weight: .semibold))
-                                .foregroundColor(Color(red: 0.62, green: 0.91, blue: 0.66))
-                                .lineLimit(1)
-                                .fixedSize()
                         }
 
                         if isHoldingSeek || speedMultiplier != nil {

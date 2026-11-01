@@ -8962,7 +8962,10 @@
     "tvos_settings_timeline_ending_color_subtitle": "Závěr na časové ose a jeho štítek v Kapitolách",
     "tvos_settings_seekr_enabled": "Používat Seekr",
     "tvos_settings_seekr_enabled_subtitle": "Vypnuto: náhledy si přehrávač dělá sám, klíč zůstane uložený.",
-    "player_timeline_snapped": "přichyceno"
+    "tvos_settings_timeline_segments": "Úvod a závěr na časové ose",
+    "tvos_settings_timeline_segments_subtitle": "Obarvit úvod a závěr na časové ose",
+    "tvos_settings_timeline_snap": "Přichytávat při posouvání",
+    "tvos_settings_timeline_snap_subtitle": "Swipe se na chvíli zastaví na začátku kapitol a na okrajích úvodu a závěru"
   },
   "da": {
     "sidebar_genres_title": "Genrer",
@@ -17913,7 +17916,10 @@
     "tvos_settings_timeline_ending_color_subtitle": "The ending on the timeline and its badge in Chapters",
     "tvos_settings_seekr_enabled": "Use Seekr",
     "tvos_settings_seekr_enabled_subtitle": "Off: the player makes its own previews; the key stays saved.",
-    "player_timeline_snapped": "snapped"
+    "tvos_settings_timeline_segments": "Opening & Ending on the Timeline",
+    "tvos_settings_timeline_segments_subtitle": "Color the opening and the ending on the timeline",
+    "tvos_settings_timeline_snap": "Snap While Seeking",
+    "tvos_settings_timeline_snap_subtitle": "A swipe stops for a moment at chapter starts and at the opening's and the ending's edges"
   },
   "es": {
     "sidebar_genres_title": "Géneros",

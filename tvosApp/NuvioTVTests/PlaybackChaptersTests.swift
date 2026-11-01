@@ -271,15 +271,45 @@ final class PlaybackChaptersTests: XCTestCase {
         XCTAssertEqual(PlaybackChapters.snapRadius(duration: 1440), 10)
         XCTAssertEqual(PlaybackChapters.snapRadius(duration: 120), 3)
         XCTAssertEqual(PlaybackChapters.snapRadius(duration: 600), 6)
-        XCTAssertEqual(PlaybackChapters.snapped(175, to: edges, radius: 10), 181)
-        XCTAssertEqual(PlaybackChapters.snapped(190, to: edges, radius: 10), 181)
-        XCTAssertEqual(PlaybackChapters.snapped(192, to: edges, radius: 10), 192, "past the radius the swipe moves on")
-        XCTAssertEqual(PlaybackChapters.snapped(500, to: edges, radius: 10), 500)
-        // Two edges close together: the closer one.
-        XCTAssertEqual(PlaybackChapters.snapped(104, to: [100, 106], radius: 10), 106)
-        XCTAssertTrue(PlaybackChapters.isOnEdge(181, edges: edges))
-        XCTAssertFalse(PlaybackChapters.isOnEdge(181.5, edges: edges))
+        XCTAssertEqual(PlaybackChapters.snapPush(duration: 1440), 30)
         XCTAssertEqual(PlaybackChapters.snapEdges(chapters: [], segments: [], duration: 0), [])
+    }
+
+    func testASwipeStaysOnAnEdgeUntilItCarriesOnPastIt() {
+        var seek = PlaybackChapters.SnappingSeek(from: 150, edges: [181, 1300], radius: 10, push: 30)
+        XCTAssertEqual(seek.move(by: 20, upTo: 1439), 170, "out of reach")
+        XCTAssertEqual(seek.move(by: 5, upTo: 1439), 181, "6 s before it: on the edge")
+        XCTAssertEqual(seek.move(by: 20, upTo: 1439), 181, "14 s past it: still there")
+        XCTAssertEqual(seek.move(by: 16, upTo: 1439), 181, "30 s past it: still there")
+        XCTAssertEqual(seek.move(by: 6, upTo: 1439), 187, "moves on from the edge, no jump")
+        XCTAssertEqual(seek.move(by: -2, upTo: 1439), 185, "the edge just left doesn't catch it again")
+        XCTAssertEqual(seek.move(by: 1110, upTo: 1439), 1300, "a long swipe stops on the next edge")
+        XCTAssertEqual(seek.move(by: -50, upTo: 1439), 1275, "and leaves it backwards too")
+    }
+
+    func testASwipeFromAnEdgeIsNotHeldByIt() {
+        var seek = PlaybackChapters.SnappingSeek(from: 181, edges: [181], radius: 10, push: 30)
+        XCTAssertEqual(seek.move(by: 5, upTo: 1439), 186)
+        // Fine-tuning moved the target: the swipe starts over there.
+        seek.reset(to: 150)
+        XCTAssertEqual(seek.move(by: 25, upTo: 1439), 181)
+        // Never past the end.
+        var end = PlaybackChapters.SnappingSeek(from: 1430, edges: [100], radius: 10, push: 30)
+        XCTAssertEqual(end.move(by: 50, upTo: 1439), 1439)
+    }
+
+    func testTimelineSwitchesAreOnUntilTurnedOff() throws {
+        let suite = "PlaybackChaptersTests.switches"
+        let settings = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { settings.removePersistentDomain(forName: suite) }
+        XCTAssertTrue(PlaybackChapters.showsSegmentsOnTimeline(in: settings))
+        XCTAssertTrue(PlaybackChapters.snapsWhileSeeking(in: settings))
+        settings.set(false, forKey: SettingsKey.timelineSegmentsEnabled)
+        settings.set(false, forKey: SettingsKey.timelineSnapEnabled)
+        XCTAssertFalse(PlaybackChapters.showsSegmentsOnTimeline(in: settings))
+        XCTAssertFalse(PlaybackChapters.snapsWhileSeeking(in: settings))
+        XCTAssertTrue(SettingsKey.all.contains(SettingsKey.timelineSegmentsEnabled))
+        XCTAssertTrue(SettingsKey.all.contains(SettingsKey.timelineSnapEnabled))
     }
 
     func testThePlayingChapterStandsAboutTwiceAsTallAsTheOthers() {

@@ -207,18 +207,78 @@ enum PlaybackChapters {
         min(max(duration * 0.01, 3), 10)
     }
 
-    /// `seconds` on the closest edge within `radius`, or as it is.
-    static func snapped(_ seconds: Double, to edges: [Double], radius: Double) -> Double {
-        var best: Double?
-        for edge in edges where abs(edge - seconds) <= radius {
-            if best.map({ abs(edge - seconds) < abs($0 - seconds) }) ?? true { best = edge }
-        }
-        return best ?? seconds
+    /// How far past an edge a swipe must carry on before the target leaves it: three times the
+    /// radius (9 to 30 s of swipe), so a slow swipe stays on the edge for a good while.
+    static func snapPush(duration: Double) -> Double {
+        3 * snapRadius(duration: duration)
     }
 
-    /// Whether `seconds` sits on one of `edges`: the seek label then says "snapped".
-    static func isOnEdge(_ seconds: Double, edges: [Double]) -> Bool {
-        edges.contains { abs($0 - seconds) < 0.001 }
+    /// Whether the opening and the ending are colored on the timeline (Settings → Player).
+    static func showsSegmentsOnTimeline(in settings: UserDefaults) -> Bool {
+        settings.object(forKey: SettingsKey.timelineSegmentsEnabled) as? Bool ?? true
+    }
+
+    /// Whether a swipe seek stops on edges (Settings → Player).
+    static func snapsWhileSeeking(in settings: UserDefaults) -> Bool {
+        settings.object(forKey: SettingsKey.timelineSnapEnabled) as? Bool ?? true
+    }
+
+    /// A swipe seek that stops on edges. It takes the swipe's steps (seconds, after the swipe's
+    /// acceleration) and gives the seek target: once within `radius` of an edge the target stays
+    /// on it until the swipe has carried on `push` past it, then moves on from the edge.
+    struct SnappingSeek {
+        let edges: [Double]
+        let radius: Double
+        let push: Double
+        /// Where the swipe has got to while it is not on an edge.
+        private(set) var position: Double
+        /// The edge the target is on.
+        private(set) var edge: Double?
+        /// The swipe since it reached `edge`, counted from the edge.
+        private var pushed: Double = 0
+        /// The edge just left (or started on): it doesn't hold the swipe until it is out of reach.
+        private var released: Double?
+
+        init(from start: Double, edges: [Double], radius: Double, push: Double) {
+            self.edges = edges
+            self.radius = radius
+            self.push = push
+            self.position = start
+            reset(to: start)
+        }
+
+        /// Starts over at `start` (fine-tuning or a jump moved the target there).
+        mutating func reset(to start: Double) {
+            position = start
+            edge = nil
+            pushed = 0
+            released = Self.closest(to: start, in: edges, within: radius)
+        }
+
+        /// Moves the swipe by `delta` within 0...`limit`; returns the target.
+        mutating func move(by delta: Double, upTo limit: Double) -> Double {
+            if let held = edge {
+                pushed += delta
+                guard abs(pushed) > push else { return held }
+                position = min(max(held + (pushed > 0 ? pushed - push : pushed + push), 0), limit)
+                released = held
+                edge = nil
+                pushed = 0
+                return position
+            }
+            position = min(max(position + delta, 0), limit)
+            if let left = released, abs(position - left) > radius { released = nil }
+            guard let next = Self.closest(to: position, in: edges.filter { $0 != released }, within: radius) else {
+                return position
+            }
+            edge = next
+            pushed = position - next
+            return next
+        }
+
+        static func closest(to seconds: Double, in edges: [Double], within radius: Double) -> Double? {
+            edges.filter { abs($0 - seconds) <= radius }.min { abs($0 - seconds) < abs($1 - seconds) }
+        }
     }
 
     // MARK: - Colors
