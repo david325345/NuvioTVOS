@@ -5,10 +5,15 @@ import Foundation
 /// start), so libass draws the retimed copy exactly like the original.
 enum SubtitleRetimer {
     static func retime(_ text: String, format: SubtitleTextFormat, mapping: SubtitleSyncMapping) -> String? {
+        retime(text, format: format, plan: .single(mapping))
+    }
+
+    /// Every line moves by the part of `plan` it starts in.
+    static func retime(_ text: String, format: SubtitleTextFormat, plan: SubtitleSyncPlan) -> String? {
         switch format {
-        case .srt: return retimeArrowLines(text, mapping: mapping, separator: ",")
-        case .vtt: return retimeArrowLines(text, mapping: mapping, separator: ".")
-        case .ass: return retimeASS(text, mapping: mapping)
+        case .srt: return retimeArrowLines(text, plan: plan, separator: ",")
+        case .vtt: return retimeArrowLines(text, plan: plan, separator: ".")
+        case .ass: return retimeASS(text, plan: plan)
         }
     }
 
@@ -18,7 +23,7 @@ enum SubtitleRetimer {
         return (newStart, max(newStart + 0.01, mapping(end)))
     }
 
-    private static func retimeArrowLines(_ text: String, mapping: SubtitleSyncMapping, separator: String) -> String? {
+    private static func retimeArrowLines(_ text: String, plan: SubtitleSyncPlan, separator: String) -> String? {
         let mutable = NSMutableString(string: text)
         let matches = SubtitleTiming.arrowLine.matches(in: text, range: NSRange(location: 0, length: mutable.length))
         guard !matches.isEmpty else { return nil }
@@ -28,7 +33,7 @@ enum SubtitleRetimer {
                   let endRange = Range(match.range(at: 2), in: source),
                   let start = SubtitleTiming.arrowTime(String(source[startRange])),
                   let end = SubtitleTiming.arrowTime(String(source[endRange])) else { continue }
-            let (newStart, newEnd) = mapped(start: start, end: end, mapping: mapping)
+            let (newStart, newEnd) = mapped(start: start, end: end, mapping: plan.mapping(at: start))
             mutable.replaceCharacters(in: match.range(at: 2), with: arrowTime(newEnd, separator: separator))
             mutable.replaceCharacters(in: match.range(at: 1), with: arrowTime(newStart, separator: separator))
         }
@@ -46,7 +51,7 @@ enum SubtitleRetimer {
         return String(format: "%d:%02d:%02d.%02d", total / 360_000, total / 6000 % 60, total / 100 % 60, total % 100)
     }
 
-    private static func retimeASS(_ text: String, mapping: SubtitleSyncMapping) -> String? {
+    private static func retimeASS(_ text: String, plan: SubtitleSyncPlan) -> String? {
         var layout = SubtitleTiming.ASSEventLayout()
         var inEvents = false
         var changed = false
@@ -68,7 +73,7 @@ enum SubtitleRetimer {
             guard fields.count == layout.fieldCount,
                   let start = SubtitleTiming.assTime(fields[layout.start]),
                   let end = SubtitleTiming.assTime(fields[layout.end]) else { return rawLine }
-            let (newStart, newEnd) = mapped(start: start, end: end, mapping: mapping)
+            let (newStart, newEnd) = mapped(start: start, end: end, mapping: plan.mapping(at: start))
             fields[layout.start] = assTime(newStart)
             fields[layout.end] = assTime(newEnd)
             changed = true

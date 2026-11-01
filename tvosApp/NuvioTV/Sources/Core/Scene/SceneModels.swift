@@ -6,7 +6,7 @@ import AVFoundation
 
 enum SceneTab: String, CaseIterable, Identifiable, Sendable {
     case chapters = "Chapters"
-    case autoSync = "Auto Sync"
+    case autoSync = "AutoSubSync"
     case info = "Info"
     case scene = "Scene"
     case upNext = "Up Next"
@@ -20,7 +20,7 @@ enum SceneTab: String, CaseIterable, Identifiable, Sendable {
         case .chapters:
             return L10n.string("player_chapters", fallback: "Chapters")
         case .autoSync:
-            return L10n.string("player_autosync_tab", fallback: "Auto Sync")
+            return L10n.string("player_autosync_tab", fallback: "AutoSubSync")
         case .info:
             return "Info"
         case .scene:

@@ -167,6 +167,8 @@ final class SubtitleAutoSyncTests: XCTestCase {
         XCTAssertEqual(fit.mapping.scale, 1)
         XCTAssertEqual(fit.mapping.offset, 2.43, accuracy: 0.03)
         XCTAssertGreaterThan(fit.coverage, 0.95)
+        XCTAssertEqual(alignment.plan?.parts.count, 1, "one shift for the whole subtitle")
+        XCTAssertFalse(alignment.remarks.contains { $0.isWarning })
     }
 
     func testAFrameRateChangeIsFound() {
@@ -195,6 +197,105 @@ final class SubtitleAutoSyncTests: XCTestCase {
         let mapping = SubtitleSyncMapping(scale: 1.001, offset: -0.5)
         XCTAssertEqual(mapping.largestShift(over: 0...1000), 0.5, accuracy: 0.0001)
         XCTAssertEqual(SubtitleSyncMapping(scale: 1.04, offset: 0).largestShift(over: 0...100), 4, accuracy: 0.0001)
+    }
+
+    // MARK: Parts
+
+    func testPGSEventsPairEvenWithALoneEventAndReplacements() {
+        // A lone event at 0:00, then lines shown and cleared; every 7th is replaced without a clear.
+        var times: [Double] = [0]
+        var starts: [Double] = []
+        var time = 5.0
+        for index in 0..<200 {
+            time += index % 2 == 0 ? 0.2 : 3
+            starts.append(time)
+            times.append(time)
+            time += 2.5
+            if index % 7 != 3 { times.append(time) }
+        }
+        let lines = SubtitleSyncReference.pgsLines(times)
+        let right = lines.filter { line in starts.contains { abs($0 - line.start) < 0.001 } }.count
+        XCTAssertGreaterThanOrEqual(Double(right) / Double(starts.count), 0.9)
+    }
+
+    func testSongsAreLeftOutOfMatching() {
+        var cues = (0..<40).map { SubtitleTimingCue(start: 200 + Double($0) * 5, end: 202 + Double($0) * 5) }
+        for k in 0..<30 {
+            let start = 54 + Double(k) * 3
+            cues.append(SubtitleTimingCue(start: start, end: start + 3, isDialogue: false, isSongLike: true))
+            // The translation of the lyrics, in the dialogue style.
+            if k % 2 == 0 { cues.append(SubtitleTimingCue(start: start + 0.1, end: start + 3)) }
+        }
+        let target = SubtitleSyncParts.Target(cues)
+        XCTAssertEqual(target.songs.count, 1)
+        XCTAssertEqual(target.songs.first?.lowerBound ?? 0, 54, accuracy: 0.001)
+        XCTAssertEqual(target.lines.count, 40, "the song and its translation are left out")
+        XCTAssertEqual(target.excluded, 45)
+    }
+
+    func testADifferentIntroGetsAShiftOfItsOwn() throws {
+        for srt in [false, true] {
+            let scenario = Self.introCase(srt: srt)
+            let alignment = SubtitleSyncAligner.align(target: scenario.target, reference: scenario.reference)
+            let name = srt ? "SRT (lyrics as dialogue)" : "ASS (song styles)"
+            XCTAssertEqual(alignment.verdict, .confident, name)
+            let plan = try XCTUnwrap(alignment.plan, name)
+            XCTAssertEqual(plan.parts.count, 2, name)
+            XCTAssertEqual(plan(1) - 1, -0.9, accuracy: 0.15, name)
+            XCTAssertEqual(plan(40) - 40, -0.9, accuracy: 0.15, name)
+            XCTAssertEqual(plan(60) - 60, -0.9, accuracy: 0.15, "\(name): the opening goes with the intro")
+            XCTAssertEqual(plan(500) - 500, -9.3, accuracy: 0.15, name)
+            XCTAssertTrue(alignment.remarks.contains { $0.isPart }, name)
+        }
+    }
+
+    func testACutSceneSplitsTheSubtitle() throws {
+        let lines = Self.lines(seed: 31, from: 5, to: 1400)
+        let target = lines.map { SubtitleTimingCue(start: $0.start, end: $0.end) }
+        // The TV version has a 5.2 s scene at 12:00 the video doesn't.
+        let reference = lines.filter { !(719 < $0.start && $0.start < 725.2) }.map { line -> SubtitleTimingCue in
+            let shift = line.start < 720 ? 2.0 : -3.2
+            return SubtitleTimingCue(start: line.start + shift, end: line.end + shift)
+        }
+        let alignment = SubtitleSyncAligner.align(target: target, reference: reference)
+        XCTAssertEqual(alignment.verdict, .confident, "the other half's mapping is a part, not a rival")
+        let plan = try XCTUnwrap(alignment.plan)
+        XCTAssertEqual(plan(100) - 100, 2.0, accuracy: 0.15)
+        XCTAssertEqual(plan(700) - 700, 2.0, accuracy: 0.15)
+        XCTAssertEqual(plan(1300) - 1300, -3.2, accuracy: 0.15)
+    }
+
+    func testATrailerTheVideoLacksKeepsTheShiftAroundIt() throws {
+        let lines = Self.lines(seed: 41, from: 5, to: 1300)
+        var target = lines.map { SubtitleTimingCue(start: $0.start, end: $0.end) }
+        for k in 0..<20 {
+            let start = 1310 + Double(k) * 3
+            target.append(SubtitleTimingCue(start: start, end: start + 3, isDialogue: false, isSongLike: true))
+        }
+        target += (0..<6).map { SubtitleTimingCue(start: 1463 + Double($0) * 2.5, end: 1465 + Double($0) * 2.5) }
+        let reference = lines.map { SubtitleTimingCue(start: $0.start - 1.2, end: $0.end - 1.2) }
+        let alignment = SubtitleSyncAligner.align(target: target, reference: reference)
+        XCTAssertEqual(alignment.verdict, .confident)
+        let plan = try XCTUnwrap(alignment.plan)
+        XCTAssertEqual(plan(1465) - 1465, -1.2, accuracy: 0.15)
+        XCTAssertTrue(alignment.remarks.contains { remark in
+            if case .noReference = remark { return true }
+            return false
+        })
+    }
+
+    func testEachPartMovesByItsOwnShift() throws {
+        let srt = "1\n00:00:01,000 --> 00:00:02,000\nÚvod\n\n2\n00:01:00,000 --> 00:01:02,000\nOpening\n\n3\n00:02:40,000 --> 00:02:42,000\nPo openingu\n"
+        let plan = SubtitleSyncPlan(parts: [
+            SubtitleSyncPart(from: 1, mapping: SubtitleSyncMapping(scale: 1, offset: -0.9), lines: 8),
+            SubtitleSyncPart(from: 150, mapping: SubtitleSyncMapping(scale: 1, offset: -9.3), lines: 300),
+        ])
+        let retimed = try XCTUnwrap(SubtitleRetimer.retime(srt, format: .srt, plan: plan))
+        XCTAssertEqual(retimed, "1\n00:00:00,100 --> 00:00:01,100\nÚvod\n\n2\n00:00:59,100 --> 00:01:01,100\nOpening\n\n3\n00:02:30,700 --> 00:02:32,700\nPo openingu\n")
+        XCTAssertEqual(plan.main, SubtitleSyncMapping(scale: 1, offset: -9.3))
+        XCTAssertEqual(plan.largestShift(over: 0...200), 9.3, accuracy: 0.0001)
+        XCTAssertEqual(plan.largestShift(over: 0...100), 0.9, accuracy: 0.0001)
+        XCTAssertNotEqual(plan.signature, SubtitleSyncPlan.single(SubtitleSyncMapping(scale: 1, offset: -9.3)).signature)
     }
 
     // MARK: The player
@@ -247,6 +348,47 @@ final class SubtitleAutoSyncTests: XCTestCase {
             guard start < bytes.count else { return (Data(), Int64(bytes.count)) }
             return (bytes.subdata(in: start..<min(bytes.count, start + length)), Int64(bytes.count))
         }
+    }
+
+    /// Dialogue-like lines between `start` and `end` (same generator as `dialogue`).
+    static func lines(seed: UInt64, from start: Double, to end: Double) -> [(start: Double, end: Double)] {
+        var state = seed
+        func next() -> Double {
+            state = state &* 6364136223846793005 &+ 1442695040888963407
+            return Double(state >> 11) / Double(UInt64(1) << 53)
+        }
+        var result: [(start: Double, end: Double)] = []
+        var time = start
+        while true {
+            time += 0.3 + next() * 4
+            let lineStart = time
+            time += 1 + next() * 3
+            if time > end { break }
+            result.append((lineStart, time))
+        }
+        return result
+    }
+
+    static let introStarts: [Double] = [0.9, 4.7, 6.9, 9.5, 28.4, 32.9, 39.7, 42.0]
+
+    /// Ladies versus Butlers E7 (anime-titulky) as a test: the intro needs −0.9 s, everything
+    /// after the opening −9.3 s (the TV sponsor card is gone from the Blu-ray).
+    static func introCase(srt: Bool) -> (target: [SubtitleTimingCue], reference: [SubtitleTimingCue]) {
+        let rest = lines(seed: 21, from: 150, to: 1380)
+        var target = introStarts.map { SubtitleTimingCue(start: $0, end: $0 + 2) }
+            + rest.map { SubtitleTimingCue(start: $0.start, end: $0.end) }
+        for k in 0..<30 {
+            let start = 54 + Double(k) * 3
+            target.append(SubtitleTimingCue(start: start, end: start + 3, isDialogue: srt, isSongLike: !srt))
+            if k % 2 == 0 { target.append(SubtitleTimingCue(start: start + 0.1, end: start + 3)) }
+        }
+        for k in 0..<20 {
+            let start = 1390 + Double(k) * 3
+            target.append(SubtitleTimingCue(start: start, end: start + 3, isDialogue: srt, isSongLike: !srt))
+        }
+        let reference = introStarts.map { SubtitleTimingCue(start: $0 - 0.9, end: $0 + 1.1) }
+            + rest.map { SubtitleTimingCue(start: $0.start - 9.3, end: $0.end - 9.3) }
+        return (target, reference)
     }
 
     /// Dialogue-like lines: a gap of 0.3 to 4.3 s, then 1 to 4 s of speech.
