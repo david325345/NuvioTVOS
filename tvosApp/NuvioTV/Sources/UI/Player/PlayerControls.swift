@@ -3050,7 +3050,7 @@ struct PlayerSettingsPanel: View {
                             gestureNote = "Default gestures and sensitivity: long swipe right / left = next / previous chapter"
                         }
 
-                        Text("They work during playback with the controls hidden. A gesture with an action replaces what the player does with it (like click right = seek). With a double click set, a single click waits to see whether a second one follows.")
+                        Text("With the controls hidden every gesture works: one with an action replaces what the player does with it (like click right = seek). With the controls shown and the timeline selected, only long swipes left / right, swipes left / right and back, double taps and touch and hold do their action. With a double click or tap set, a single one waits to see whether a second one follows.")
                             .font(.system(size: 20, weight: .medium))
                             .foregroundColor(.white.opacity(0.5))
                             .fixedSize(horizontal: false, vertical: true)

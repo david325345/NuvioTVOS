@@ -46,6 +46,7 @@ extension PlayerView {
                 .zIndex(22)
             focusSinkLayer
             gestureCaptureLayer
+            gestureObserverLayer
             pauseOverlayLayer
             skipSegmentLayer
             nextEpisodeLayer
