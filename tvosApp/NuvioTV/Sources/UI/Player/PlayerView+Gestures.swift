@@ -74,6 +74,68 @@ extension PlayerView {
         }
     }
 
+    /// Playing with the controls shown and the timeline selected: the gestures that the controls
+    /// don't use there are still heard (`PlayerGesturePassive`), without taking the remote.
+    var isPassiveGestureActive: Bool {
+        viewModel.areGesturesEnabled
+            && didReportPlaybackStarted
+            && !isWakingFromBackground
+            && !isLoadingOverlayVisible
+            && PlayerGestureCaptureStatus.keepsCapture(viewModel.status)
+            && viewModel.showControls
+            && viewModel.isTimelineFocused
+            && !viewModel.controlsAutoHideSuspended
+            && !viewModel.showPauseOverlay
+            && !viewModel.isScrubbing
+            && !viewModel.isHoldingSeek
+            && !viewModel.isSwitchingSource
+            && viewModel.currentErrorDiagnostic == nil
+            && !nextEpisodeFocused
+            && !cancelAutoPlayFocused
+            && !skipSegmentFocused
+            && !viewModel.showSettingsPanel
+            && !viewModel.showScenePanel
+            && !viewModel.isSceneDetailVisible
+            && !viewModel.postPlayState.isVisible
+            && viewModel.sidePanel == nil
+    }
+
+    var gestureObserverLayer: some View {
+        PlayerGestureObserver(
+            isActive: isPassiveGestureActive,
+            waitsForDouble: { double in
+                PlayerGestureSettings.bindings().action(for: double) != nil
+            },
+            onGesture: handlePassiveGesture,
+            setPadObserver: { observer in
+                viewModel.gesturePadObservers["passive"] = observer
+            },
+            tuning: viewModel.gestureTuning
+        )
+        .allowsHitTesting(false)
+        .frame(width: 0, height: 0)
+        .accessibilityHidden(true)
+        .onAppear { syncPassiveTapSides(isPassiveGestureActive) }
+        .onChange(of: isPassiveGestureActive) { _, active in syncPassiveTapSides(active) }
+    }
+
+    private func syncPassiveTapSides(_ active: Bool) {
+        viewModel.passiveGestureTapSides = active
+            ? PlayerGesturePassive.waitingTapSides(PlayerGestureSettings.bindings())
+            : []
+    }
+
+    func handlePassiveGesture(_ gesture: RemoteGesture) {
+        if PlayerGesturePassive.allows(gesture), let action = PlayerGestureSettings.bindings().action(for: gesture) {
+            viewModel.performGestureAction(action)
+            return
+        }
+        // A tap on a side whose double tap is bound waited for it: now it seeks, as the tap does.
+        if case let .tap(side, double: false) = gesture, viewModel.passiveGestureTapSides.contains(side) {
+            viewModel.handleMoveSeek(direction: side == .left ? .left : .right)
+        }
+    }
+
     func handleRemoteGesture(_ gesture: RemoteGesture) {
         if let action = PlayerGestureSettings.bindings().action(for: gesture) {
             viewModel.performGestureAction(action)
@@ -113,6 +175,29 @@ extension PlayerView {
         guard viewModel.gestureHoldSeekButton == button else { return }
         viewModel.gestureHoldSeekButton = nil
         viewModel.stopRepeatingSkip()
+    }
+}
+
+/// Which gestures are heard with the controls shown (the timeline selected, playing): the ones the
+/// controls don't use there. Clicks, short swipes, swipes up or down and circles stay theirs.
+enum PlayerGesturePassive {
+    static func allows(_ gesture: RemoteGesture) -> Bool {
+        switch gesture {
+        case let .swipe(direction, long):
+            return long && (direction == .left || direction == .right)
+        case let .swipeBack(direction):
+            return direction == .left || direction == .right
+        case .tap(_, double: true), .hold:
+            return true
+        case .click, .tap, .circle:
+            return false
+        }
+    }
+
+    /// The sides whose tap seeks on the timeline and whose double tap is bound: there the tap
+    /// waits to see whether a second one follows, and the gesture layer seeks.
+    static func waitingTapSides(_ bindings: PlayerGestureBindings) -> Set<PadSide> {
+        Set([PadSide.left, .right].filter { bindings.action(for: .tap($0, double: true)) != nil })
     }
 }
 

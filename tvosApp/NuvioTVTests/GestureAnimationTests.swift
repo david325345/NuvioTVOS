@@ -239,6 +239,29 @@ final class GestureAnimationTests: XCTestCase {
 
     // MARK: The player's gesture layer
 
+    func testWithTheControlsShownOnlyGesturesTheControlsDontUseWork() {
+        XCTAssertTrue(PlayerGesturePassive.allows(.swipe(.right, long: true)))
+        XCTAssertTrue(PlayerGesturePassive.allows(.swipe(.left, long: true)))
+        XCTAssertFalse(PlayerGesturePassive.allows(.swipe(.right, long: false)), "moves along the controls")
+        XCTAssertFalse(PlayerGesturePassive.allows(.swipe(.down, long: true)), "goes down to the buttons")
+        XCTAssertTrue(PlayerGesturePassive.allows(.swipeBack(.left)))
+        XCTAssertFalse(PlayerGesturePassive.allows(.swipeBack(.up)))
+        XCTAssertTrue(PlayerGesturePassive.allows(.tap(.center, double: true)))
+        XCTAssertFalse(PlayerGesturePassive.allows(.tap(.left, double: false)))
+        XCTAssertTrue(PlayerGesturePassive.allows(.hold(.right)))
+        XCTAssertFalse(PlayerGesturePassive.allows(.click(.right, .single)))
+        XCTAssertFalse(PlayerGesturePassive.allows(.click(.select, .double)), "the first click pauses")
+        XCTAssertFalse(PlayerGesturePassive.allows(.circle(clockwise: true)))
+    }
+
+    func testASideTapWaitsOnlyWhenItsDoubleTapIsBound() {
+        var bindings = PlayerGestureBindings.defaults
+        XCTAssertEqual(PlayerGesturePassive.waitingTapSides(bindings), [])
+        bindings.bind(.tap(.left, double: true), to: .back30)
+        bindings.bind(.tap(.center, double: true), to: .playPause)
+        XCTAssertEqual(PlayerGesturePassive.waitingTapSides(bindings), [.left])
+    }
+
     func testTheGestureLayerKeepsTheRemoteThroughTheWaitAfterASeek() {
         XCTAssertTrue(PlayerGestureCaptureStatus.keepsCapture(.playing))
         XCTAssertTrue(PlayerGestureCaptureStatus.keepsCapture(.buffering))

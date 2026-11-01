@@ -255,6 +255,9 @@ class PlayerViewModel: ObservableObject {
     /// Where the gesture layers (the player's, and the recorder in the Gestures tab) get the
     /// pad's absolute positions, by name.
     var gesturePadObservers: [String: (Double, Double) -> Void] = [:]
+    /// With the controls shown: the sides whose touch tap waits for a bound double tap (the gesture
+    /// layer seeks for it).
+    var passiveGestureTapSides: Set<PadSide> = []
     /// The button of a hold seek a gesture started, ended when that button is released.
     var gestureHoldSeekButton: RemoteButton?
     /// The subtitle a gesture switched off, switched back on by the same gesture.
@@ -5833,9 +5836,9 @@ class PlayerViewModel: ObservableObject {
             let lastX = gcLastTouchX ?? gcTouchStartX
             if dur < 0.5, !gcPanFiredThisTouch, !gcDidHandlePressAsSeek, !gcButtonAPressed, !isGestureCaptureActive {
                 if canPerformDiscreteSeek, lastX < -0.45 {
-                    handleMoveSeek(direction: .left)
+                    if !passiveGestureTapSides.contains(.left) { handleMoveSeek(direction: .left) }
                 } else if canPerformDiscreteSeek, lastX > 0.45 {
-                    handleMoveSeek(direction: .right)
+                    if !passiveGestureTapSides.contains(.right) { handleMoveSeek(direction: .right) }
                 } else {
                     remoteTapped()
                 }
