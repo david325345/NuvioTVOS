@@ -13,7 +13,7 @@ extension PlayerViewModel {
             if isSceneEnabled {
                 openScene()
             } else {
-                showPlayerToast("InSight je vypnutý")
+                showPlayerToast("InSight is off")
             }
         case .skipIntro:
             skipSegmentByGesture()
@@ -25,10 +25,10 @@ extension PlayerViewModel {
             togglePlayPause()
         case .nextEpisode:
             if nextEpisode != nil {
-                showPlayerToast("Další díl")
+                showPlayerToast("Next episode")
                 playNextEpisode()
             } else {
-                showPlayerToast("Žádný další díl")
+                showPlayerToast("No next episode")
             }
         case .toggleSubtitles:
             toggleSubtitlesByGesture()
@@ -39,7 +39,7 @@ extension PlayerViewModel {
             let index = speeds.firstIndex(of: playbackSpeed) ?? 0
             let next = speeds[(index + 1) % speeds.count]
             setSpeed(next)
-            showPlayerToast("Rychlost \(next.label)")
+            showPlayerToast("Speed \(next.label)")
         }
     }
 
@@ -48,7 +48,7 @@ extension PlayerViewModel {
     private func jumpChapter(forward: Bool) {
         let chapters = self.chapters
         guard !chapters.isEmpty else {
-            showPlayerToast("Soubor nemá kapitoly")
+            showPlayerToast("No chapters in this file")
             return
         }
         let position = time.current
@@ -56,7 +56,7 @@ extension PlayerViewModel {
         let target: Int
         if forward {
             guard current + 1 < chapters.count else {
-                showPlayerToast("Poslední kapitola")
+                showPlayerToast("Last chapter")
                 return
             }
             target = current + 1
@@ -64,7 +64,7 @@ extension PlayerViewModel {
             target = position - chapters[current].startSeconds > 3 ? current : max(current - 1, 0)
         }
         seek(to: chapters[target].startSeconds)
-        showPlayerToast("Kapitola \(target + 1) · \(PlaybackChapters.displayName(chapters[target], index: target))")
+        showPlayerToast("Chapter \(target + 1) · \(PlaybackChapters.displayName(chapters[target], index: target))")
     }
 
     private func jumpBy(_ seconds: Double) {
@@ -78,15 +78,15 @@ extension PlayerViewModel {
     private func skipSegmentByGesture() {
         if activeSkipInterval != nil {
             skipActiveInterval()
-            showPlayerToast("Přeskočeno")
+            showPlayerToast("Skipped")
             return
         }
         let position = time.current
         if let segment = skipSegments.first(where: { $0.startTime <= position && position < $0.endTime - 1 }) {
             skipInterval(segment)
-            showPlayerToast("Přeskočeno")
+            showPlayerToast("Skipped")
         } else {
-            showPlayerToast("Tady není co přeskočit")
+            showPlayerToast("Nothing to skip here")
         }
     }
 
@@ -97,29 +97,29 @@ extension PlayerViewModel {
             if let off = subtitles.first(where: { $0.id == "off" }) {
                 selectSubtitle(off)
             }
-            showPlayerToast("Titulky vypnuty")
+            showPlayerToast("Subtitles off")
             return
         }
         let candidates = subtitles.filter { $0.id != "off" }
         guard let track = candidates.first(where: { $0.id == gestureLastSubtitleID }) ?? candidates.first else {
-            showPlayerToast("Žádné titulky")
+            showPlayerToast("No subtitles")
             return
         }
         selectSubtitle(track)
-        showPlayerToast("Titulky: \(track.name.isEmpty ? track.language : track.name)")
+        showPlayerToast("Subtitles: \(track.name.isEmpty ? track.language : track.name)")
     }
 
     private func cycleAudioByGesture() {
         let tracks = audioTracks
         guard tracks.count > 1 else {
-            showPlayerToast(tracks.isEmpty ? "Žádné zvukové stopy" : "Jen jedna zvuková stopa")
+            showPlayerToast(tracks.isEmpty ? "No audio tracks" : "Only one audio track")
             return
         }
         let index = tracks.firstIndex(where: \.isSelected) ?? -1
         let next = tracks[(index + 1) % tracks.count]
         selectAudio(next)
         let name = next.languageName.isEmpty ? next.name : next.languageName
-        showPlayerToast("Zvuk: \(name)")
+        showPlayerToast("Audio: \(name)")
     }
 }
 

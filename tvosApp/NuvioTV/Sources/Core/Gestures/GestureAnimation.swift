@@ -26,6 +26,9 @@ struct GesturePadFrame: Equatable {
 }
 
 extension PadSide {
+    /// The places a touch can be in the player: the middle and the four sides (no corners).
+    static let playerSides: [PadSide] = [.center, .left, .right, .top, .bottom]
+
     /// Where a touch on this side is drawn.
     var padPoint: PadPoint {
         switch self {
@@ -153,16 +156,16 @@ enum GestureFamily: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .click: return "Klik"
-        case .doubleClick: return "Dvojklik"
-        case .longClick: return "Dlouhý stisk"
-        case .swipe: return "Tah"
-        case .longSwipe: return "Dlouhý tah"
-        case .swipeBack: return "Tah a zpět"
-        case .tap: return "Dotyk"
-        case .doubleTap: return "Dvojí dotyk"
-        case .hold: return "Přidržení prstu"
-        case .circle: return "Kroužek"
+        case .click: return "Click"
+        case .doubleClick: return "Double click"
+        case .longClick: return "Long press"
+        case .swipe: return "Swipe"
+        case .longSwipe: return "Long swipe"
+        case .swipeBack: return "Swipe and back"
+        case .tap: return "Tap"
+        case .doubleTap: return "Double tap"
+        case .hold: return "Touch and hold"
+        case .circle: return "Circle"
         }
     }
 
@@ -174,9 +177,9 @@ enum GestureFamily: String, CaseIterable, Identifiable {
         case .swipe: return SwipeDirection.allCases.map { .swipe($0, long: false) }
         case .longSwipe: return SwipeDirection.allCases.map { .swipe($0, long: true) }
         case .swipeBack: return SwipeDirection.allCases.map { .swipeBack($0) }
-        case .tap: return PadSide.allCases.map { .tap($0, double: false) }
-        case .doubleTap: return PadSide.allCases.map { .tap($0, double: true) }
-        case .hold: return PadSide.allCases.map { .hold($0) }
+        case .tap: return PadSide.playerSides.map { .tap($0, double: false) }
+        case .doubleTap: return PadSide.playerSides.map { .tap($0, double: true) }
+        case .hold: return PadSide.playerSides.map { .hold($0) }
         case .circle: return [.circle(clockwise: true), .circle(clockwise: false)]
         }
     }
@@ -208,8 +211,8 @@ enum PlayerGestureMeaning: Equatable {
     var title: String {
         switch self {
         case let .action(action): return action.title
-        case let .builtIn(builtIn): return "přehrávač: \(builtIn.title)"
-        case .free: return "volné"
+        case let .builtIn(builtIn): return "player: \(builtIn.title)"
+        case .free: return "free"
         }
     }
 }
@@ -251,6 +254,8 @@ final class GestureLiveTrace {
     private var press: (button: RemoteButton, since: TimeInterval)?
     /// After a lift the trail fades out.
     private var liftTime: TimeInterval?
+    /// The pad reported (0, 0): it is letting go, and what it reports after is no place.
+    private var padLifted = false
     private var ripple: (center: PadPoint, time: TimeInterval)?
 
     static let fadeOut: TimeInterval = 0.6
@@ -271,12 +276,17 @@ final class GestureLiveTrace {
             touching = true
             touchStart = time
             liftTime = nil
+            padLifted = false
             movement = nil
             // The pad reports where the finger landed just before the touch begins.
             points = points.filter { $0.time >= time - 0.05 }
         case let .touchMoved(time, point):
-            // (0, 0) is the pad letting go, not a place.
-            guard point.x != 0 || point.y != 0 else { return }
+            if point.x == 0, point.y == 0 {
+                if touching { padLifted = true }
+                return
+            }
+            // The first position of a touch has only x (y exactly 0): it is no place yet.
+            guard !padLifted, point.y != 0 else { return }
             points.append((time, point))
             if points.count > Self.maxPoints { points.removeFirst(points.count - Self.maxPoints) }
         case let .touchTranslation(_, dx, dy):
@@ -285,10 +295,13 @@ final class GestureLiveTrace {
             guard touching else { return }
             touching = false
             liftTime = time
+            // As the finger comes off, the positions slide towards the middle: not where it was.
+            let kept = points.filter { $0.time <= time - tuning.liftTrim }
+            if !kept.isEmpty { points = kept }
             let short = time - touchStart <= tuning.tapMaxDuration
             let still = (movement.map { hypot($0.dx, $0.dy) } ?? 0) <= tuning.tapMaxMovePoints
-            if short, still, press == nil, let last = points.last?.point {
-                ripple = (last, time)
+            if short, still, press == nil, let center = Self.median(points.map { $0.point }) {
+                ripple = (center, time)
             }
         case let .pressBegan(time, button):
             press = (button, time)
@@ -305,6 +318,16 @@ final class GestureLiveTrace {
         let step = summary.duration / Double(max(summary.points.count - 1, 1))
         let start = lift - summary.duration
         points = summary.points.enumerated().map { (time: start + Double($0.offset) * step, point: $0.element) }
+        if let ripple, let center = Self.median(summary.points) {
+            self.ripple = (center, ripple.time)
+        }
+    }
+
+    /// Where a touch was, as the recognizer reads it: the middle value of x and of y.
+    static func median(_ points: [PadPoint]) -> PadPoint? {
+        guard !points.isEmpty else { return nil }
+        let xs = points.map(\.x).sorted(), ys = points.map(\.y).sorted()
+        return PadPoint(x: xs[xs.count / 2], y: ys[ys.count / 2])
     }
 
     func frame(at now: TimeInterval) -> GesturePadFrame {
@@ -336,18 +359,18 @@ final class GestureLiveTrace {
     func status(at now: TimeInterval) -> String? {
         if let press {
             return now - press.since >= tuning.longPress
-                ? "Dlouhý stisk \(press.button.title)"
-                : "Stisk \(press.button.title)…"
+                ? "Long press \(press.button.title)"
+                : "Pressing \(press.button.title)…"
         }
         guard touching else { return nil }
         if let movement, let direction = Self.direction(of: movement, minimum: tuning.swipeMinPoints) {
             let long = hypot(movement.dx, movement.dy) >= tuning.swipeLongPoints
-            return (long ? "Dlouhý tah " : "Tah ") + direction.title + "…"
+            return (long ? "Long swipe " : "Swipe ") + direction.title + "…"
         }
         if isStill, now - touchStart >= tuning.holdMinDuration {
-            return "Přidržení prstu…"
+            return "Touch and hold…"
         }
-        return "Prst na ploše…"
+        return "Finger on the pad…"
     }
 
     private var isStill: Bool {

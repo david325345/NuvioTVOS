@@ -80,12 +80,13 @@ final class GestureAnimationTests: XCTestCase {
 
     func testTheFamiliesHaveEveryVariant() {
         XCTAssertEqual(GestureFamily.click.variants.count, RemoteButton.allCases.count)
-        XCTAssertEqual(GestureFamily.tap.variants.count, PadSide.allCases.count)
+        XCTAssertEqual(GestureFamily.tap.variants, [.tap(.center, double: false), .tap(.left, double: false), .tap(.right, double: false), .tap(.top, double: false), .tap(.bottom, double: false)])
         XCTAssertEqual(GestureFamily.circle.variants, [.circle(clockwise: true), .circle(clockwise: false)])
         let all = GestureFamily.allCases.flatMap(\.variants)
         XCTAssertEqual(Set(all).count, all.count)
         XCTAssertTrue(all.contains(.swipeBack(.down)))
-        XCTAssertTrue(all.contains(.hold(.bottomLeft)))
+        XCTAssertTrue(all.contains(.hold(.bottom)))
+        XCTAssertFalse(all.contains(.hold(.bottomLeft)), "no corners in the player")
     }
 
     func testAFamilyCardGoesThroughItsVariants() {
@@ -103,8 +104,8 @@ final class GestureAnimationTests: XCTestCase {
         XCTAssertEqual(PlayerGestureMeaning(of: .swipe(.right, long: true), in: bindings), .action(.nextChapter))
         XCTAssertEqual(PlayerGestureMeaning(of: .click(.right, .single), in: bindings), .builtIn(.seekForward))
         XCTAssertEqual(PlayerGestureMeaning(of: .circle(clockwise: true), in: bindings), .free)
-        XCTAssertEqual(PlayerGestureMeaning.free.title, "volné")
-        XCTAssertEqual(PlayerGestureMeaning.builtIn(.seekForward).title, "přehrávač: skok vpřed")
+        XCTAssertEqual(PlayerGestureMeaning.free.title, "free")
+        XCTAssertEqual(PlayerGestureMeaning.builtIn(.seekForward).title, "player: seek forward")
     }
 
     // MARK: Recording twice
@@ -132,17 +133,17 @@ final class GestureAnimationTests: XCTestCase {
     func testTheTraceFollowsTheFingerAndNamesTheSwipe() throws {
         let trace = GestureLiveTrace()
         trace.handle(.touchBegan(10))
-        XCTAssertEqual(trace.status(at: 10.05), "Prst na ploše…")
-        trace.handle(.touchMoved(10.02, PadPoint(x: -0.5, y: 0)))
-        trace.handle(.touchMoved(10.05, PadPoint(x: 0, y: 0)))
+        XCTAssertEqual(trace.status(at: 10.05), "Finger on the pad…")
+        trace.handle(.touchMoved(10.02, PadPoint(x: -0.5, y: 0.02)))
+        trace.handle(.touchMoved(10.05, PadPoint(x: 0.1, y: 0.03)))
         trace.handle(.touchMoved(10.08, PadPoint(x: 0.4, y: 0.05)))
         trace.handle(.touchTranslation(10.08, dx: 400, dy: 20))
-        XCTAssertEqual(trace.status(at: 10.1), "Tah doprava…")
+        XCTAssertEqual(trace.status(at: 10.1), "Swipe right…")
         let frame = trace.frame(at: 10.1)
         XCTAssertEqual(frame.finger, PadPoint(x: 0.4, y: 0.05))
-        XCTAssertEqual(frame.trail.count, 2, "(0, 0) is the pad letting go, not a place")
+        XCTAssertEqual(frame.trail.count, 3)
         trace.handle(.touchTranslation(10.2, dx: 1000, dy: 30))
-        XCTAssertEqual(trace.status(at: 10.2), "Dlouhý tah doprava…")
+        XCTAssertEqual(trace.status(at: 10.2), "Long swipe right…")
         trace.handle(.touchEnded(10.3))
         XCTAssertNil(trace.status(at: 10.31))
         XCTAssertNil(trace.frame(at: 10.31).finger)
@@ -153,10 +154,10 @@ final class GestureAnimationTests: XCTestCase {
     func testTheTraceShowsALongPressComing() {
         let trace = GestureLiveTrace()
         trace.handle(.pressBegan(5, .right))
-        XCTAssertEqual(trace.status(at: 5.2), "Stisk vpravo…")
+        XCTAssertEqual(trace.status(at: 5.2), "Pressing right…")
         XCTAssertEqual(trace.frame(at: 5.2).pressed, .right)
         XCTAssertEqual(trace.frame(at: 5.25).progress ?? 0, 0.5, accuracy: 0.001)
-        XCTAssertEqual(trace.status(at: 5.6), "Dlouhý stisk vpravo")
+        XCTAssertEqual(trace.status(at: 5.6), "Long press right")
         XCTAssertTrue(trace.frame(at: 5.6).isLong)
         trace.handle(.pressEnded(5.7, .right))
         XCTAssertNil(trace.frame(at: 5.71).pressed)
@@ -172,29 +173,49 @@ final class GestureAnimationTests: XCTestCase {
         XCTAssertNil(trace.frame(at: 1.15 + GestureLiveTrace.rippleDuration + 0.01).ripple)
     }
 
+    func testATapOnTheSideRipplesThereNotWhereTheLiftSlid() throws {
+        let trace = GestureLiveTrace()
+        // The first position has only x; then the side; then the slide towards the middle and (0, 0).
+        trace.handle(.touchMoved(3.00, PadPoint(x: -0.7, y: 0)))
+        trace.handle(.touchBegan(3.01))
+        trace.handle(.touchMoved(3.02, PadPoint(x: -0.72, y: 0.05)))
+        trace.handle(.touchMoved(3.05, PadPoint(x: -0.70, y: 0.04)))
+        trace.handle(.touchMoved(3.08, PadPoint(x: -0.71, y: 0.05)))
+        trace.handle(.touchMoved(3.14, PadPoint(x: -0.30, y: 0.02)))
+        trace.handle(.touchMoved(3.15, PadPoint(x: 0, y: 0)))
+        trace.handle(.touchMoved(3.16, PadPoint(x: -0.05, y: 0.01)))
+        trace.handle(.touchEnded(3.17))
+        let frame = trace.frame(at: 3.2)
+        let ripple = try XCTUnwrap(frame.ripple)
+        XCTAssertLessThan(ripple.center.x, -0.6)
+        XCTAssertTrue(frame.trail.allSatisfy { $0.x < -0.6 }, "no slide towards the middle")
+    }
+
     func testAStillFingerFillsTowardsAHold() {
         let trace = GestureLiveTrace()
         trace.handle(.touchBegan(2))
         trace.handle(.touchMoved(2.01, PadPoint(x: 0.1, y: 0.1)))
-        XCTAssertEqual(trace.status(at: 2.6), "Přidržení prstu…")
+        XCTAssertEqual(trace.status(at: 2.6), "Touch and hold…")
         XCTAssertTrue(trace.frame(at: 2.6).isLong)
     }
 
     // MARK: Sensitivity
 
-    func testTheMiddleStepsAreGestureLabsValues() {
-        XCTAssertEqual(PlayerGestureSensitivity().tuning, RemoteGestureTuning())
+    func testTheDefaultsAreGestureLabsWithALargeMiddleAndNoCorners() {
+        var expected = RemoteGestureTuning()
+        expected.sideThreshold = 0.30
+        expected.cornerTouches = false
+        XCTAssertEqual(PlayerGestureSensitivity().tuning, expected)
+        XCTAssertEqual(PlayerGestureSensitivity().step(.centerSize), 2)
     }
 
     func testAKnobGoesRoundItsSteps() {
         var sensitivity = PlayerGestureSensitivity()
         sensitivity.cycle(.centerSize)
-        XCTAssertEqual(sensitivity.step(.centerSize), 2)
-        XCTAssertEqual(sensitivity.tuning.sideThreshold, 0.30)
-        sensitivity.cycle(.centerSize)
+        XCTAssertEqual(sensitivity.step(.centerSize), 0)
         XCTAssertEqual(sensitivity.tuning.sideThreshold, 0.15)
-        sensitivity.cycle(.corners)
-        sensitivity.cycle(.corners)
+        sensitivity.cycle(.centerSize)
+        XCTAssertEqual(sensitivity.tuning.sideThreshold, 0.20)
         XCTAssertFalse(sensitivity.tuning.cornerTouches)
         sensitivity.cycle(.swipeLength)
         XCTAssertEqual(sensitivity.tuning.swipeMinPoints, 325, accuracy: 0.001)

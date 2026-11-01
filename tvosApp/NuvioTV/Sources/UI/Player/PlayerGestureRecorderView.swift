@@ -20,7 +20,7 @@ struct PlayerGestureRecorderView: View {
 
     var body: some View {
         ZStack {
-            Color.black.opacity(0.93)
+            Color.black
                 .ignoresSafeArea()
 
             PlayerGestureCapture(
@@ -37,7 +37,7 @@ struct PlayerGestureRecorderView: View {
 
             VStack(spacing: 34) {
                 VStack(spacing: 8) {
-                    Text("Proveď gesto pro")
+                    Text("Do the gesture for")
                         .font(.system(size: 26, weight: .semibold))
                         .foregroundColor(.white.opacity(0.55))
                     Text(action.title)
@@ -96,7 +96,7 @@ struct PlayerGestureRecorderView: View {
                         .overlay(Circle().strokeBorder(Color.white.opacity(0.5), lineWidth: 2))
                         .frame(width: 18, height: 18)
                 }
-                Text("gesto dvakrát pro uložení · Zpět zruší")
+                Text("Do it twice to save · Back cancels")
                     .font(.system(size: 20, weight: .medium))
                     .foregroundColor(.white.opacity(0.4))
             }
@@ -112,8 +112,8 @@ struct PlayerGestureRecorderView: View {
             recognizedCard(gesture, label: meaningLine(gesture))
         case let .mismatch(first, second):
             HStack(spacing: 24) {
-                recognizedCard(first, label: "poprvé")
-                recognizedCard(second, label: "podruhé")
+                recognizedCard(first, label: "first")
+                recognizedCard(second, label: "second")
             }
         }
     }
@@ -142,19 +142,19 @@ struct PlayerGestureRecorderView: View {
 
     private var headline: String {
         switch session.step {
-        case .first: return "Proveď gesto"
-        case let .confirm(gesture): return "Rozpoznáno: \(gesture.title)"
-        case .mismatch: return "Neshoduje se"
-        case let .done(gesture): return "Uloženo: \(gesture.title)"
+        case .first: return "Do the gesture"
+        case let .confirm(gesture): return "Recognized: \(gesture.title)"
+        case .mismatch: return "Doesn’t match"
+        case let .done(gesture): return "Saved: \(gesture.title)"
         }
     }
 
     private var subtitle: String {
         switch session.step {
-        case .first: return "Na touchpadu vlevo uvidíš, co ovladač právě pozná."
-        case .confirm: return "Proveď ho ještě jednou pro potvrzení."
-        case .mismatch: return "Podruhé vyšlo jiné gesto. Proveď gesto znovu."
-        case .done: return "\(action.title) má nové gesto."
+        case .first: return "The pad on the left shows what the remote picks up."
+        case .confirm: return "Do it once more to confirm."
+        case .mismatch: return "The second one came out different. Do the gesture again."
+        case .done: return "\(action.title) has a new gesture."
         }
     }
 
@@ -168,15 +168,15 @@ struct PlayerGestureRecorderView: View {
 
     private func meaningLine(_ gesture: RemoteGesture) -> String {
         let meaning = PlayerGestureMeaning(of: gesture, in: bindings)
-        if meaning == .action(action) { return "už je přiřazené této akci" }
-        return "teď: \(meaning.title)"
+        if meaning == .action(action) { return "already set for this action" }
+        return "now: \(meaning.title)"
     }
 
     // MARK: Every kind, looping
 
     private var hints: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Můžeš použít")
+            Text("You can use")
                 .font(.system(size: 20, weight: .bold))
                 .foregroundColor(.white.opacity(0.45))
             HStack(alignment: .top, spacing: 26) {
