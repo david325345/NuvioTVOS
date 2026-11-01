@@ -128,4 +128,9 @@ extension PlayerViewModel {
         PlayerGestureSettings.setEnabled(enabled)
         areGesturesEnabled = enabled
     }
+
+    func setGestureSensitivity(_ sensitivity: PlayerGestureSensitivity) {
+        PlayerGestureSettings.save(sensitivity)
+        gestureTuning = sensitivity.tuning
+    }
 }

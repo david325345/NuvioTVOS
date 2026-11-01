@@ -21,13 +21,14 @@ extension PlayerView {
     }
 
     /// Gestures on, playing, the controls hidden and nothing else on screen. A hold seek the
-    /// layer started keeps it until the button is released.
+    /// layer started keeps it until the button is released. The short wait after a seek (a
+    /// chapter jump) keeps it too: dropping it there handed the remote to the focus sink.
     var isGestureCaptureActive: Bool {
         viewModel.areGesturesEnabled
             && didReportPlaybackStarted
             && !isWakingFromBackground
             && !isLoadingOverlayVisible
-            && viewModel.status == .playing
+            && PlayerGestureCaptureStatus.keepsCapture(viewModel.status)
             && !viewModel.showControls
             && !viewModel.showPauseOverlay
             && !viewModel.isScrubbing
@@ -53,7 +54,8 @@ extension PlayerView {
             onBack: handleRemoteBack,
             setPadObserver: { observer in
                 viewModel.gesturePadObservers["player"] = observer
-            }
+            },
+            tuning: viewModel.gestureTuning
         )
         .ignoresSafeArea()
         .accessibilityHidden(true)
@@ -62,7 +64,10 @@ extension PlayerView {
         }
         .onChange(of: isGestureCaptureActive) { _, active in
             viewModel.isGestureCaptureActive = active
-            if !active, isFocusSinkEligible, !viewModel.showControls {
+            if active {
+                // The sink can't be focused now; a pending request for it would fight this layer.
+                remoteInputFocused = false
+            } else if isFocusSinkEligible, !viewModel.showControls {
                 // Paused or otherwise left with nothing to take the remote: the sink takes it again.
                 focusRemoteInput()
             }
@@ -108,5 +113,16 @@ extension PlayerView {
         guard viewModel.gestureHoldSeekButton == button else { return }
         viewModel.gestureHoldSeekButton = nil
         viewModel.stopRepeatingSkip()
+    }
+}
+
+/// Which playback states the gesture layer holds the remote in.
+enum PlayerGestureCaptureStatus {
+    /// Playing, or the brief buffering after a seek. Paused, ended or failed hand the remote back.
+    static func keepsCapture(_ status: PlayerStatus) -> Bool {
+        switch status {
+        case .playing, .buffering: return true
+        case .idle, .paused, .ended, .error: return false
+        }
     }
 }
