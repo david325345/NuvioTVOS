@@ -247,6 +247,8 @@ class PlayerViewModel: ObservableObject {
     @Published var playbackSpeed: PlaybackSpeed = .normal
     /// Remote gestures (fork test build): switched on in the player's Gestures tab.
     @Published var areGesturesEnabled = PlayerGestureSettings.isEnabled()
+    /// The recognizer's settings from the Gestures tab's sensitivity.
+    @Published var gestureTuning = PlayerGestureSettings.sensitivity().tuning
     /// The gesture layer holds the remote (playing, controls hidden): the touch taps and edge
     /// clicks below leave it to that layer, which plays the built-in ones itself.
     var isGestureCaptureActive = false
