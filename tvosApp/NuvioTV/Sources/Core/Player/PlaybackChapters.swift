@@ -224,8 +224,9 @@ enum PlaybackChapters {
     // MARK: - Colors
 
     /// The colors the opening and the ending can take (Settings → Player): the subtitle
-    /// palette without white, which reads as the played part, and black.
-    static let colorChoices = ["#F2C94C", "#56CCF2", "#EB5757", "#6FCF97", "#9B51E0", "#F2994A", "#27AE60", "#2F80ED"]
+    /// palette without white, which reads as the played part, black, and red, the mark of
+    /// where playback is (pink in its place).
+    static let colorChoices = ["#F2C94C", "#56CCF2", "#F78FB3", "#6FCF97", "#9B51E0", "#F2994A", "#27AE60", "#2F80ED"]
     static let defaultOpeningColor = "#F2C94C"
     static let defaultEndingColor = "#56CCF2"
 
@@ -233,12 +234,14 @@ enum PlaybackChapters {
         kind == .opening ? SettingsKey.timelineOpeningColor : SettingsKey.timelineEndingColor
     }
 
-    /// The color chosen for `kind`, as "#RRGGBB"; its default while none is set.
+    /// The color chosen for `kind`, as "#RRGGBB"; its default while none is set, or when the
+    /// setting holds a color that is no longer offered.
     static func colorHex(for kind: Kind, in settings: UserDefaults) -> String {
         let fallback = kind == .opening ? defaultOpeningColor : defaultEndingColor
         guard let value = settings.string(forKey: colorKey(for: kind))?.trimmingCharacters(in: .whitespaces),
-              value.range(of: #"^#[0-9A-Fa-f]{6}$"#, options: .regularExpression) != nil else { return fallback }
-        return value
+              let choice = colorChoices.first(where: { $0.caseInsensitiveCompare(value) == .orderedSame })
+        else { return fallback }
+        return choice
     }
 
     /// Whether black text reads better than white on `hex` (the Opening / Ending badges).

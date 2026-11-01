@@ -31,12 +31,19 @@ extension PlaybackChapters.Kind {
 /// second raised pill and reads as a double bar.
 ///
 /// With chapters (or an opening / ending) the bar is cut into pieces with a gap between
-/// them, and the piece under the playhead stands taller than the rest.
+/// them, and the piece under the playhead stands about twice as tall as the rest.
 struct PlayerProgressTrack: View {
-    /// How much taller the piece under the playhead is than the rest of the track.
+    /// How much taller the piece under the playhead is than the track's height.
     static let currentPieceLift: CGFloat = 4
     /// The gap between two pieces of the track.
     static let pieceGap: CGFloat = 3
+    /// The mark of where playback is (`position`).
+    static let positionColor = Color(red: 1, green: 0.23, blue: 0.19)
+
+    /// The pieces away from the playhead: two thirds of the track's height (5 of 7, 8 of 12).
+    static func otherPieceHeight(for height: CGFloat) -> CGFloat {
+        max(3, (height * 2 / 3).rounded())
+    }
 
     var played: Double
     var buffered: Double
@@ -49,6 +56,11 @@ struct PlayerProgressTrack: View {
     var markers: [Double] = []
     /// Colored stretches: dimmed ahead of the playhead, full color once played.
     var segments: [PlayerTrackSegment] = []
+    /// The played part's white.
+    var playedOpacity: Double = 0.65
+    /// Where playback is, as a fraction, drawn as a red mark through its piece (while seeking
+    /// `played` follows the seek instead). Nil: the played part ends in a white tick.
+    var position: Double? = nil
 
     @State private var animatedBuffered: Double = 0
 
@@ -65,6 +77,7 @@ struct PlayerProgressTrack: View {
             let current = PlaybackChapters.pieceIndex(at: Double(p), in: pieces)
             // The layers are drawn at the lifted piece's height; the pieces cut them to shape.
             let full = pieces.isEmpty ? h : h + Self.currentPieceLift
+            let other = pieces.isEmpty ? h : Self.otherPieceHeight(for: h)
 
             ZStack(alignment: .leading) {
                 // Single track layer (fills + mask = one bar, not glassEffect).
@@ -100,7 +113,7 @@ struct PlayerProgressTrack: View {
                     if p > 0 {
                         // Played progress bar (semi-opaque grey)
                         Rectangle()
-                            .fill(Color.white.opacity(0.65))
+                            .fill(Color.white.opacity(playedOpacity))
                             .frame(width: w * p)
 
                         ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
@@ -114,17 +127,38 @@ struct PlayerProgressTrack: View {
                             }
                         }
 
-                        // Leading edge tick: bright white cap flush with the track height
-                        Rectangle()
-                            .fill(Color.white)
-                            .frame(width: 2, height: full)
-                            .position(x: min(max(w * p - 1, 1), w - 1), y: full / 2)
+                        if position == nil {
+                            // Leading edge tick: bright white cap flush with the track height
+                            Rectangle()
+                                .fill(Color.white)
+                                .frame(width: 2, height: full)
+                                .position(x: min(max(w * p - 1, 1), w - 1), y: full / 2)
+                        }
                     }
                 }
                 .frame(height: full)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .mask(alignment: .leading) {
-                    trackShape(pieces: pieces, current: current, width: w, height: h, full: full)
+                    trackShape(pieces: pieces, current: current, width: w, height: other, full: full)
+                }
+                .overlay(alignment: .topLeading) {
+                    if let position {
+                        // Red mark of where playback is: through its piece and a little past it,
+                        // with a dark edge against the white and the opening / ending colors.
+                        let x = CGFloat(min(max(position, 0), 1))
+                        let index = PlaybackChapters.pieceIndex(at: Double(x), in: pieces)
+                        let markHeight = (pieces.isEmpty || index == current ? full : other) + 6
+                        ZStack {
+                            Rectangle()
+                                .fill(Color.black.opacity(0.8))
+                                .frame(width: 7, height: markHeight + 3)
+                            Rectangle()
+                                .fill(Self.positionColor)
+                                .frame(width: 4, height: markHeight)
+                        }
+                        .position(x: min(max(w * x, 3.5), w - 3.5), y: full / 2)
+                        .animation(.easeOut(duration: 0.2), value: markHeight)
+                    }
                 }
 
                 if showThumb {
@@ -148,7 +182,7 @@ struct PlayerProgressTrack: View {
     }
 
     /// The track's outline: one bar, or the pieces side by side with a gap between them,
-    /// the one under the playhead lifted to `full`.
+    /// the one under the playhead `full` tall and the others `height`.
     @ViewBuilder
     private func trackShape(
         pieces: [PlaybackChapters.TimelinePiece],

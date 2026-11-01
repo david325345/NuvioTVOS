@@ -238,10 +238,14 @@ final class PlaybackChaptersTests: XCTestCase {
         defer { settings.removePersistentDomain(forName: suite) }
         XCTAssertEqual(PlaybackChapters.colorHex(for: .opening, in: settings), PlaybackChapters.defaultOpeningColor)
         XCTAssertEqual(PlaybackChapters.colorHex(for: .ending, in: settings), PlaybackChapters.defaultEndingColor)
-        settings.set("#EB5757", forKey: SettingsKey.timelineOpeningColor)
+        settings.set("#f78fb3", forKey: SettingsKey.timelineOpeningColor)
         settings.set("blue", forKey: SettingsKey.timelineEndingColor)
-        XCTAssertEqual(PlaybackChapters.colorHex(for: .opening, in: settings), "#EB5757")
+        XCTAssertEqual(PlaybackChapters.colorHex(for: .opening, in: settings), "#F78FB3")
         XCTAssertEqual(PlaybackChapters.colorHex(for: .ending, in: settings), PlaybackChapters.defaultEndingColor)
+        // Red is the mark of where playback is: no longer offered, so back to the default.
+        settings.set("#EB5757", forKey: SettingsKey.timelineEndingColor)
+        XCTAssertEqual(PlaybackChapters.colorHex(for: .ending, in: settings), PlaybackChapters.defaultEndingColor)
+        XCTAssertFalse(PlaybackChapters.colorChoices.contains("#EB5757"))
         XCTAssertTrue(PlaybackChapters.colorChoices.contains(PlaybackChapters.defaultOpeningColor))
         XCTAssertTrue(PlaybackChapters.colorChoices.contains(PlaybackChapters.defaultEndingColor))
         XCTAssertTrue(SettingsKey.all.contains(SettingsKey.timelineOpeningColor))
@@ -251,7 +255,7 @@ final class PlaybackChaptersTests: XCTestCase {
     func testBadgeTextReadsOnEveryColor() {
         // Black on the light colors, white on the dark ones.
         let dark = PlaybackChapters.colorChoices.filter { PlaybackChapters.prefersDarkText(on: $0) }
-        XCTAssertEqual(dark, ["#F2C94C", "#56CCF2", "#6FCF97", "#F2994A"])
+        XCTAssertEqual(dark, ["#F2C94C", "#56CCF2", "#F78FB3", "#6FCF97", "#F2994A"])
     }
 
     func testSwipeSnapsToChapterAndOpeningEdges() {
@@ -276,5 +280,13 @@ final class PlaybackChaptersTests: XCTestCase {
         XCTAssertTrue(PlaybackChapters.isOnEdge(181, edges: edges))
         XCTAssertFalse(PlaybackChapters.isOnEdge(181.5, edges: edges))
         XCTAssertEqual(PlaybackChapters.snapEdges(chapters: [], segments: [], duration: 0), [])
+    }
+
+    func testThePlayingChapterStandsAboutTwiceAsTallAsTheOthers() {
+        // At rest the track is 7 tall, seeking 12; the playing piece is 4 more.
+        XCTAssertEqual(PlayerProgressTrack.otherPieceHeight(for: 7), 5)
+        XCTAssertEqual(PlayerProgressTrack.otherPieceHeight(for: 12), 8)
+        XCTAssertEqual(12 + PlayerProgressTrack.currentPieceLift, 2 * PlayerProgressTrack.otherPieceHeight(for: 12))
+        XCTAssertEqual(PlayerProgressTrack.otherPieceHeight(for: 2), 3)
     }
 }

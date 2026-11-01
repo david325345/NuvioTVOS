@@ -1158,9 +1158,10 @@ private struct PlayerTimelineBar: View {
                 let targetX = min(max(w * progress, 0), w)
                 let trackHeight: CGFloat = (isTimelineFocused || isSeekingOrScrubbing) ? 10 : 7
                 let h: CGFloat = (isTimelineFocused || isSeekingOrScrubbing) ? trackHeight + 2 : trackHeight
-                let needleHeight: CGFloat = 22
+                // The seek needle reaches a little below the track, so it reads over the played part.
+                let needleHeight: CGFloat = 32
+                let needleOverhang: CGFloat = 4
                 let originalProgress = CGFloat(min(max(clock.position / duration, 0), 1))
-                let originalX = min(max(w * originalProgress, 0), w)
                 let markers = PlaybackChapters.markers(chapters, duration: clock.duration)
                 let segments = PlaybackChapters.timelineSegments(skipSegments, duration: clock.duration).map {
                     PlayerTrackSegment(start: $0.start, end: $0.end, color: $0.kind.color)
@@ -1181,24 +1182,21 @@ private struct PlayerTimelineBar: View {
                         emphasized: isTimelineFocused || isSeekingOrScrubbing,
                         glassTrack: true,
                         markers: markers,
-                        segments: segments
+                        segments: segments,
+                        playedOpacity: 0.45,
+                        // Red: where playback is, also while the seek heads elsewhere.
+                        position: Double(originalProgress)
                     )
 
                     if isScrubbing || isHoldingSeek {
-                        // Ghost tick: original paused playback position flush within track
-                        if abs(targetX - originalX) > 3 {
-                            Rectangle()
-                                .fill(Color.white.opacity(0.4))
-                                .frame(width: 1.5, height: h)
-                                .position(x: originalX, y: geo.size.height / 2)
-                        }
-
-                        // Active scrub/seek needle: extends upwards toward preview card and is flush at bottom of track
+                        // Active scrub/seek needle: white with a dark edge, from just below the
+                        // track up toward the preview card.
                         Rectangle()
                             .fill(Color.white)
-                            .frame(width: 2, height: needleHeight)
-                            .shadow(color: .black.opacity(0.45), radius: 1.5)
-                            .position(x: targetX, y: bottomOfTrack - needleHeight / 2)
+                            .frame(width: 4, height: needleHeight)
+                            .background(Rectangle().fill(Color.black.opacity(0.8)).padding(-1.5))
+                            .shadow(color: .black.opacity(0.55), radius: 3)
+                            .position(x: targetX, y: bottomOfTrack + needleOverhang - needleHeight / 2)
                     }
                 }
             }
