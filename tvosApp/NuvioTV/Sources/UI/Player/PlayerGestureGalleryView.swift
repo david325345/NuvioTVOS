@@ -13,15 +13,15 @@ struct PlayerGestureGalleryView: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            Color.black.opacity(0.94)
+            Color.black
                 .ignoresSafeArea()
 
             VStack(alignment: .leading, spacing: 26) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Přehled gest")
+                    Text("Gesture overview")
                         .font(.system(size: 40, weight: .bold))
                         .foregroundColor(.white)
-                    Text("Vyber kartu: dole uvidíš všechny její varianty a co teď při přehrávání dělají · Zpět zavře")
+                    Text("Pick a card to see all its variants below and what each does during playback now · Back closes")
                         .font(.system(size: 21, weight: .medium))
                         .foregroundColor(.white.opacity(0.5))
                 }
