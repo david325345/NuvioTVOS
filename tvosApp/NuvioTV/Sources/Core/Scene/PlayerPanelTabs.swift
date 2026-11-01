@@ -5,7 +5,9 @@ import Foundation
 /// "chapters,scene,info,-upNext,watchParty", where "-" hides a tab. InSight is shown by its
 /// own setting ("Scene (InSight)"), which also runs its recognition, so it is never hidden here.
 enum PlayerPanelTabs {
-    static let defaultOrder: [SceneTab] = [.chapters, .scene, .info, .upNext, .watchParty]
+    static let defaultOrder: [SceneTab] = [.chapters, .autoSync, .scene, .info, .upNext, .watchParty]
+    /// Tabs added after people saved an order: they join it right after these, not at the end.
+    static let addedLater: [SceneTab: SceneTab] = [.autoSync: .chapters]
 
     struct Config: Equatable {
         var order: [SceneTab]
@@ -24,7 +26,11 @@ enum PlayerPanelTabs {
             if isHidden, tab != .scene { hidden.insert(tab) }
         }
         for tab in defaultOrder where !order.contains(tab) {
-            order.append(tab)
+            if let neighbour = addedLater[tab], let index = order.firstIndex(of: neighbour) {
+                order.insert(tab, at: index + 1)
+            } else {
+                order.append(tab)
+            }
         }
         return Config(order: order, hidden: hidden)
     }
@@ -38,6 +44,7 @@ enum PlayerPanelTabs {
     static func key(for tab: SceneTab) -> String {
         switch tab {
         case .chapters: return "chapters"
+        case .autoSync: return "autoSync"
         case .scene: return "scene"
         case .info: return "info"
         case .upNext: return "upNext"
@@ -55,12 +62,14 @@ enum PlayerPanelTabs {
         sceneEnabled: Bool,
         hasChapters: Bool,
         hasNextEpisode: Bool,
-        watchPartyAvailable: Bool
+        watchPartyAvailable: Bool,
+        autoSyncAvailable: Bool = false
     ) -> [SceneTab] {
         config.order.filter { tab in
             switch tab {
             case .scene: return sceneEnabled
             case .chapters: return hasChapters && !config.hidden.contains(tab)
+            case .autoSync: return autoSyncAvailable && !config.hidden.contains(tab)
             case .info: return !config.hidden.contains(tab)
             case .upNext: return hasNextEpisode && !config.hidden.contains(tab)
             case .watchParty: return watchPartyAvailable && !config.hidden.contains(tab)

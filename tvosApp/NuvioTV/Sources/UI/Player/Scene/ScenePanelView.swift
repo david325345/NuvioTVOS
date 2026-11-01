@@ -26,6 +26,12 @@ struct ScenePanelView: View {
     ) -> AnyView)?
     /// The card the Chapters tab enters on: the playing chapter's.
     let chaptersFocusTarget: String
+    /// The Auto Sync tab: its buttons and diagnostics.
+    let autoSyncContent: ((
+        FocusState<String?>.Binding,
+        ScenePanelWatchPartyFocusContext
+    ) -> AnyView)?
+    let autoSyncFocusTarget: String
 
     private enum FocusSection: Equatable { case tabs, content }
     
@@ -50,7 +56,12 @@ struct ScenePanelView: View {
             FocusState<String?>.Binding,
             ScenePanelWatchPartyFocusContext
         ) -> AnyView)? = nil,
-        chaptersFocusTarget: String = "chapter-0"
+        chaptersFocusTarget: String = "chapter-0",
+        autoSyncContent: ((
+            FocusState<String?>.Binding,
+            ScenePanelWatchPartyFocusContext
+        ) -> AnyView)? = nil,
+        autoSyncFocusTarget: String = "autosync.run"
     ) {
         self.viewModel = viewModel
         self.isAdvancing = isAdvancing
@@ -60,6 +71,8 @@ struct ScenePanelView: View {
         self.watchPartyFocusTarget = watchPartyFocusTarget
         self.chaptersContent = chaptersContent
         self.chaptersFocusTarget = chaptersFocusTarget
+        self.autoSyncContent = autoSyncContent
+        self.autoSyncFocusTarget = autoSyncFocusTarget
     }
     
     var body: some View {
@@ -84,6 +97,18 @@ struct ScenePanelView: View {
                                 entryFocusTarget: contentFocusAnchor(for: .chapters) ?? chaptersFocusTarget,
                                 entryFallbackTarget: chaptersFocusTarget,
                                 onFocusChanged: { rememberContentFocus($0, for: .chapters) },
+                                onMoveUpFromContent: focusSelectedTabFromContent,
+                                focusTab: requestTabFocus
+                            )
+                        ) ?? AnyView(EmptyView())
+                    case .autoSync:
+                        autoSyncContent?(
+                            $focusedCardID,
+                            ScenePanelWatchPartyFocusContext(
+                                entryLocked: activeFocusSection != .content,
+                                entryFocusTarget: contentFocusAnchor(for: .autoSync) ?? autoSyncFocusTarget,
+                                entryFallbackTarget: autoSyncFocusTarget,
+                                onFocusChanged: { rememberContentFocus($0, for: .autoSync) },
                                 onMoveUpFromContent: focusSelectedTabFromContent,
                                 focusTab: requestTabFocus
                             )
@@ -240,7 +265,9 @@ struct ScenePanelView: View {
 
     /// The tabs in the order of the settings; Watch Party only when the player can show it.
     private var visibleTabs: [SceneTab] {
-        viewModel.availableTabs.filter { $0 != .watchParty || watchPartyContent != nil }
+        viewModel.availableTabs.filter {
+            ($0 != .watchParty || watchPartyContent != nil) && ($0 != .autoSync || autoSyncContent != nil)
+        }
     }
     
     // MARK: - Scene Tab Content
@@ -637,6 +664,8 @@ struct ScenePanelView: View {
         switch tab {
         case .chapters:
             anchors = [contentFocusAnchors[.chapters] ?? chaptersFocusTarget]
+        case .autoSync:
+            anchors = [contentFocusAnchors[.autoSync] ?? autoSyncFocusTarget]
         case .scene:
             let actors = viewModel.snapshot.actors.map { "actor-\($0.id)" }
             let song = viewModel.snapshot.song.map { "song-\($0.id)" }
@@ -658,6 +687,8 @@ struct ScenePanelView: View {
         switch tab {
         case .chapters:
             return id.hasPrefix("chapter-")
+        case .autoSync:
+            return id.hasPrefix("autosync.")
         case .scene:
             return contentFocusAnchorCandidates(for: tab).contains(id)
         case .info:
