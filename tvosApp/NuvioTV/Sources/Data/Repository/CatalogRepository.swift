@@ -1527,9 +1527,22 @@ final class CinemetaCatalogRepository: CatalogRepository {
         return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
             let task = Task {
                 let addons = await self.configuredSubtitleAddons(id: id, type: type)
+                let pluginQuery = PluginSubtitleDiscovery.Query(
+                    type: subtitleType,
+                    videoID: id,
+                    videoHash: videoHash,
+                    videoSize: videoSize,
+                    filename: filename
+                )
+                let pluginProviders = await PluginSubtitleDiscovery.providers(for: pluginQuery)
                 var accumulated: [NuvioSubtitle] = []
 
                 await withTaskGroup(of: [NuvioSubtitle].self) { group in
+                    // Subtitle plugins (Settings → Plugins) beside the add-ons.
+                    for provider in pluginProviders {
+                        group.addTask { await PluginSubtitleDiscovery.subtitles(from: provider, query: pluginQuery) }
+                    }
+
                     for addon in addons {
                         // 1. Fast base ID-query endpoint (instant cache response < 300ms)
                         if let baseURL = addon.subtitleURL(type: subtitleType, id: id) {

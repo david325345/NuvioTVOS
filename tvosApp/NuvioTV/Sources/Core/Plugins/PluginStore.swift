@@ -64,12 +64,12 @@ final class PluginStore: ObservableObject {
     }
 
     /// Scrapers to ask for this content type, in repository order.
-    func activeScrapers(for type: String) -> [PluginScraperRecord] {
+    func activeScrapers(for type: String, resource: String = PluginResources.stream) -> [PluginScraperRecord] {
         ensureLoaded()
         guard state.pluginsEnabled else { return [] }
         let order = Dictionary(state.repositories.enumerated().map { ($1.manifestURL, $0) }, uniquingKeysWith: { first, _ in first })
         return state.scrapers
-            .filter { $0.enabled && $0.manifestEnabled && $0.supports(type: type) }
+            .filter { $0.enabled && $0.manifestEnabled && $0.supports(type: type) && $0.provides(resource) }
             .sorted { (order[$0.repositoryURL] ?? .max) < (order[$1.repositoryURL] ?? .max) }
     }
 
@@ -316,7 +316,9 @@ final class PluginStore: ObservableObject {
                     logo: info.logo,
                     contentLanguage: info.contentLanguage,
                     formats: info.formats,
-                    declaresSeriesType: info.declaresSeries
+                    declaresSeriesType: info.declaresSeries,
+                    resources: info.resources,
+                    idPrefixes: info.idPrefixes.isEmpty ? nil : info.idPrefixes
                 ))
             } catch {
                 failures.append(info.name)
@@ -479,6 +481,8 @@ enum PluginSettingsVault {
     static func save(_ settings: [String: Any], scraperID: String, profileScope: String = ProfileSettings.activeProfileScope) -> Bool {
         guard JSONSerialization.isValidJSONObject(settings),
               let data = try? JSONSerialization.data(withJSONObject: settings) else { return false }
+        // Cached plugin subtitles may depend on the old values.
+        Task { await PluginSubtitleCache.shared.removeAll() }
         var add = baseQuery(scraperID, profileScope)
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         add[kSecValueData as String] = data

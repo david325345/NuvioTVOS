@@ -22,26 +22,39 @@ final class PluginWebServer: ObservableObject {
 
     static let shared = PluginWebServer()
     static let idleTimeout: TimeInterval = 15 * 60
+    /// Tried first so the address stays short and the same; any free port
+    /// is used when it is taken.
+    static let preferredPort: UInt16 = 8765
+    private static let keepAddressKey = "plugins.web.keepAddress"
 
     @Published private(set) var phase: Phase = .stopped
     /// When the last request arrived (the screen shows "connected").
     @Published private(set) var lastActivity: Date?
+    /// "Keep the Same Address": the token is saved on this Apple TV and
+    /// reused, so the page can be bookmarked.
+    @Published private(set) var keepsAddress: Bool
 
     private var core: PluginHTTPServerCore?
+    private var currentToken: String?
 
-    private init() {}
+    private init() {
+        keepsAddress = UserDefaults.standard.bool(forKey: Self.keepAddressKey)
+    }
 
     func start() {
         guard core == nil else { return }
         phase = .starting
         lastActivity = nil
+        let token = keepsAddress ? PluginWebAddressStore.token() : Self.makeToken()
+        currentToken = token
         let core = PluginHTTPServerCore(
-            token: Self.makeToken(),
+            token: token,
             idleTimeout: Self.idleTimeout,
             handler: { request in await PluginWebAPI.handle(request) }
         )
         self.core = core
         core.start(
+            preferredPort: Self.preferredPort,
             onState: { [weak self] state in
                 Task { @MainActor [weak self] in
                     guard let self, self.core === core else { return }
@@ -68,7 +81,35 @@ final class PluginWebServer: ObservableObject {
         phase = .stopped
     }
 
-    private static func makeToken() -> String {
+    /// Turning it on keeps the address that is on screen now.
+    func setKeepsAddress(_ keep: Bool) {
+        guard keep != keepsAddress else { return }
+        keepsAddress = keep
+        UserDefaults.standard.set(keep, forKey: Self.keepAddressKey)
+        if keep {
+            PluginWebAddressStore.save(currentToken ?? Self.makeToken())
+        } else {
+            PluginWebAddressStore.remove()
+        }
+    }
+
+    /// A new code in the address (when someone else knows the old one).
+    func makeNewAddress() {
+        if keepsAddress { PluginWebAddressStore.save(Self.makeToken()) }
+        let wasRunning = core != nil
+        stop()
+        guard wasRunning else { return }
+        phase = .starting
+        // Give the old listener a moment to let go of the port.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            // Not when the screen was closed meanwhile (stop() resets the phase).
+            guard let self, self.phase == .starting, self.core == nil else { return }
+            self.start()
+        }
+    }
+
+    nonisolated static func makeToken() -> String {
         let alphabet = Array("abcdefghijkmnpqrstuvwxyz23456789")
         var bytes = [UInt8](repeating: 0, count: 10)
         if SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) != errSecSuccess {
@@ -134,53 +175,78 @@ final class PluginHTTPServerCore: @unchecked Sendable {
         self.handler = handler
     }
 
-    func start(onState: @escaping @Sendable (State) -> Void, onActivity: @escaping @Sendable () -> Void) {
+    func start(
+        preferredPort: UInt16?,
+        onState: @escaping @Sendable (State) -> Void,
+        onActivity: @escaping @Sendable () -> Void
+    ) {
         queue.async {
             self.onState = onState
             self.onActivity = onActivity
             guard let host = Self.localIPv4Address() else {
-                onState(.failed("The Apple TV has no local network address. Is it connected to Wi-Fi or Ethernet?"))
+                self.finish(.failed("The Apple TV has no local network address. Is it connected to Wi-Fi or Ethernet?"))
                 return
             }
-            do {
-                let parameters = NWParameters.tcp
-                parameters.requiredLocalEndpoint = .hostPort(host: NWEndpoint.Host(host), port: .any)
-                let listener = try NWListener(using: parameters)
-                listener.newConnectionLimit = 32
-                self.listener = listener
-                listener.stateUpdateHandler = { [weak self, weak listener] state in
-                    guard let self, !self.stopped else { return }
-                    switch state {
-                    case .ready:
-                        guard let port = listener?.port,
-                              let url = URL(string: "http://\(host):\(port.rawValue)/\(self.token)/") else {
-                            self.finish(.failed("The server could not start."))
-                            return
-                        }
-                        self.resetIdleTimer()
-                        onState(.ready(url))
-                    case .failed(let error):
-                        self.finish(.failed(error.localizedDescription))
-                    default:
-                        break
-                    }
-                }
-                listener.newConnectionHandler = { [weak self] connection in
-                    guard let self, !self.stopped, self.connections.count < 16 else {
-                        connection.cancel()
+            self.listen(host: host, port: preferredPort)
+        }
+    }
+
+    /// Listens on `host`; when `port` is taken, tries again on any free port.
+    private func listen(host: String, port: UInt16?) {
+        do {
+            let parameters = NWParameters.tcp
+            parameters.allowLocalEndpointReuse = true
+            let localPort = port.flatMap { NWEndpoint.Port(rawValue: $0) } ?? .any
+            parameters.requiredLocalEndpoint = .hostPort(host: NWEndpoint.Host(host), port: localPort)
+            let listener = try NWListener(using: parameters)
+            listener.newConnectionLimit = 32
+            self.listener = listener
+            listener.stateUpdateHandler = { [weak self, weak listener] state in
+                guard let self, !self.stopped, let listener, self.listener === listener else { return }
+                switch state {
+                case .ready:
+                    guard let boundPort = listener.port,
+                          let url = URL(string: "http://\(host):\(boundPort.rawValue)/\(self.token)/") else {
+                        self.finish(.failed("The server could not start."))
                         return
                     }
-                    let id = UUID()
-                    self.connections[id] = connection
-                    connection.start(queue: self.queue)
-                    self.receive(connection, id: id, buffered: Data())
-                    self.queue.asyncAfter(deadline: .now() + 120) { [weak self] in self?.close(id) }
+                    self.resetIdleTimer()
+                    self.onState?(.ready(url))
+                case .failed(let error), .waiting(let error):
+                    if port != nil {
+                        listener.cancel()
+                        self.listener = nil
+                        self.listen(host: host, port: nil)
+                    } else if case .failed = state {
+                        self.finish(.failed(error.localizedDescription))
+                    }
+                default:
+                    break
                 }
-                listener.start(queue: self.queue)
-            } catch {
-                self.finish(.failed(error.localizedDescription))
+            }
+            listener.newConnectionHandler = { [weak self] connection in
+                self?.accept(connection)
+            }
+            listener.start(queue: queue)
+        } catch {
+            if port != nil {
+                listen(host: host, port: nil)
+            } else {
+                finish(.failed(error.localizedDescription))
             }
         }
+    }
+
+    private func accept(_ connection: NWConnection) {
+        guard !stopped, connections.count < 16 else {
+            connection.cancel()
+            return
+        }
+        let id = UUID()
+        connections[id] = connection
+        connection.start(queue: queue)
+        receive(connection, id: id, buffered: Data())
+        queue.asyncAfter(deadline: .now() + 120) { [weak self] in self?.close(id) }
     }
 
     func stop() {
@@ -350,5 +416,44 @@ final class PluginHTTPServerCore: @unchecked Sendable {
             if let result { return result }
         }
         return nil
+    }
+}
+
+/// The saved token for "Keep the Same Address", in Keychain on this Apple TV
+/// only (not synced, not per profile).
+enum PluginWebAddressStore {
+    private static let query: [String: Any] = [
+        kSecClass as String: kSecClassGenericPassword,
+        kSecAttrService as String: "com.nuvio.tv.plugins.web",
+        kSecAttrAccount as String: "address-token"
+    ]
+
+    /// The saved token, or a new one that is saved right away.
+    static func token() -> String {
+        var lookup = query
+        lookup[kSecReturnData as String] = kCFBooleanTrue
+        lookup[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        if SecItemCopyMatching(lookup as CFDictionary, &item) == errSecSuccess,
+           let data = item as? Data, let token = String(data: data, encoding: .utf8), token.count >= 8 {
+            return token
+        }
+        let token = PluginWebServer.makeToken()
+        save(token)
+        return token
+    }
+
+    static func save(_ token: String) {
+        let data = Data(token.utf8)
+        var add = query
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        add[kSecValueData as String] = data
+        if SecItemAdd(add as CFDictionary, nil) == errSecDuplicateItem {
+            SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        }
+    }
+
+    static func remove() {
+        SecItemDelete(query as CFDictionary)
     }
 }

@@ -56,6 +56,7 @@ button:disabled { opacity: .5; cursor: default; }
 .hidden { display: none; }
 input.small { width: 72px; }
 select.auto { width: auto; }
+h3.section { margin: 14px 0 4px; font-size: 14px; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -73,7 +74,7 @@ select.auto { width: auto; }
       <button class="primary" id="addRepo">Add</button>
     </div>
     <p class="muted" id="addStatus"></p>
-    <label class="switch"><input type="checkbox" id="pluginsEnabled"> Use plugins for stream searches</label>
+    <label class="switch"><input type="checkbox" id="pluginsEnabled"> Use plugins (streams and subtitles next to your add-ons)</label>
   </section>
 
   <div id="repos"></div>
@@ -166,7 +167,9 @@ select.auto { width: auto; }
   function renderScraper(scraper) {
     var panel = el('div', { class: 'panel hidden' });
     var types = (scraper.types || []).map(function (t) { return t === 'tv' ? 'Series' : t.charAt(0).toUpperCase() + t.slice(1); }).join(', ');
-    var info = [types, (scraper.languages || []).join(', ').toUpperCase(), scraper.description].filter(Boolean).join(' · ');
+    var resources = scraper.resources || ['stream'];
+    var offers = resources.length === 1 && resources[0] === 'stream' ? '' : resources.map(function (r) { return r === 'stream' ? 'Streams' : r.charAt(0).toUpperCase() + r.slice(1); }).join(' + ');
+    var info = [offers, types, (scraper.languages || []).join(', ').toUpperCase(), scraper.description].filter(Boolean).join(' · ');
     var toggle = el('input', { type: 'checkbox', onchange: function (e) {
       api('scrapers/enabled', { id: scraper.id, enabled: e.target.checked }).then(function (r) { apply(r); });
     } });
@@ -302,6 +305,16 @@ select.auto { width: auto; }
             el('b', { text: s.name }), el('span', { class: 'badge', text: s.kind }), el('div', { text: s.description })
           ]));
         });
+        if (r.subtitles && r.subtitles.length) {
+          output.appendChild(el('h3', { text: 'Subtitles', class: 'section' }));
+          r.subtitles.forEach(function (sub) {
+            var host = '';
+            try { host = new URL(sub.url).host; } catch (e) { host = sub.url; }
+            output.appendChild(el('div', { class: 'stream' }, [
+              el('b', { text: sub.label || sub.language }), el('span', { class: 'badge', text: sub.language }), el('div', { text: host })
+            ]));
+          });
+        }
         if (r.log && r.log.length) output.appendChild(logView(r.log));
       });
     }, 'primary');

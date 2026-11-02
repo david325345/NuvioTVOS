@@ -13191,7 +13191,7 @@ private struct PluginsSettingsSection: View {
                     title: L10n.string("tvos_settings_plugins_enabled", fallback: "Use Plugins"),
                     subtitle: L10n.string(
                         "tvos_settings_plugins_enabled_subtitle",
-                        fallback: "Ask the enabled providers for streams next to your add-ons"
+                        fallback: "Ask the enabled providers for streams and subtitles next to your add-ons"
                     ),
                     isOn: Binding(
                         get: { store.state.pluginsEnabled },
@@ -13380,6 +13380,9 @@ private struct PluginScraperSettingsRow: View {
 
     private var details: String {
         var parts: [String] = []
+        if scraper.provides(PluginResources.subtitles) {
+            parts.append(scraper.provides(PluginResources.stream) ? "Streams + Subtitles" : "Subtitles")
+        }
         let types = scraper.supportedTypes.map { $0 == "tv" ? "Series" : $0.capitalized }
         if !types.isEmpty { parts.append(types.joined(separator: ", ")) }
         if !scraper.contentLanguage.isEmpty { parts.append(scraper.contentLanguage.joined(separator: ", ").uppercased()) }
@@ -13716,7 +13719,7 @@ private struct PluginTestSheet: View {
             title: L10n.format("tvos_settings_plugin_test_title", fallback: "Test %@", scraper.name),
             subtitle: L10n.string(
                 "tvos_settings_plugin_test_subtitle",
-                fallback: "One stream search for a sample title, with the provider's current settings"
+                fallback: "One search for a sample title (streams and/or subtitles, whatever the provider offers), with its current settings"
             )
         ) {
             VStack(alignment: .leading, spacing: 14) {
@@ -13736,10 +13739,14 @@ private struct PluginTestSheet: View {
                 }
 
                 if let report {
-                    SettingsInfoRow(title: report.sample.label, value: report.summary, isDiagnostic: report.error != nil)
+                    SettingsInfoRow(title: report.sample.label, value: report.summary, isDiagnostic: report.failed)
 
                     ForEach(Array(report.streams.prefix(30).enumerated()), id: \.offset) { _, stream in
                         PluginTestStreamRow(stream: stream)
+                    }
+
+                    ForEach(Array(report.subtitles.prefix(30).enumerated()), id: \.offset) { _, subtitle in
+                        PluginTestSubtitleRow(subtitle: subtitle)
                     }
 
                     ForEach(report.log) { entry in
@@ -13801,6 +13808,40 @@ private struct PluginTestStreamRow: View {
     }
 }
 
+private struct PluginTestSubtitleRow: View {
+    let subtitle: NuvioSubtitle
+
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 14) {
+            Text(subtitle.language.uppercased())
+                .font(.system(size: 15, weight: .bold, design: .monospaced))
+                .foregroundColor(.white.opacity(0.7))
+                .frame(width: 70, alignment: .leading)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(subtitle.label ?? subtitle.language)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundColor(.white)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(URL(string: subtitle.url)?.host ?? subtitle.url)
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundColor(.white.opacity(0.5))
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.white.opacity(isFocused ? 0.16 : 0.05))
+        )
+        .focusable(true)
+        .focused($isFocused)
+    }
+}
+
 /// "Set Up from a Computer": runs `PluginWebServer` while open and shows its
 /// address as a QR code and as text.
 private struct PluginWebSetupSheet: View {
@@ -13845,6 +13886,33 @@ private struct PluginWebSetupSheet: View {
                         .font(.system(size: 17, weight: .medium))
                         .foregroundColor(.white.opacity(0.55))
                         .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                SettingsToggleRow(
+                    title: L10n.string("tvos_settings_plugins_web_setup_keep", fallback: "Keep the Same Address"),
+                    subtitle: L10n.string(
+                        "tvos_settings_plugins_web_setup_keep_subtitle",
+                        fallback: "The address stays the same after restarts, so you can bookmark it. Give the Apple TV a fixed IP address in your router so that part doesn't change either."
+                    ),
+                    isOn: Binding(
+                        get: { server.keepsAddress },
+                        set: { server.setKeepsAddress($0) }
+                    ),
+                    accentColor: accentColor
+                )
+
+                if server.keepsAddress {
+                    SettingsActionRow(
+                        title: L10n.string("tvos_settings_plugins_web_setup_new_address", fallback: "New Address"),
+                        subtitle: L10n.string(
+                            "tvos_settings_plugins_web_setup_new_address_subtitle",
+                            fallback: "Make a new code in the address, for example when someone else knows this one"
+                        ),
+                        value: L10n.string("tvos_settings_plugins_web_setup_new_address_action", fallback: "Change"),
+                        accentColor: accentColor
+                    ) {
+                        server.makeNewAddress()
                     }
                 }
 

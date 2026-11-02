@@ -128,7 +128,7 @@ enum PluginWebAPI {
             }
             let report = await PluginTester.run(scraper, sample: sample)
             return .json([
-                "ok": report.error == nil,
+                "ok": !report.failed,
                 "summary": report.summary,
                 "sample": report.sample.label,
                 "error": report.error.map { $0 as Any } ?? NSNull(),
@@ -137,6 +137,13 @@ enum PluginWebAPI {
                         "name": stream.name ?? "",
                         "description": stream.description ?? "",
                         "kind": streamKind(stream)
+                    ]
+                },
+                "subtitles": report.subtitles.prefix(100).map { subtitle in
+                    [
+                        "language": subtitle.language,
+                        "label": subtitle.label ?? "",
+                        "url": subtitle.url
                     ]
                 },
                 "log": report.log.map { ["level": $0.level.rawValue, "message": $0.message] }
@@ -175,6 +182,7 @@ enum PluginWebAPI {
                             "enabled": scraper.enabled,
                             "manifestEnabled": scraper.manifestEnabled,
                             "hasSettings": scraper.hasSettings,
+                            "resources": scraper.resources ?? [PluginResources.stream],
                             "logo": scraper.logo ?? ""
                         ]
                     }

@@ -515,6 +515,101 @@ final class PluginRuntimeTests: XCTestCase {
         XCTAssertEqual(missing.status, 404)
     }
 
+    // MARK: - Subtitles (Apple TV extension)
+
+    func testManifestResourcesAndIdPrefixes() throws {
+        let json = """
+        {
+          "name": "Subs", "version": "1",
+          "scrapers": [
+            { "id": "plain", "filename": "a.js" },
+            { "id": "subs", "filename": "b.js", "resources": ["Subtitles", "catalog"], "idPrefixes": ["tt", " "] },
+            { "id": "both", "filename": "c.js", "resources": [{ "name": "stream" }, { "name": "subtitles" }] },
+            { "id": "odd", "filename": "d.js", "resources": ["meta"] }
+          ]
+        }
+        """
+        let scrapers = try PluginManifest.parse(Data(json.utf8)).scrapers
+        XCTAssertEqual(scrapers.map(\.resources), [["stream"], ["subtitles"], ["stream", "subtitles"], ["stream"]])
+        XCTAssertEqual(scrapers[1].idPrefixes, ["tt"])
+        XCTAssertEqual(scrapers[0].idPrefixes, [])
+
+        var record = PluginScraperRecord(
+            id: "r:subs", repositoryURL: "r", scraperID: "subs", name: "Subs", description: "", version: "1",
+            filename: "b.js", supportedTypes: ["movie", "tv"], enabled: true, manifestEnabled: true,
+            hasSettings: false, logo: nil, contentLanguage: [], formats: nil, declaresSeriesType: nil,
+            resources: ["subtitles"], idPrefixes: ["tt"]
+        )
+        XCTAssertTrue(record.provides("subtitles"))
+        XCTAssertFalse(record.provides("stream"))
+        XCTAssertTrue(record.accepts(id: "tt0903747:1:1"))
+        XCTAssertFalse(record.accepts(id: "kitsu:1"))
+        record.resources = nil
+        record.idPrefixes = nil
+        XCTAssertTrue(record.provides("stream"), "records saved before resources existed are stream providers")
+        XCTAssertTrue(record.accepts(id: "kitsu:1"))
+    }
+
+    func testPluginSubtitleResultsBecomeSubtitles() {
+        let list = PluginSubtitleDiscovery.subtitles(from: [
+            ["url": "https://s.example.com/a.srt", "lang": "cze", "label": "Release CZ"],
+            ["url": "https://s.example.com/a.srt", "lang": "cze"],
+            ["url": "https://s.example.com/b.srt", "language": "slo", "title": "SK"],
+            ["url": "https://s.example.com/c.srt", "label": "[object Object]"],
+            ["url": "ftp://s.example.com/d.srt", "lang": "eng"],
+            ["lang": "eng"],
+            "nonsense"
+        ] as [Any], providerName: "Subs")
+        XCTAssertEqual(list.map(\.url), ["https://s.example.com/a.srt", "https://s.example.com/b.srt", "https://s.example.com/c.srt"])
+        XCTAssertEqual(list.map(\.language), ["cze", "slo", "Unknown"])
+        XCTAssertEqual(list.map(\.label), ["Release CZ", "SK", nil])
+        XCTAssertEqual(list.first?.source, "Subs")
+
+        let wrapped = PluginSubtitleDiscovery.subtitles(
+            from: ["subtitles": [["url": "https://s.example.com/e.vtt", "lang": "eng"]]] as [String: Any],
+            providerName: "Subs"
+        )
+        XCTAssertEqual(wrapped.map(\.url), ["https://s.example.com/e.vtt"])
+        XCTAssertTrue(PluginSubtitleDiscovery.subtitles(from: "nope", providerName: "Subs").isEmpty)
+    }
+
+    func testRuntimeCallsGetSubtitlesWithContext() async throws {
+        let query = PluginSubtitleDiscovery.Query(
+            type: "tv", videoID: "tt0903747:1:2", videoHash: " ", videoSize: 0, filename: "Breaking.Bad.S01E02.mkv"
+        )
+        XCTAssertEqual(query.type, "series")
+        XCTAssertNil(query.videoHash)
+        XCTAssertNil(query.videoSize)
+        let request = PluginStreamDiscovery.request(type: query.type, videoID: query.videoID, resolvedTMDBID: "1396")
+        let context = PluginSubtitleDiscovery.context(query: query, request: request)
+        XCTAssertEqual(context["type"] as? String, "series")
+        XCTAssertEqual(context["imdbId"] as? String, "tt0903747")
+        XCTAssertEqual(context["tmdbId"] as? String, "1396")
+        XCTAssertEqual(context["season"] as? Int, 1)
+        XCTAssertEqual(context["episode"] as? Int, 2)
+        XCTAssertEqual(context["filename"] as? String, "Breaking.Bad.S01E02.mkv")
+
+        let code = """
+        function getSubtitles(type, id, context) {
+          return Promise.resolve({ subtitles: [
+            { url: 'https://s.example.com/' + id + '.srt', lang: 'cze', label: type + ' ' + context.season + 'x' + context.episode + ' ' + context.filename }
+          ] });
+        }
+        module.exports = { getSubtitles: getSubtitles };
+        """
+        let result = try await PluginRuntime.call(
+            code: code,
+            scraperId: "repo:subs",
+            settings: [:],
+            function: "getSubtitles",
+            arguments: [query.type, query.videoID, context],
+            timeout: 10
+        )
+        let subtitles = PluginSubtitleDiscovery.subtitles(from: result, providerName: "Subs")
+        XCTAssertEqual(subtitles.first?.url, "https://s.example.com/tt0903747:1:2.srt")
+        XCTAssertEqual(subtitles.first?.label, "series 1x2 Breaking.Bad.S01E02.mkv")
+    }
+
     func testTestSamplesBuildVideoIDs() {
         XCTAssertEqual(PluginTester.Sample.movie.videoID, "tt0133093")
         XCTAssertEqual(PluginTester.Sample.episode.videoID, "tt0903747:1:1")

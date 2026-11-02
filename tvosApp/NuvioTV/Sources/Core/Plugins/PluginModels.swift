@@ -88,10 +88,22 @@ struct PluginManifestScraper: Decodable {
     let supportedPlatforms: [String]
     let disabledPlatforms: [String]
     let formats: [String]?
+    /// Apple TV extension: what the provider answers, Stremio-style —
+    /// `stream` (`getStreams`, the default when missing) and `subtitles`
+    /// (`getSubtitles`). Android ignores the key.
+    let resources: [String]
+    /// Apple TV extension: content ids the provider handles (`tt`, `kitsu:`…);
+    /// empty means all.
+    let idPrefixes: [String]
 
     enum CodingKeys: String, CodingKey {
         case id, name, description, version, filename, supportedTypes, enabled, hasSettings, logo
         case contentLanguage, supportedPlatforms, disabledPlatforms, formats, supportedFormats
+        case resources, idPrefixes
+    }
+
+    private struct NamedResource: Decodable {
+        let name: String
     }
 
     init(from decoder: Decoder) throws {
@@ -121,6 +133,13 @@ struct PluginManifestScraper: Decodable {
         disabledPlatforms = ((try? container.decodeIfPresent([String].self, forKey: .disabledPlatforms)) ?? nil) ?? []
         formats = ((try? container.decodeIfPresent([String].self, forKey: .formats)) ?? nil)
             ?? ((try? container.decodeIfPresent([String].self, forKey: .supportedFormats)) ?? nil)
+        let resourceNames = ((try? container.decodeIfPresent([String].self, forKey: .resources)) ?? nil)
+            ?? ((try? container.decodeIfPresent([NamedResource].self, forKey: .resources)) ?? nil)?.map(\.name)
+            ?? []
+        resources = PluginResources.normalized(resourceNames)
+        idPrefixes = (((try? container.decodeIfPresent([String].self, forKey: .idPrefixes)) ?? nil) ?? [])
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
     }
 
     /// Apple TV runs a scraper unless the manifest disables `tvos`, or limits
@@ -132,6 +151,26 @@ struct PluginManifestScraper: Decodable {
         let supported = Set(supportedPlatforms.map { $0.lowercased() })
         guard !supported.isEmpty else { return true }
         return supported.contains(PluginTypes.platform) || supported.contains("ios")
+    }
+}
+
+enum PluginResources {
+    static let stream = "stream"
+    static let subtitles = "subtitles"
+
+    /// Lowercased, known names only, `stream` when nothing is listed.
+    static func normalized(_ names: [String]) -> [String] {
+        var result: [String] = []
+        for name in names {
+            let value: String
+            switch name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "stream", "streams": value = stream
+            case "subtitles", "subtitle", "subs": value = subtitles
+            default: continue
+            }
+            if !result.contains(value) { result.append(value) }
+        }
+        return result.isEmpty ? [stream] : result
     }
 }
 
@@ -187,9 +226,24 @@ struct PluginScraperRecord: Codable, Identifiable, Equatable {
     var formats: [String]?
     /// See ``PluginManifestScraper/declaresSeries``.
     var declaresSeriesType: Bool?
+    /// See ``PluginManifestScraper/resources``; nil (saved before Apple TV
+    /// read the key) means `stream`.
+    var resources: [String]?
+    /// See ``PluginManifestScraper/idPrefixes``.
+    var idPrefixes: [String]?
 
     func supports(type: String) -> Bool {
         supportedTypes.contains(PluginTypes.normalized(type))
+    }
+
+    func provides(_ resource: String) -> Bool {
+        (resources ?? [PluginResources.stream]).contains(resource)
+    }
+
+    /// Whether the provider handles this content id (its `idPrefixes`).
+    func accepts(id: String) -> Bool {
+        guard let idPrefixes, !idPrefixes.isEmpty else { return true }
+        return idPrefixes.contains { id.hasPrefix($0) }
     }
 
     static func makeID(repositoryURL: String, scraperID: String) -> String {
