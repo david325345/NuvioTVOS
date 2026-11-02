@@ -6271,7 +6271,8 @@ class PlayerViewModel: ObservableObject {
                   subtitleAutoSyncStates[subtitle.url] == nil else { return }
         }
         guard let sourceTask = subtitleAutoSyncSource(prefetch: false) else { return }
-        let useCache = !force || subtitleAutoSyncStates[subtitle.url] == nil
+        // Sync Now always checks again (a remembered answer has no details to show).
+        let useCache = !force
         subtitleAutoSyncTasks[subtitle.url]?.cancel()
         subtitleAutoSyncStates[subtitle.url] = .checking
         let generation = sessionCoordinator.loadGeneration

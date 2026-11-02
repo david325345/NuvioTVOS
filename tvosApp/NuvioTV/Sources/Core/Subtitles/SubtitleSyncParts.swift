@@ -69,6 +69,8 @@ enum SubtitleSyncRemark: Equatable, Sendable {
     case fineTuned(range: ClosedRange<Double>, delta: Double, startsBefore: Int, startsAfter: Int, lines: Int)
     /// How much of the lines' time the reference covers, and what chance alone gives.
     case score(match: Double, chance: Double)
+    /// The share of line starts on a reference start, and what chance alone gives.
+    case startScore(share: Double, chance: Double)
     case ambiguous(range: ClosedRange<Double>, lines: Int, low: Double, high: Double, kept: Double)
     case sparseReference(range: ClosedRange<Double>, lines: Int, references: Int, kept: Double)
     case noReference(range: ClosedRange<Double>, lines: Int, kept: Double)
@@ -91,7 +93,7 @@ enum SubtitleSyncRemark: Equatable, Sendable {
     var isWarning: Bool {
         switch self {
         case .ambiguous, .sparseReference, .noReference, .beforeStart: return true
-        case .songs, .drift, .part, .fineTuned, .score: return false
+        case .songs, .drift, .part, .fineTuned, .score, .startScore: return false
         }
     }
 
@@ -119,6 +121,8 @@ enum SubtitleSyncRemark: Equatable, Sendable {
                                Self.range(range), Self.shift(delta, digits: 2), before, after, lines)
         case .score(let match, let chance):
             return L10n.format("subtitle_autosync_note_score", fallback: "match %@ (by chance ~%@)", Self.percent(match), Self.percent(chance))
+        case .startScore(let share, let chance):
+            return "starts on the reference \(Self.percent(share)) (by chance ~\(Self.percent(chance)))"
         case .ambiguous(let range, let lines, let low, let high, let kept):
             return L10n.format("subtitle_autosync_warn_ambiguous", fallback: "%@ (%d lines): the match is flat %@ … %@, kept %@",
                                Self.range(range), lines, Self.shift(low), Self.shift(high), Self.shift(kept))

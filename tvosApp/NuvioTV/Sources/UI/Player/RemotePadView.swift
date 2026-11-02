@@ -22,7 +22,8 @@ struct RemotePadCanvas: View {
     private static func draw(_ frame: GesturePadFrame, zones: RemoteGestureTuning?, in context: inout GraphicsContext, size: CGSize) {
         let diameter = min(size.width, size.height / aspect)
         let center = CGPoint(x: size.width / 2, y: diameter / 2)
-        let radius = diameter * 0.46
+        // Room around the pad for the ring of a long press (it was cut off by the card).
+        let radius = diameter * 0.42
         let inner = radius * 0.62
         let lineWidth = max(diameter / 160, 1.2)
         func point(_ p: PadPoint) -> CGPoint {
@@ -114,7 +115,7 @@ struct RemotePadCanvas: View {
 
         // A long press or a held finger filling up.
         if let progress = frame.progress, progress > 0 {
-            let ring = arc(radius + lineWidth * 5, from: -.pi / 2, to: -.pi / 2 + progress * 2 * .pi)
+            let ring = arc(radius + lineWidth * 3.5, from: -.pi / 2, to: -.pi / 2 + progress * 2 * .pi)
             context.stroke(ring, with: .color(hot), style: StrokeStyle(lineWidth: lineWidth * 4, lineCap: .round))
         }
 

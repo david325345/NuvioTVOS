@@ -179,6 +179,13 @@ final class SubtitleAutoSyncTests: XCTestCase {
         ])
     }
 
+    func testTheChanceOfALineStartOnAReferenceStart() {
+        // Windows of ±0.5 s: 9.5…10.9 (two that overlap) and 19.5…20.5, of 100 s.
+        XCTAssertEqual(SubtitleSyncAligner.startWindowShare([10, 10.4, 20], from: 0, to: 100), 0.024, accuracy: 0.0001)
+        XCTAssertEqual(SubtitleSyncAligner.startWindowShare([0.2], from: 0, to: 10), 0.07, accuracy: 0.0001, "cut at the span's edge")
+        XCTAssertEqual(SubtitleSyncAligner.startWindowShare([], from: 0, to: 10), 0)
+    }
+
     // MARK: Lining up
 
     func testAConstantShiftIsFoundAndMeasured() {
