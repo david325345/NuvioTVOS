@@ -317,6 +317,11 @@ class PlayerViewModel: ObservableObject {
     private var subtitleAutoSyncSourceTask: Task<SubtitleAutoSyncSource?, Never>?
     private var subtitleAutoSyncPlayback: (url: URL, headers: [String: String], fileKey: String, isLive: Bool)?
     private var subtitleAutoSyncTasks: [String: Task<Void, Never>] = [:]
+    /// Sync by Audio (fork test build): what it is doing, the run, and the audio heard in this
+    /// playback (kept for a restart).
+    @Published var audioSyncStatus: AudioSyncStatus?
+    var audioSyncRun: AudioSyncRun?
+    var audioSyncHeard: (generation: UInt64, listener: AudioSyncListener)?
     /// True while installed subtitle add-ons are still returning results.
     @Published var isLoadingExternalSubtitles: Bool = false
     /// Current mpv `sub-delay`, in milliseconds. Per-session, not persisted.
@@ -4529,6 +4534,7 @@ class PlayerViewModel: ObservableObject {
         detachWatchPartyPlayerBridge()
         cancelPendingAdvanceResolution()
         didShutdown = true
+        resetAudioSync()
         PlaybackTimelineRecorder.record(.playbackStopRequested, engine: activeEngineKind)
         pollTimer?.invalidate()
         pollTimer = nil
@@ -6237,6 +6243,7 @@ class PlayerViewModel: ObservableObject {
         subtitleAutoSyncReports = [:]
         subtitleAutoSyncOriginals = []
         subtitleAutoSyncCopies = [:]
+        resetAudioSync()
         SeekPreviewDiagnostics.shared.updateSync("")
         guard !isTrailerPlaybackSession else {
             subtitleAutoSyncPlayback = nil
