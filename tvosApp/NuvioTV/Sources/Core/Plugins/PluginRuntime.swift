@@ -174,7 +174,7 @@ final class PluginExecution: @unchecked Sendable {
         context.name = "Nuvio plugin"
         context.exceptionHandler = { [weak self] _, exception in
             guard let self else { return }
-            let message = Self.describe(exception)
+            let message = PluginExecution.describe(exception)
             self.pendingException = message
             PluginLogStore.shared.append(self.scraperId, level: .error, message: message)
         }
@@ -258,8 +258,8 @@ final class PluginExecution: @unchecked Sendable {
 
         let log: @convention(block) (JSValue, JSValue) -> Void = { [weak self] level, message in
             guard let self else { return }
-            let level = PluginLogLevel(rawValue: level.toString() ?? "") ?? .log
-            PluginLogStore.shared.append(self.scraperId, level: level, message: message.toString() ?? "")
+            let logLevel = PluginLogLevel(rawValue: level.toString() ?? "") ?? .log
+            PluginLogStore.shared.append(self.scraperId, level: logLevel, message: message.toString() ?? "")
         }
         let setTimer: @convention(block) (JSValue, JSValue) -> Void = { [weak self] id, milliseconds in
             self?.setTimer(Int(id.toInt32()), milliseconds: max(0, milliseconds.toDouble()))
@@ -275,12 +275,12 @@ final class PluginExecution: @unchecked Sendable {
         }
         let digest: @convention(block) (JSValue, JSValue) -> String = { algorithm, base64 in
             let data = Data(base64Encoded: base64.toString() ?? "") ?? Data()
-            return Self.digest(algorithm.toString() ?? "", data)?.base64EncodedString() ?? ""
+            return PluginExecution.digest(algorithm.toString() ?? "", data)?.base64EncodedString() ?? ""
         }
         let hmac: @convention(block) (JSValue, JSValue, JSValue) -> String = { algorithm, key, base64 in
             let keyData = Data(base64Encoded: key.toString() ?? "") ?? Data()
             let data = Data(base64Encoded: base64.toString() ?? "") ?? Data()
-            return Self.hmac(algorithm.toString() ?? "", key: keyData, data: data)?.base64EncodedString() ?? ""
+            return PluginExecution.hmac(algorithm.toString() ?? "", key: keyData, data: data)?.base64EncodedString() ?? ""
         }
         let randomBytes: @convention(block) (JSValue) -> String = { count in
             let length = min(max(Int(count.toInt32()), 0), 65_536)
@@ -408,7 +408,7 @@ final class PluginExecution: @unchecked Sendable {
             self.queue.async {
                 // Gone when the script aborted it or the call already ended.
                 guard self.tasks.removeValue(forKey: id) != nil else { return }
-                self.deliverFetch(id, Self.fetchPayload(data: data, response: response, error: error, requestedURL: url))
+                self.deliverFetch(id, PluginExecution.fetchPayload(data: data, response: response, error: error, requestedURL: url))
             }
         }
         tasks[id] = task
