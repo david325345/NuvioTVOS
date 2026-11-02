@@ -1857,6 +1857,8 @@ struct PlayerSettingsPanel: View {
         case gestureClear(String)
         case gestureGallery
         case gestureSensitivity(String)
+        case gestureNewCustom
+        case gestureCustomDelete(String)
     }
 
     /// Swatches shown in the Text Color row (white, gray, yellow, blue, red, green).
@@ -1869,6 +1871,7 @@ struct PlayerSettingsPanel: View {
     @State private var recordingGestureAction: PlayerGestureAction?
     @State private var gestureNote: String?
     @State private var isShowingGestureGallery = false
+    @State private var isMakingCustomGesture = false
     @State private var gestureSensitivity = PlayerGestureSettings.sensitivity()
     @State private var selectedLanguage: String?
     @State private var style = SubtitleStyle.current
@@ -1915,7 +1918,7 @@ struct PlayerSettingsPanel: View {
             .padding(.bottom, 44)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             // Recording or the overview: nothing behind can take the focus (a swipe moved it there).
-            .disabled(recordingGestureAction != nil || isShowingGestureGallery)
+            .disabled(recordingGestureAction != nil || isShowingGestureGallery || isMakingCustomGesture)
 
             if let action = recordingGestureAction {
                 PlayerGestureRecorderView(
@@ -1926,7 +1929,30 @@ struct PlayerSettingsPanel: View {
                         viewModel.gesturePadObservers["recorder"] = observer
                     },
                     onSave: { gesture in finishRecording(gesture, for: action) },
-                    onCancel: { endRecording(action) }
+                    onCancel: { endRecording(action) },
+                    customShapes: viewModel.customGestureShapes
+                )
+            }
+
+            if isMakingCustomGesture {
+                PlayerCustomGestureMakerView(
+                    existing: viewModel.customGestureShapes,
+                    tuning: gestureSensitivity.tuning,
+                    setPadObserver: { observer in
+                        viewModel.gesturePadObservers["recorder"] = observer
+                    },
+                    onSave: { shape in
+                        viewModel.setCustomGestureShapes(viewModel.customGestureShapes + [shape])
+                        isMakingCustomGesture = false
+                        gestureNote = "\(shape.name) saved: pick an action on the right and draw it"
+                        DispatchQueue.main.async {
+                            focus = .gestureAction(PlayerGestureAction.allCases[0].rawValue)
+                        }
+                    },
+                    onCancel: {
+                        isMakingCustomGesture = false
+                        DispatchQueue.main.async { focus = .gestureNewCustom }
+                    }
                 )
             }
 
@@ -3054,6 +3080,15 @@ struct PlayerSettingsPanel: View {
                             isShowingGestureGallery = true
                         }
 
+                        simpleRow(title: "New custom gesture", isSelected: false, focusKey: .gestureNewCustom) {
+                            gestureNote = nil
+                            isMakingCustomGesture = true
+                        }
+
+                        ForEach(viewModel.customGestureShapes) { shape in
+                            customShapeRow(shape)
+                        }
+
                         simpleRow(title: "Reset to defaults", isSelected: false, focusKey: .gestureReset) {
                             gestureBindings = .defaults
                             PlayerGestureSettings.save(.defaults)
@@ -3105,6 +3140,51 @@ struct PlayerSettingsPanel: View {
             .frame(width: 900, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// A shape of one's own: what it does, and a button that deletes it (and what it did).
+    private func customShapeRow(_ shape: CustomGestureShape) -> some View {
+        let key = Focus.gestureCustomDelete(shape.id)
+        let isFocused = focus == key
+        let meaning = PlayerGestureMeaning(of: .custom(shape.id), in: gestureBindings)
+        return Button {
+            var shapes = viewModel.customGestureShapes
+            shapes.removeAll { $0.id == shape.id }
+            viewModel.setCustomGestureShapes(shapes)
+            gestureBindings.unbind(gesture: .custom(shape.id))
+            PlayerGestureSettings.save(gestureBindings)
+            gestureNote = "\(shape.name) deleted"
+            DispatchQueue.main.async { focus = .gestureNewCustom }
+        } label: {
+            HStack(spacing: 12) {
+                if let drawing = shape.drawings.first {
+                    RemotePadCanvas(frame: GestureAnimation.still(drawing))
+                        .frame(width: 40, height: 40 * RemotePadCanvas.aspect)
+                }
+                Text(shape.name)
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundColor(isFocused ? .black : .white)
+                    .lineLimit(1)
+                Text(meaning.title)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundColor(isFocused ? .black.opacity(0.6) : .white.opacity(0.5))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                Spacer(minLength: 8)
+                Image(systemName: "trash")
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundColor(isFocused ? .black : .white.opacity(0.6))
+            }
+            .padding(.horizontal, 22)
+            .frame(height: 64)
+            .background(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(isFocused ? Color.white : Color.white.opacity(0.07))
+            )
+        }
+        .buttonStyle(PosterCardButtonStyle())
+        .focused($focus, equals: key)
+        .focusEffectDisabledIfAvailable()
     }
 
     /// A press moves to the next step; it applies at once (and the recorder shows the zones).

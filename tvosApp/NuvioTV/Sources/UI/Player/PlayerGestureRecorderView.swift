@@ -10,6 +10,8 @@ struct PlayerGestureRecorderView: View {
     let setPadObserver: (((Double, Double) -> Void)?) -> Void
     let onSave: (RemoteGesture) -> Void
     let onCancel: () -> Void
+    /// Shapes of one's own, so one can be recorded for the action.
+    var customShapes: [CustomGestureShape] = []
 
     @State private var session = GestureRecordingSession()
     @State private var trace = GestureLiveTrace()
@@ -31,7 +33,8 @@ struct PlayerGestureRecorderView: View {
                 setPadObserver: setPadObserver,
                 onInput: { trace.handle($0) },
                 onTouchSummary: { trace.handle($0) },
-                tuning: tuning
+                tuning: tuning,
+                customShapes: customShapes
             )
             .ignoresSafeArea()
 
@@ -180,7 +183,7 @@ struct PlayerGestureRecorderView: View {
                 .font(.system(size: 20, weight: .bold))
                 .foregroundColor(.white.opacity(0.45))
             HStack(alignment: .top, spacing: 26) {
-                ForEach(Array(GestureFamily.allCases.enumerated()), id: \.element) { index, family in
+                ForEach(Array(GestureFamily.shown.enumerated()), id: \.element) { index, family in
                     VStack(spacing: 6) {
                         AnimatedGestureFamilyPad(family: family, offset: Double(index) * 0.37, showsVariant: false)
                             .frame(width: 104, height: 104 * RemotePadCanvas.aspect)

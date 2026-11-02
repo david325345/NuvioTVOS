@@ -11,6 +11,7 @@ struct PlayerGestureObserver: UIViewRepresentable {
     let onGesture: (RemoteGesture) -> Void
     let setPadObserver: (((Double, Double) -> Void)?) -> Void
     var tuning = RemoteGestureTuning()
+    var customShapes: [CustomGestureShape] = []
 
     func makeUIView(context: Context) -> GestureObserverHostView {
         let view = GestureObserverHostView()
@@ -43,6 +44,9 @@ final class GestureObserverHostView: UIView {
         recognizer.waitsForDouble = observer.waitsForDouble
         if recognizer.tuning != observer.tuning {
             recognizer.tuning = observer.tuning
+        }
+        if recognizer.customShapes != observer.customShapes {
+            recognizer.customShapes = observer.customShapes
         }
         onGesture = observer.onGesture
         detachPadObserver = observer.setPadObserver

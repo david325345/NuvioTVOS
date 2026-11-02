@@ -65,6 +65,8 @@ final class RemoteGestureRecognizer {
     /// Whether a single click or tap has to wait `doubleWindow` for a second
     /// one: true when its double is in use. Otherwise singles come at once.
     var waitsForDouble: (RemoteGesture) -> Bool
+    /// Shapes of one's own, looked for in every touch (fork test build).
+    var customShapes: [CustomGestureShape] = []
 
     // Touch
     private struct Sample {
@@ -94,6 +96,7 @@ final class RemoteGestureRecognizer {
         case tap(PadSide)
         case hold(PadSide)
         case circle(clockwise: Bool)
+        case custom(String)
     }
     private var pendingTouch: (kind: TouchKind, start: TimeInterval, end: TimeInterval)?
 
@@ -221,6 +224,10 @@ final class RemoteGestureRecognizer {
 
     private func classify(duration: TimeInterval, samples: [Sample]) -> TouchKind? {
         let points = samples.map(\.point)
+        // A shape of one's own first: it is checked not to look like a swipe or a circle.
+        if let id = CustomGestureMatcher.match(points, shapes: customShapes, within: tuning.customShapeDistance) {
+            return .custom(id)
+        }
         if let clockwise = circle(points) { return .circle(clockwise: clockwise) }
         if duration <= tuning.swipeBackMaxDuration, let direction = thereAndBack(samples) {
             return .swipeBack(direction)
@@ -346,6 +353,8 @@ final class RemoteGestureRecognizer {
             return [.gesture(.circle(clockwise: clockwise), inputTime: end, decidedTime: time)]
         case let .hold(side):
             return [.gesture(.hold(side), inputTime: end, decidedTime: time)]
+        case let .custom(id):
+            return [.gesture(.custom(id), inputTime: end, decidedTime: time)]
         case let .tap(side):
             return tap(side, start: start, end: end, at: time)
         }

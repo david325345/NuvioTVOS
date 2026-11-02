@@ -67,6 +67,11 @@ struct PlayerGestureBindings: Codable, Equatable, Sendable {
     mutating func unbind(_ action: PlayerGestureAction) {
         bindings.removeAll { $0.action == action }
     }
+
+    /// The gesture is gone (a deleted custom shape): whatever it did is unbound.
+    mutating func unbind(gesture: RemoteGesture) {
+        bindings.removeAll { $0.gesture == gesture }
+    }
 }
 
 /// The switch and the bindings, per profile.
@@ -115,7 +120,7 @@ enum PlayerGestureSettings {
 /// The few recognizer settings the Gestures tab offers for trying out (Gesture Lab had them all),
 /// each in a handful of steps.
 enum PlayerGestureSensitivityKnob: String, CaseIterable, Codable, Identifiable, Sendable {
-    case doubleWindow, longPress, swipeLength, circle, centerSize
+    case doubleWindow, longPress, swipeLength, circle, centerSize, customShapes
 
     var id: String { rawValue }
 
@@ -126,6 +131,7 @@ enum PlayerGestureSensitivityKnob: String, CaseIterable, Codable, Identifiable, 
         case .swipeLength: return "Swipe"
         case .circle: return "Circle"
         case .centerSize: return "Center area"
+        case .customShapes: return "Custom shapes"
         }
     }
 
@@ -136,6 +142,7 @@ enum PlayerGestureSensitivityKnob: String, CaseIterable, Codable, Identifiable, 
         case .swipeLength: return ["sensitive", "normal", "firm"]
         case .circle: return ["¾ turn", "normal 300°", "full turn"]
         case .centerSize: return ["small", "normal", "large"]
+        case .customShapes: return ["strict", "normal", "loose"]
         }
     }
 
@@ -161,6 +168,8 @@ enum PlayerGestureSensitivityKnob: String, CaseIterable, Codable, Identifiable, 
             tuning.circleDegrees = [270, 300, 350][step]
         case .centerSize:
             tuning.sideThreshold = [0.15, 0.20, 0.30][step]
+        case .customShapes:
+            tuning.customShapeDistance = [0.10, 0.15, 0.21][step]
         }
     }
 }

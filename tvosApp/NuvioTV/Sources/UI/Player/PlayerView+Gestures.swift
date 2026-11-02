@@ -55,7 +55,8 @@ extension PlayerView {
             setPadObserver: { observer in
                 viewModel.gesturePadObservers["player"] = observer
             },
-            tuning: viewModel.gestureTuning
+            tuning: viewModel.gestureTuning,
+            customShapes: viewModel.customGestureShapes
         )
         .ignoresSafeArea()
         .accessibilityHidden(true)
@@ -105,7 +106,8 @@ extension PlayerView {
             setPadObserver: { observer in
                 viewModel.gesturePadObservers["passive"] = observer
             },
-            tuning: viewModel.gestureTuning
+            tuning: viewModel.gestureTuning,
+            customShapes: viewModel.customGestureShapes
         )
         .allowsHitTesting(false)
         .frame(width: 0, height: 0)

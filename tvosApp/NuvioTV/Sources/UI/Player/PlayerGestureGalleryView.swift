@@ -27,8 +27,8 @@ struct PlayerGestureGalleryView: View {
                 }
 
                 VStack(spacing: 18) {
-                    row(Array(GestureFamily.allCases.prefix(5)), offset: 0)
-                    row(Array(GestureFamily.allCases.dropFirst(5)), offset: 5)
+                    row(Array(GestureFamily.shown.prefix(6)), offset: 0)
+                    row(Array(GestureFamily.shown.dropFirst(6)), offset: 6)
                 }
                 .focusSection()
 
@@ -62,13 +62,13 @@ struct PlayerGestureGalleryView: View {
         } label: {
             VStack(spacing: 8) {
                 AnimatedGestureFamilyPad(family: family, offset: offset)
-                    .frame(width: 140, height: 140 * RemotePadCanvas.aspect + 28)
+                    .frame(width: 130, height: 130 * RemotePadCanvas.aspect + 28)
                 Text(family.title)
                     .font(.system(size: 24, weight: .bold))
                     .foregroundColor(.white)
                     .lineLimit(1)
             }
-            .frame(width: 300, height: 262)
+            .frame(width: 260, height: 250)
             .background(
                 RoundedRectangle(cornerRadius: 22, style: .continuous)
                     .fill(Color.white.opacity(isFocused ? 0.18 : 0.06))

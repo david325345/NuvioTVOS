@@ -85,6 +85,8 @@ enum RemoteGesture: Hashable, Codable, Sendable {
     /// A finger resting still (no click) for a while.
     case hold(PadSide)
     case circle(clockwise: Bool)
+    /// A shape drawn on the touchpad, made in the Gestures tab (`CustomGestureShape.id`).
+    case custom(String)
 
     var title: String {
         switch self {
@@ -104,6 +106,8 @@ enum RemoteGesture: Hashable, Codable, Sendable {
             return "Touch and hold " + side.title
         case let .circle(clockwise):
             return clockwise ? "Circle clockwise" : "Circle counterclockwise"
+        case let .custom(id):
+            return CustomGestureStore.shape(id: id)?.name ?? "Custom shape"
         }
     }
 

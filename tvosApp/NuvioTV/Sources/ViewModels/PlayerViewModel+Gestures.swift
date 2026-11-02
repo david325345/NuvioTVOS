@@ -129,6 +129,11 @@ extension PlayerViewModel {
         areGesturesEnabled = enabled
     }
 
+    func setCustomGestureShapes(_ shapes: [CustomGestureShape]) {
+        CustomGestureStore.save(shapes)
+        customGestureShapes = shapes
+    }
+
     func setGestureSensitivity(_ sensitivity: PlayerGestureSensitivity) {
         PlayerGestureSettings.save(sensitivity)
         gestureTuning = sensitivity.tuning
