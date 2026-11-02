@@ -99,7 +99,7 @@ final class PluginHTTPServerCore: @unchecked Sendable {
         var body: Data
         var headers: [String: String] = [:]
 
-        static func json(_ object: Any, status: Int = 200) -> Response {
+        static func json(_ object: [String: Any], status: Int = 200) -> Response {
             let data = (try? JSONSerialization.data(withJSONObject: object)) ?? Data("{}".utf8)
             return Response(status: status, contentType: "application/json; charset=utf-8", body: data)
         }
