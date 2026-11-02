@@ -297,8 +297,10 @@ final class StreamsRepository: ObservableObject {
         )
 
         let enabledURLs = addonManifestURLs
+        // Plugin scrapers run beside the add-ons, one group each (Android parity).
+        let pluginTargets = PluginStreamDiscovery.targets(type: type, videoID: videoId)
 
-        guard !enabledURLs.isEmpty else {
+        guard !enabledURLs.isEmpty || !pluginTargets.isEmpty else {
             state = StreamsDiscoveryState(
                 requestKey: requestKey,
                 revision: state.revision &+ 1,
@@ -311,7 +313,10 @@ final class StreamsRepository: ObservableObject {
         }
 
         // Load missing manifests concurrently (app-lifetime cache).
-        let manifestsByURL = await Self.loadManifestsConcurrently(urls: enabledURLs)
+        var manifestsByURL: [URL: StreamAddonManifest] = [:]
+        if !enabledURLs.isEmpty {
+            manifestsByURL = await Self.loadManifestsConcurrently(urls: enabledURLs)
+        }
         guard !Task.isCancelled else { return }
 
         // Preserve configured order; only include stream-capable, id-compatible add-ons.
@@ -331,7 +336,7 @@ final class StreamsRepository: ObservableObject {
             )
         }
 
-        guard !targets.isEmpty else {
+        guard !targets.isEmpty || !pluginTargets.isEmpty else {
             state = StreamsDiscoveryState(
                 requestKey: requestKey,
                 revision: state.revision &+ 1,
@@ -352,6 +357,8 @@ final class StreamsRepository: ObservableObject {
                 isLoading: true,
                 error: nil
             )
+        } + pluginTargets.map {
+            AddonStreamGroup(addonId: $0.groupID, displayName: $0.displayName, streams: [], isLoading: true, error: nil)
         }
         state = StreamsDiscoveryState(
             requestKey: requestKey,
@@ -366,6 +373,12 @@ final class StreamsRepository: ObservableObject {
             for target in targets {
                 group.addTask {
                     await Self.fetchAddonGroup(target: target, type: type, videoId: videoId)
+                }
+            }
+            for target in pluginTargets {
+                group.addTask {
+                    let result = await PluginStreamDiscovery.fetchGroup(target: target, type: type, videoID: videoId)
+                    return GroupUpdate(addonId: target.groupID, group: result)
                 }
             }
 
@@ -605,6 +618,8 @@ final class StreamsRepository: ObservableObject {
         config.timeoutIntervalForRequest = 8
         config.timeoutIntervalForResource = 10
         config.waitsForConnectivity = false
+        // Plugins with catalogs, metadata or ratings (virtual add-ons).
+        PluginAddonURLProtocol.install(in: config)
         return URLSession(configuration: config)
     }()
 
