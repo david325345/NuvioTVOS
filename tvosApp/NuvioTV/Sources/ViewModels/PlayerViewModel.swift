@@ -249,6 +249,8 @@ class PlayerViewModel: ObservableObject {
     @Published var areGesturesEnabled = PlayerGestureSettings.isEnabled()
     /// The recognizer's settings from the Gestures tab's sensitivity.
     @Published var gestureTuning = PlayerGestureSettings.sensitivity().tuning
+    /// Shapes of one's own, made in the Gestures tab.
+    @Published var customGestureShapes = CustomGestureStore.shapes()
     /// The gesture layer holds the remote (playing, controls hidden): the touch taps and edge
     /// clicks below leave it to that layer, which plays the built-in ones itself.
     var isGestureCaptureActive = false

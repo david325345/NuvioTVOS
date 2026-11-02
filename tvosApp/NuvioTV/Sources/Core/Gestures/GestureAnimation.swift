@@ -102,7 +102,29 @@ enum GestureAnimation {
                 return PadPoint(x: 0.6 * cos(angle), y: 0.6 * sin(angle))
             }
             return traced(path, t, visible: 0.08..<0.85, trailSteps: 18)
+        case let .custom(id):
+            guard let drawing = CustomGestureStore.shape(id: id)?.drawings.first else { return .empty }
+            return customFrame(drawing, t)
         }
+    }
+
+    /// A shape of one's own, drawn along its first drawing (normalized: size 1, so ×1.2 on the pad).
+    static func customFrame(_ drawing: [PadPoint], _ t: Double) -> GesturePadFrame {
+        guard drawing.count > 1 else { return .empty }
+        let path = { (time: Double) -> PadPoint in
+            let position = clamp((time - 0.10) / 0.65) * Double(drawing.count - 1)
+            let index = min(Int(position), drawing.count - 2)
+            let k = position - Double(index)
+            let a = drawing[index], b = drawing[index + 1]
+            return PadPoint(x: (a.x + (b.x - a.x) * k) * 1.2, y: (a.y + (b.y - a.y) * k) * 1.2)
+        }
+        return traced(path, t, visible: 0.08..<0.85, trailSteps: 24)
+    }
+
+    /// A drawing as a still picture (the whole shape as a trail), for the list of shapes.
+    static func still(_ drawing: [PadPoint]) -> GesturePadFrame {
+        GesturePadFrame(finger: drawing.last.map { PadPoint(x: $0.x * 1.2, y: $0.y * 1.2) },
+                        trail: drawing.map { PadPoint(x: $0.x * 1.2, y: $0.y * 1.2) })
     }
 
     private static func click(_ button: RemoteButton, _ kind: ClickKind, _ t: Double) -> GesturePadFrame {
@@ -151,8 +173,15 @@ enum GestureFamily: String, CaseIterable, Identifiable {
     case click, doubleClick, longClick
     case swipe, longSwipe, swipeBack
     case tap, doubleTap, hold, circle
+    /// Shapes of one's own (none until some are made).
+    case custom
 
     var id: String { rawValue }
+
+    /// The kinds with something in them (no custom card before there is a shape).
+    static var shown: [GestureFamily] {
+        allCases.filter { !$0.variants.isEmpty }
+    }
 
     var title: String {
         switch self {
@@ -166,6 +195,7 @@ enum GestureFamily: String, CaseIterable, Identifiable {
         case .doubleTap: return "Double tap"
         case .hold: return "Touch and hold"
         case .circle: return "Circle"
+        case .custom: return "Custom"
         }
     }
 
@@ -181,12 +211,15 @@ enum GestureFamily: String, CaseIterable, Identifiable {
         case .doubleTap: return PadSide.playerSides.map { .tap($0, double: true) }
         case .hold: return PadSide.playerSides.map { .hold($0) }
         case .circle: return [.circle(clockwise: true), .circle(clockwise: false)]
+        case .custom: return CustomGestureStore.shapes().map { .custom($0.id) }
         }
     }
 
     /// Which variant a looping card shows at `time` (seconds), and how far into its loop.
     func variant(at time: Double) -> (gesture: RemoteGesture, phase: Double) {
+        let variants = self.variants
         let loops = max(time, 0) / GestureAnimation.loopDuration
+        guard !variants.isEmpty else { return (.custom(""), loops - loops.rounded(.down)) }
         let index = Int(loops.rounded(.down)) % variants.count
         return (variants[index], loops - loops.rounded(.down))
     }

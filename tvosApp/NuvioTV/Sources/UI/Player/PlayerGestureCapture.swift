@@ -20,6 +20,8 @@ struct PlayerGestureCapture: UIViewRepresentable {
     var onTouchSummary: ((TouchSummary) -> Void)?
     /// The sensitivity chosen in the Gestures tab.
     var tuning = RemoteGestureTuning()
+    /// Shapes of one's own to look for.
+    var customShapes: [CustomGestureShape] = []
 
     func makeUIView(context: Context) -> GestureCaptureView {
         let view = GestureCaptureView()
@@ -58,6 +60,9 @@ final class GestureCaptureView: UIView {
         recognizer.waitsForDouble = capture.waitsForDouble
         if recognizer.tuning != capture.tuning {
             recognizer.tuning = capture.tuning
+        }
+        if recognizer.customShapes != capture.customShapes {
+            recognizer.customShapes = capture.customShapes
         }
         onGesture = capture.onGesture
         onPressEnded = capture.onPressEnded

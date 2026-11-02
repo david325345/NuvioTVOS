@@ -47,6 +47,9 @@ struct RemoteGestureTuning: Codable, Equatable, Sendable {
     /// Pad positions this long before the lift are dropped: they slide
     /// towards the middle as the finger comes off.
     var liftTrim: Double = 0.07
+    /// A drawing this close to a custom shape (mean distance, the shape's size being 1) is that
+    /// shape (fork test build).
+    var customShapeDistance: Double = 0.15
 
     init() {}
 
@@ -59,6 +62,7 @@ struct RemoteGestureTuning: Codable, Equatable, Sendable {
         case sideThreshold = "centerSize"
         case cornerTouches, cornerWidth, holdMinDuration, holdMaxSpread
         case clickGuard, liftTrim
+        case customShapeDistance
     }
 
     /// Saved settings from an older version: what it has is kept, what is new
@@ -87,5 +91,6 @@ struct RemoteGestureTuning: Codable, Equatable, Sendable {
         circleMinRadius = read(.circleMinRadius, circleMinRadius)
         clickGuard = read(.clickGuard, clickGuard)
         liftTrim = read(.liftTrim, liftTrim)
+        customShapeDistance = read(.customShapeDistance, customShapeDistance)
     }
 }
