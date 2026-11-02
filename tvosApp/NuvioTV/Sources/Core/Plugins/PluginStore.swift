@@ -165,6 +165,7 @@ final class PluginStore: ObservableObject {
         for scraper in state.scrapers where scraper.repositoryURL == manifestURL {
             Self.removeCode(scope: scope, scraperID: scraper.id)
             PluginSettingsVault.remove(scraperID: scraper.id)
+            PluginStorageFile.remove(scraperID: scraper.id, scope: scope)
             PluginLogStore.shared.clear(scraper.id)
         }
         state.repositories.removeAll { $0.manifestURL == manifestURL }

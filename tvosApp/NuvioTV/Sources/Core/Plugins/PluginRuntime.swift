@@ -65,7 +65,11 @@ enum PluginRuntime {
         arguments: [Any] = [],
         timeout: TimeInterval = defaultTimeout
     ) async throws -> Any {
-        let execution = PluginExecution(scraperId: scraperId, session: session)
+        let execution = PluginExecution(
+            scraperId: scraperId,
+            session: session,
+            storageScope: ProfileSettings.activeProfileScope
+        )
         return try await withTaskCancellationHandler {
             try await execution.run(
                 code: code,
@@ -109,10 +113,15 @@ final class PluginExecution: @unchecked Sendable {
     private var tasks: [Int: URLSessionDataTask] = [:]
     private var pendingException: String?
     private var functionName = ""
+    private let storageScope: String
+    private var storage: [String: String]?
+    private var storageBytes = 0
+    private var storageDirty = false
 
-    init(scraperId: String, session: URLSession) {
+    init(scraperId: String, session: URLSession, storageScope: String) {
         self.scraperId = scraperId
         self.session = session
+        self.storageScope = storageScope
         self.queue = DispatchQueue(label: "nuvio.plugin.execution", qos: .userInitiated)
     }
 
@@ -212,6 +221,10 @@ final class PluginExecution: @unchecked Sendable {
     }
 
     private func teardown() {
+        if storageDirty, let storage {
+            PluginStorageFile.save(storage, scraperID: scraperId, scope: storageScope)
+            storageDirty = false
+        }
         timers.values.forEach { $0.cancel() }
         timers.removeAll()
         tasks.values.forEach { $0.cancel() }
@@ -277,6 +290,28 @@ final class PluginExecution: @unchecked Sendable {
             }
             return Data(bytes).base64EncodedString()
         }
+        let storageGet: @convention(block) (JSValue) -> JSValue = { [weak self] key in
+            let context = JSContext.current()
+            guard let self, let value = self.loadedStorage()[key.toString() ?? ""] else {
+                return JSValue(nullIn: context)
+            }
+            return JSValue(object: value, in: context)
+        }
+        let storageSet: @convention(block) (JSValue, JSValue) -> Bool = { [weak self] key, value in
+            self?.storageSet(key.toString() ?? "", value.toString() ?? "") ?? false
+        }
+        let storageRemove: @convention(block) (JSValue) -> Void = { [weak self] key in
+            _ = self?.storageSet(key.toString() ?? "", nil)
+        }
+        let storageClear: @convention(block) () -> Void = { [weak self] in
+            guard let self else { return }
+            self.storage = [:]
+            self.storageBytes = 0
+            self.storageDirty = true
+        }
+        let storageKeys: @convention(block) () -> [String] = { [weak self] in
+            self?.loadedStorage().keys.sorted() ?? []
+        }
         let done: @convention(block) (JSValue, JSValue) -> Void = { [weak self] json, error in
             guard let self else { return }
             if !error.isNull, !error.isUndefined {
@@ -301,8 +336,36 @@ final class PluginExecution: @unchecked Sendable {
         native.setObject(unsafeBitCast(digest, to: AnyObject.self), forKeyedSubscript: "digest" as NSString)
         native.setObject(unsafeBitCast(hmac, to: AnyObject.self), forKeyedSubscript: "hmac" as NSString)
         native.setObject(unsafeBitCast(randomBytes, to: AnyObject.self), forKeyedSubscript: "randomBytes" as NSString)
+        native.setObject(unsafeBitCast(storageGet, to: AnyObject.self), forKeyedSubscript: "storageGet" as NSString)
+        native.setObject(unsafeBitCast(storageSet, to: AnyObject.self), forKeyedSubscript: "storageSet" as NSString)
+        native.setObject(unsafeBitCast(storageRemove, to: AnyObject.self), forKeyedSubscript: "storageRemove" as NSString)
+        native.setObject(unsafeBitCast(storageClear, to: AnyObject.self), forKeyedSubscript: "storageClear" as NSString)
+        native.setObject(unsafeBitCast(storageKeys, to: AnyObject.self), forKeyedSubscript: "storageKeys" as NSString)
         native.setObject(unsafeBitCast(done, to: AnyObject.self), forKeyedSubscript: "done" as NSString)
         context.setObject(native, forKeyedSubscript: "__nuvioNative" as NSString)
+    }
+
+    private func loadedStorage() -> [String: String] {
+        if let storage { return storage }
+        let loaded = PluginStorageFile.load(scraperID: scraperId, scope: storageScope)
+        storage = loaded
+        storageBytes = loaded.reduce(0) { $0 + $1.key.utf8.count + $1.value.utf8.count }
+        return loaded
+    }
+
+    /// Sets (or with nil removes) one `localStorage` item; false when the
+    /// plugin's storage would grow past its limit.
+    @discardableResult
+    private func storageSet(_ key: String, _ value: String?) -> Bool {
+        var current = loadedStorage()
+        let oldSize = current[key].map { key.utf8.count + $0.utf8.count } ?? 0
+        let newSize = value.map { key.utf8.count + $0.utf8.count } ?? 0
+        if value != nil, storageBytes - oldSize + newSize > PluginStorageFile.maxBytes { return false }
+        current[key] = value
+        storage = current
+        storageBytes += newSize - oldSize
+        storageDirty = true
+        return true
     }
 
     private func setTimer(_ id: Int, milliseconds: Double) {
@@ -409,6 +472,39 @@ final class PluginExecution: @unchecked Sendable {
         case "MD5": return Data(HMAC<Insecure.MD5>.authenticationCode(for: data, using: symmetricKey))
         default: return nil
         }
+    }
+}
+
+// MARK: - Storage
+
+/// A plugin's `localStorage`, per scraper and profile, kept in a file on this
+/// Apple TV (an Apple TV extension; the system may purge it like any cache).
+enum PluginStorageFile {
+    static let maxBytes = 2 * 1024 * 1024
+    private static let directory = "NuvioPlugins"
+
+    static func load(scraperID: String, scope: String) -> [String: String] {
+        guard let data = LargePayloadStore.read(key: key(scraperID, scope), directory: directory),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: String] else { return [:] }
+        return object
+    }
+
+    static func save(_ storage: [String: String], scraperID: String, scope: String) {
+        if storage.isEmpty {
+            remove(scraperID: scraperID, scope: scope)
+            return
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: storage) else { return }
+        LargePayloadStore.write(data, key: key(scraperID, scope), directory: directory)
+    }
+
+    static func remove(scraperID: String, scope: String) {
+        LargePayloadStore.remove(key: key(scraperID, scope), directory: directory)
+    }
+
+    private static func key(_ scraperID: String, _ scope: String) -> String {
+        let digest = SHA256.hash(data: Data(scraperID.utf8)).prefix(12).map { String(format: "%02x", $0) }.joined()
+        return "\(scope).storage.\(digest)"
     }
 }
 

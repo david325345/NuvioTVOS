@@ -205,6 +205,24 @@ final class PluginRuntimeTests: XCTestCase {
         }
     }
 
+    func testLocalStoragePersistsBetweenCalls() async throws {
+        let scraperID = "test:storage:\(UUID().uuidString)"
+        defer { PluginStorageFile.remove(scraperID: scraperID, scope: ProfileSettings.activeProfileScope) }
+        let code = """
+        module.exports.put = function () { localStorage.setItem('caps', '{"tv":["tvdbid"]}'); localStorage.setItem('n', 7); return localStorage.length; };
+        module.exports.get = function () { return { caps: JSON.parse(localStorage.getItem('caps')), n: localStorage.getItem('n'), none: localStorage.getItem('x') }; };
+        """
+        let count = try await PluginRuntime.call(code: code, scraperId: scraperID, function: "put", timeout: 10)
+        XCTAssertEqual(count as? Int, 2)
+        // The file is written when the first call's context is torn down.
+        try await Task.sleep(nanoseconds: 300_000_000)
+        let result = try await PluginRuntime.call(code: code, scraperId: scraperID, function: "get", timeout: 10)
+        let object = try XCTUnwrap(result as? [String: Any])
+        XCTAssertEqual((object["caps"] as? [String: Any])?["tv"] as? [String], ["tvdbid"])
+        XCTAssertEqual(object["n"] as? String, "7")
+        XCTAssertTrue(object["none"] is NSNull)
+    }
+
     func testFetchUsesTheNetworkAndReturnsResponses() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [PluginURLProtocolStub.self]

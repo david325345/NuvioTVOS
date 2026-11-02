@@ -758,6 +758,29 @@ enum PluginPolyfills {
 
   G.structuredClone = function (value) { return value === undefined ? undefined : JSON.parse(JSON.stringify(value)); };
 
+  // ---- localStorage (Apple TV: per provider and profile, kept on the device) --
+  var storage = {
+    getItem: function (key) {
+      var value = N.storageGet(String(key));
+      return value === undefined ? null : value;
+    },
+    setItem: function (key, value) {
+      if (!N.storageSet(String(key), String(value))) {
+        var error = new Error('The plugin storage is full.');
+        error.name = 'QuotaExceededError';
+        throw error;
+      }
+    },
+    removeItem: function (key) { N.storageRemove(String(key)); },
+    clear: function () { N.storageClear(); },
+    key: function (index) {
+      var keys = N.storageKeys();
+      return index >= 0 && index < keys.length ? keys[index] : null;
+    }
+  };
+  Object.defineProperty(storage, 'length', { get: function () { return N.storageKeys().length; } });
+  G.localStorage = storage;
+
   G.require = function (name) {
     throw new Error("require('" + name + "') is not available in Nuvio plugins on Apple TV; bundle the module into the plugin file.");
   };
