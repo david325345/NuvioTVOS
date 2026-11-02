@@ -116,15 +116,19 @@ jobs:
               name = node["name"].to_s
               suite = name if node["nodeType"] == "Test Suite"
               if node["nodeType"] == "Test Case" && ["PluginRuntimeTests", "StreamsDiscoveryTests"].include?(suite)
-                out << ["#{suite}.#{name}", node["result"]]
+                messages = (node["children"] || []).select { |c| c["nodeType"] == "Failure Message" }.map { |c| c["name"] }
+                out << ["#{suite}.#{name}", node["result"], messages]
               end
               (node["children"] || []).each { |child| walk(child, suite, out) }
             end
             out = []
             JSON.parse(File.read("tests.json")).fetch("testNodes", []).each { |n| walk(n, nil, out) }
-            passed = out.count { |_, r| r == "Passed" }
+            passed = out.count { |_, r, _| r == "Passed" }
             puts "::notice::plugin and stream tests #{passed}/#{out.size} passed"
-            out.reject { |_, r| r == "Passed" }.each { |n, r| puts "::error::#{n}: #{r}" }
+            out.reject { |_, r, _| r == "Passed" }.each do |n, r, messages|
+              puts "::error::#{n}: #{r}"
+              messages.first(5).each { |m| puts "::error::  #{m}" }
+            end
           '
 
   all-tests:
