@@ -1198,13 +1198,17 @@ private struct PlayerTimelineBar: View {
                         segments: segments
                     )
 
-                    if isScrubbing || isHoldingSeek {
+                    // Also for single left / right presses (fork test build): the needle shows
+                    // where the seek lands, and it goes at once instead of fading (a fade read as
+                    // the needle sliding off).
+                    if isSeekingOrScrubbing {
                         // Ghost tick: original paused playback position flush within track
                         if abs(targetX - originalX) > 3 {
                             Rectangle()
                                 .fill(Color.white)
                                 .frame(width: 2, height: h)
                                 .position(x: originalX, y: geo.size.height / 2)
+                                .transition(.identity)
                         }
 
                         // Active scrub/seek needle: extends upwards toward preview card and is flush at bottom of track
@@ -1212,6 +1216,7 @@ private struct PlayerTimelineBar: View {
                             .fill(Color.white)
                             .frame(width: 2, height: needleHeight)
                             .position(x: targetX, y: bottomOfTrack - needleHeight / 2)
+                            .transition(.identity)
                     }
                 }
             }
