@@ -24,14 +24,34 @@ struct PluginManifest: Decodable {
         scrapers = (try? container.decode(LossyList<PluginManifestScraper>.self, forKey: .scrapers))?.elements ?? []
     }
 
+    init(name: String, version: String, description: String?, author: String?, scrapers: [PluginManifestScraper]) {
+        self.name = name
+        self.version = version
+        self.description = description
+        self.author = author
+        self.scrapers = scrapers
+    }
+
     /// Parses and validates a manifest the way Android does (name, version and
-    /// at least one scraper are required).
-    static func parse(_ data: Data) throws -> PluginManifest {
+    /// at least one scraper are required). A bare array of scrapers — the
+    /// layout of the tapframe/nuvio-providers template — is accepted too and
+    /// named `fallbackName`.
+    static func parse(_ data: Data, fallbackName: String = "") throws -> PluginManifest {
         let manifest: PluginManifest
-        do {
-            manifest = try JSONDecoder().decode(PluginManifest.self, from: data)
-        } catch {
-            throw PluginStoreError.invalidManifest("This is not a plugin manifest (manifest.json).")
+        if let list = try? JSONDecoder().decode(LossyList<PluginManifestScraper>.self, from: data) {
+            manifest = PluginManifest(
+                name: fallbackName.isEmpty ? "Plugins" : fallbackName,
+                version: "1.0.0",
+                description: nil,
+                author: nil,
+                scrapers: list.elements
+            )
+        } else {
+            do {
+                manifest = try JSONDecoder().decode(PluginManifest.self, from: data)
+            } catch {
+                throw PluginStoreError.invalidManifest("This is not a plugin manifest (manifest.json).")
+            }
         }
         guard !manifest.name.isEmpty else { throw PluginStoreError.invalidManifest("The manifest has no name.") }
         guard !manifest.version.isEmpty else { throw PluginStoreError.invalidManifest("The manifest has no version.") }
@@ -58,6 +78,9 @@ struct PluginManifestScraper: Decodable {
     let version: String
     let filename: String
     let supportedTypes: [String]
+    /// The manifest lists `series` (not only `tv`): such a scraper gets
+    /// `series` as the media type of an episode, as on Android TV.
+    let declaresSeries: Bool
     let enabled: Bool
     let hasSettings: Bool
     let logo: String?
@@ -83,7 +106,13 @@ struct PluginManifestScraper: Decodable {
         description = PluginManifest.text(container, .description)
         version = PluginManifest.text(container, .version) ?? "1.0.0"
         let types = (try? container.decodeIfPresent([String].self, forKey: .supportedTypes)) ?? nil
-        supportedTypes = (types?.isEmpty == false ? types! : ["movie", "tv"]).map(PluginTypes.normalized)
+        let rawTypes = types?.isEmpty == false ? types! : ["movie", "tv"]
+        var normalizedTypes: [String] = []
+        for type in rawTypes.map(PluginTypes.normalized) where !normalizedTypes.contains(type) {
+            normalizedTypes.append(type)
+        }
+        supportedTypes = normalizedTypes
+        declaresSeries = rawTypes.contains { $0.caseInsensitiveCompare("series") == .orderedSame }
         enabled = (try? container.decodeIfPresent(Bool.self, forKey: .enabled)) ?? true
         hasSettings = (try? container.decodeIfPresent(Bool.self, forKey: .hasSettings)) ?? false
         logo = PluginManifest.text(container, .logo)
@@ -114,7 +143,7 @@ enum PluginTypes {
     /// Plugins use Nuvio's `movie` / `tv`; Stremio content uses `series`.
     static func normalized(_ type: String) -> String {
         switch type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "series", "show", "shows", "tv", "anime": return "tv"
+        case "series", "show", "shows", "tv", "anime", "other": return "tv"
         case "movies", "movie", "film": return "movie"
         case let other: return other
         }
@@ -153,6 +182,8 @@ struct PluginScraperRecord: Codable, Identifiable, Equatable {
     var logo: String?
     var contentLanguage: [String]
     var formats: [String]?
+    /// See ``PluginManifestScraper/declaresSeries``.
+    var declaresSeriesType: Bool?
 
     func supports(type: String) -> Bool {
         supportedTypes.contains(PluginTypes.normalized(type))

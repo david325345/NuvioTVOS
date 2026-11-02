@@ -35,10 +35,12 @@ enum PluginRuntimeError: LocalizedError, Equatable {
 enum PluginRuntime {
     /// Matches Android's per-call plugin timeout.
     static let defaultTimeout: TimeInterval = 60
-    /// Stream searches run beside add-ons, so they get a shorter budget.
-    static let streamTimeout: TimeInterval = 30
+    /// Stream searches get the same minute as on Android.
+    static let streamTimeout: TimeInterval = 60
     static let maxResponseBytes = 20 * 1024 * 1024
-    static let userAgent = "Mozilla/5.0 (AppleTV; tvOS 18.0) AppleWebKit/605.1.15 (KHTML, like Gecko)"
+    /// The default `User-Agent` of plugin requests — the desktop one the
+    /// Android apps send, which sites that plugins scrape expect.
+    static let userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 
     /// Network for plugin `fetch`. No cookies and no cache, like Android's
     /// plain OkHttp client, so one plugin never sees another plugin's cookies.
@@ -68,7 +70,8 @@ enum PluginRuntime {
         let execution = PluginExecution(
             scraperId: scraperId,
             session: session,
-            storageScope: ProfileSettings.activeProfileScope
+            storageScope: ProfileSettings.activeProfileScope,
+            tmdbApiKey: TmdbDetailsService.currentApiKey ?? ""
         )
         return try await withTaskCancellationHandler {
             try await execution.run(
@@ -114,14 +117,17 @@ final class PluginExecution: @unchecked Sendable {
     private var pendingException: String?
     private var functionName = ""
     private let storageScope: String
+    private let tmdbApiKey: String
+    private let dom = PluginDOMStore()
     private var storage: [String: String]?
     private var storageBytes = 0
     private var storageDirty = false
 
-    init(scraperId: String, session: URLSession, storageScope: String) {
+    init(scraperId: String, session: URLSession, storageScope: String, tmdbApiKey: String = "") {
         self.scraperId = scraperId
         self.session = session
         self.storageScope = storageScope
+        self.tmdbApiKey = tmdbApiKey
         self.queue = DispatchQueue(label: "nuvio.plugin.execution", qos: .userInitiated)
     }
 
@@ -188,7 +194,13 @@ final class PluginExecution: @unchecked Sendable {
 
         let idLiteral = PluginRuntime.jsonLiteral(scraperId) ?? "\"\""
         let settingsLiteral = PluginRuntime.jsonLiteral(settings) ?? "{}"
-        context.evaluateScript("globalThis.SCRAPER_ID = \(idLiteral);\nglobalThis.SCRAPER_SETTINGS = \(settingsLiteral);")
+        // TMDB_API_KEY as on Android: plugins look titles up on TMDB with it
+        // (empty without a key in Settings → Integrations → TMDB).
+        let tmdbLiteral = PluginRuntime.jsonLiteral(tmdbApiKey) ?? "\"\""
+        context.evaluateScript(
+            "globalThis.SCRAPER_ID = \(idLiteral);\nglobalThis.SCRAPER_SETTINGS = \(settingsLiteral);\n"
+                + "globalThis.TMDB_API_KEY = \(tmdbLiteral);"
+        )
 
         let wrapped = "var module = { exports: {} };\nvar exports = module.exports;\n(function() {\n\(code)\n})();"
         context.evaluateScript(wrapped, withSourceURL: URL(string: "plugin://scraper.js"))
@@ -342,6 +354,7 @@ final class PluginExecution: @unchecked Sendable {
         native.setObject(unsafeBitCast(storageClear, to: AnyObject.self), forKeyedSubscript: "storageClear" as NSString)
         native.setObject(unsafeBitCast(storageKeys, to: AnyObject.self), forKeyedSubscript: "storageKeys" as NSString)
         native.setObject(unsafeBitCast(done, to: AnyObject.self), forKeyedSubscript: "done" as NSString)
+        PluginCompatNatives.install(on: native, dom: dom)
         context.setObject(native, forKeyedSubscript: "__nuvioNative" as NSString)
     }
 
@@ -411,6 +424,9 @@ final class PluginExecution: @unchecked Sendable {
                 self.deliverFetch(id, PluginExecution.fetchPayload(data: data, response: response, error: error, requestedURL: url))
             }
         }
+        if (options["redirect"] as? String)?.lowercased() == "manual" {
+            task.delegate = PluginNoRedirectDelegate.shared
+        }
         tasks[id] = task
         task.resume()
     }
@@ -472,6 +488,21 @@ final class PluginExecution: @unchecked Sendable {
         case "MD5": return Data(HMAC<Insecure.MD5>.authenticationCode(for: data, using: symmetricKey))
         default: return nil
         }
+    }
+}
+
+/// `redirect: 'manual'`: hand the 3xx response (and its Location) to the script.
+final class PluginNoRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    static let shared = PluginNoRedirectDelegate()
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(nil)
     }
 }
 

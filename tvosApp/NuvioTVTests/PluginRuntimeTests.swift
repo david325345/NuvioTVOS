@@ -49,6 +49,23 @@ final class PluginRuntimeTests: XCTestCase {
         XCTAssertThrowsError(try PluginManifest.parse(Data("<html>".utf8)))
     }
 
+    func testBareScraperArrayManifestsShortCodesAndSchemes() throws {
+        let array = #"[{"id":"t","name":"Template","version":"1.0.0","filename":"providers/t.js","supportedTypes":["movie","series"]}]"#
+        let manifest = try PluginManifest.parse(Data(array.utf8), fallbackName: "nuvio-providers")
+        XCTAssertEqual(manifest.name, "nuvio-providers")
+        XCTAssertEqual(manifest.scrapers.first?.supportedTypes, ["movie", "tv"])
+        XCTAssertEqual(manifest.scrapers.first?.declaresSeries, true)
+
+        XCTAssertTrue(PluginStore.isShortCode("cspr"))
+        XCTAssertTrue(PluginStore.isShortCode("mega_repo-2"))
+        XCTAssertFalse(PluginStore.isShortCode("example.com"))
+        XCTAssertFalse(PluginStore.isShortCode("https://x"))
+        XCTAssertEqual(
+            PluginStore.normalizedManifestURL("stremio://example.com/repo")?.absoluteString,
+            "https://example.com/repo/manifest.json"
+        )
+    }
+
     func testManifestURLsAndScraperFilesResolveLikeAndroid() {
         XCTAssertEqual(
             PluginStore.normalizedManifestURL("https://github.com/me/plugins/blob/main/manifest.json")?.absoluteString,
@@ -223,6 +240,92 @@ final class PluginRuntimeTests: XCTestCase {
         XCTAssertTrue(object["none"] is NSNull)
     }
 
+    func testCheerioWorksLikeOnAndroid() async throws {
+        let code = #"""
+        var cheerio = require('cheerio-without-node-native');
+        module.exports.go = function () {
+          var $ = cheerio.load('<ul id="l"><li class="a" data-n="1"><a href="/1">One</a></li>'
+            + '<li class="b"><a href="/2"> Two  words </a></li><li class="a"><a>Three</a></li></ul><p>x</p>');
+          var links = [];
+          $('li.a').each(function (i, el) { links.push($(el).find('a').attr('href') || '-'); });
+          return {
+            count: $('li').length,
+            links: links,
+            text: $('li.b').text(),
+            contains: $('li:contains("Two")').length,
+            next: $('li.a').first().next().attr('class'),
+            prev: $('li.b').prev().attr('class'),
+            parent: $('a').first().parent().attr('class'),
+            closest: $('a').last().closest('ul').attr('id'),
+            children: $('#l').children('.a').length,
+            filter: $('li').filter('.b').length,
+            is: $('li').first().is('.a'),
+            data: $('li').first().data('n'),
+            html: $('li.b').html(),
+            outer: $.html($('p')),
+            map: $('a').map(function (i, el) { return $(el).text(); }).get(),
+            missing: $('li.b').attr('title') === undefined,
+            empty: $('nothing').text()
+          };
+        };
+        """#
+        let result = try await PluginRuntime.call(code: code, scraperId: "x", function: "go", timeout: 10)
+        let object = try XCTUnwrap(result as? [String: Any])
+        XCTAssertEqual(object["count"] as? Int, 3)
+        XCTAssertEqual(object["links"] as? [String], ["/1", "-"])
+        XCTAssertEqual(object["text"] as? String, "Two words")
+        XCTAssertEqual(object["contains"] as? Int, 1)
+        XCTAssertEqual(object["next"] as? String, "b")
+        XCTAssertEqual(object["prev"] as? String, "a")
+        XCTAssertEqual(object["parent"] as? String, "a")
+        XCTAssertEqual(object["closest"] as? String, "l")
+        XCTAssertEqual(object["children"] as? Int, 2)
+        XCTAssertEqual(object["filter"] as? Int, 1)
+        XCTAssertEqual(object["is"] as? Bool, true)
+        XCTAssertEqual(object["data"] as? Int, 1)
+        let html = try XCTUnwrap(object["html"] as? String)
+        XCTAssertTrue(html.hasPrefix("<a href=\"/2\">") && html.contains("Two"), html)
+        XCTAssertEqual(object["outer"] as? String, "<p>x</p>")
+        XCTAssertEqual(object["map"] as? [String], ["One", "Two words", "Three"])
+        XCTAssertEqual(object["missing"] as? Bool, true)
+        XCTAssertEqual(object["empty"] as? String, "")
+    }
+
+    func testCryptoJSAndWebCryptoAESMatchKnownValues() async throws {
+        let code = #"""
+        module.exports.go = async function () {
+          function hex(buf) { return Array.from(new Uint8Array(buf)).map(function (b) { return (b < 16 ? '0' : '') + b.toString(16); }).join(''); }
+          var C = require('crypto-js');
+          var sealed = CryptoJS.AES.encrypt('Příliš žluťoučký kůň', 'pw').toString();
+          var raw = new Uint8Array(32); for (var i = 0; i < 32; i++) raw[i] = i;
+          var gcm = await crypto.subtle.importKey('raw', raw, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+          var box = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: new Uint8Array(12) }, gcm, new TextEncoder().encode('hello'));
+          var cbc = await crypto.subtle.importKey('raw', raw, 'AES-CBC', false, ['encrypt', 'decrypt']);
+          var c = await crypto.subtle.encrypt({ name: 'AES-CBC', iv: new Uint8Array(16) }, cbc, new TextEncoder().encode('hello world'));
+          var pw = await crypto.subtle.importKey('raw', new TextEncoder().encode('password'), 'PBKDF2', false, ['deriveBits']);
+          var bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: new TextEncoder().encode('salt'), iterations: 1, hash: 'SHA-1' }, pw, 160);
+          return {
+            md5: C.MD5('abc').toString(),
+            roundtrip: CryptoJS.AES.decrypt(sealed, 'pw').toString(CryptoJS.enc.Utf8),
+            gcm: new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: new Uint8Array(12) }, gcm, box)),
+            cbcBytes: c.byteLength,
+            cbc: new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-CBC', iv: new Uint8Array(16) }, cbc, c)),
+            pbkdf2: hex(bits),
+            tmdbKeyType: typeof TMDB_API_KEY
+          };
+        };
+        """#
+        let result = try await PluginRuntime.call(code: code, scraperId: "x", function: "go", timeout: 20)
+        let object = try XCTUnwrap(result as? [String: Any])
+        XCTAssertEqual(object["md5"] as? String, "900150983cd24fb0d6963f7d28e17f72")
+        XCTAssertEqual(object["roundtrip"] as? String, "Příliš žluťoučký kůň")
+        XCTAssertEqual(object["gcm"] as? String, "hello")
+        XCTAssertEqual(object["cbcBytes"] as? Int, 16)
+        XCTAssertEqual(object["cbc"] as? String, "hello world")
+        XCTAssertEqual(object["pbkdf2"] as? String, "0c60c80f961f0e71f3a9b524af6012062fe037a6")
+        XCTAssertEqual(object["tmdbKeyType"] as? String, "string")
+    }
+
     func testFetchUsesTheNetworkAndReturnsResponses() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [PluginURLProtocolStub.self]
@@ -268,7 +371,8 @@ final class PluginRuntimeTests: XCTestCase {
         ], providerName: "Provider"))
         XCTAssertEqual(direct.url, "https://cdn.example.com/video.mp4")
         XCTAssertEqual(direct.name, "Provider 1080p")
-        XCTAssertEqual(direct.description, "1080p • 2.1 GB")
+        // Android TV layout: the title under the name, then size • language.
+        XCTAssertEqual(direct.description, "Some.Movie.2024.1080p.WEB-DL\n2.1 GB")
         XCTAssertEqual(direct.httpHeaders?["Referer"], "https://example.com/")
         XCTAssertNil(direct.httpHeaders?["Range"])
         XCTAssertEqual(direct.subtitles.count, 1)
@@ -286,6 +390,25 @@ final class PluginRuntimeTests: XCTestCase {
         XCTAssertEqual(usenet.bingeGroup, "ud|1080p")
 
         XCTAssertNil(PluginStreamDiscovery.stream(from: ["name": "no link"], providerName: "P"))
+        XCTAssertNil(PluginStreamDiscovery.stream(from: ["url": "[object Object]"], providerName: "P"))
+
+        let bare = try XCTUnwrap(PluginStreamDiscovery.stream(from: [
+            "title": "Server 2", "url": "https://cdn.example.com/a.m3u8", "quality": "720p", "language": "EN"
+        ], providerName: "Provider"))
+        XCTAssertEqual(bare.name, "Server 2 - 720p")
+        XCTAssertEqual(bare.description, "EN")
+    }
+
+    func testScrapersThatListSeriesGetSeriesForEpisodes() {
+        let request = PluginStreamDiscovery.request(
+            type: "series", videoID: "tt0944947:1:2", resolvedTMDBID: "1399", scraperDeclaresSeries: true
+        )
+        XCTAssertEqual(request.mediaType, "series")
+        XCTAssertEqual(request.arguments[1] as? String, "series")
+        let movie = PluginStreamDiscovery.request(
+            type: "movie", videoID: "tt0816692", resolvedTMDBID: nil, scraperDeclaresSeries: true
+        )
+        XCTAssertEqual(movie.mediaType, "movie")
     }
 
     func testStreamRequestPassesTmdbFirstAndImdbInContext() {

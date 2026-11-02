@@ -3,10 +3,11 @@ import Foundation
 /// Browser-style globals for plugin JavaScript, evaluated into every plugin
 /// context before the plugin's own code: console, timers, fetch (Headers,
 /// Request, Response, AbortController), URL / URLSearchParams, TextEncoder /
-/// TextDecoder, atob / btoa, and crypto (getRandomValues, randomUUID, subtle
-/// digest and HMAC). Natives come from `__nuvioNative`, which
-/// `PluginExecution` installs first. Tested as plain JavaScript as well, so
-/// keep it free of Swift interpolation.
+/// TextDecoder, atob / btoa, crypto (getRandomValues, randomUUID, subtle
+/// digest, HMAC, AES and PBKDF2), localStorage, and what the Nuvio Android apps
+/// add: cheerio, CryptoJS and require(). Natives come from `__nuvioNative`,
+/// which `PluginExecution` installs first. Tested as plain JavaScript as well
+/// (scripts/test-plugin-polyfills.js), so keep it free of Swift interpolation.
 enum PluginPolyfills {
     static let source = #"""
 (function (G) {
@@ -289,10 +290,11 @@ enum PluginPolyfills {
   URLSearchParams.prototype.toString = function () {
     return this._list.map(function (pair) { return encodeComponent(pair[0]) + '=' + encodeComponent(pair[1]); }).join('&');
   };
-  URLSearchParams.prototype.entries = function () { return this._list.map(function (p) { return [p[0], p[1]]; })[Symbol.iterator](); };
-  URLSearchParams.prototype.keys = function () { return this._list.map(function (p) { return p[0]; })[Symbol.iterator](); };
-  URLSearchParams.prototype.values = function () { return this._list.map(function (p) { return p[1]; })[Symbol.iterator](); };
-  URLSearchParams.prototype[Symbol.iterator] = URLSearchParams.prototype.entries;
+  // Arrays rather than iterators: the Android runtime returns arrays, and arrays iterate too.
+  URLSearchParams.prototype.entries = function () { return this._list.map(function (p) { return [p[0], p[1]]; }); };
+  URLSearchParams.prototype.keys = function () { return this._list.map(function (p) { return p[0]; }); };
+  URLSearchParams.prototype.values = function () { return this._list.map(function (p) { return p[1]; }); };
+  URLSearchParams.prototype[Symbol.iterator] = function () { return this.entries()[Symbol.iterator](); };
   Object.defineProperty(URLSearchParams.prototype, 'size', { get: function () { return this._list.length; } });
   G.URLSearchParams = URLSearchParams;
 
@@ -607,11 +609,18 @@ enum PluginPolyfills {
       return self._text != null ? self._text : utf8Decode(self._bytes());
     });
   };
+  // Like the Android runtime: an empty or invalid body gives null instead of a rejection.
   Response.prototype.json = function () {
     var self = this;
     return this._consume().then(function () {
       var text = self._text != null ? self._text : utf8Decode(self._bytes());
-      return JSON.parse(text);
+      if (text == null || text === '') return null;
+      try {
+        return JSON.parse(text);
+      } catch (e) {
+        N.log('error', 'fetch.json parse error: ' + (e && e.message ? e.message : e));
+        return null;
+      }
     });
   };
   Response.prototype.arrayBuffer = function () {
@@ -694,7 +703,12 @@ enum PluginPolyfills {
     delete pending[id];
     var result;
     try { result = JSON.parse(json); } catch (e) { entry.reject(new TypeError('Network response could not be read')); return; }
-    if (result.error) { entry.reject(new TypeError(result.error)); return; }
+    // Like the Android runtime, a network failure resolves with ok: false and
+    // status 0 (the reason in statusText) instead of rejecting.
+    if (result.error) {
+      entry.resolve(new Response('', { status: 0, statusText: String(result.error), url: result.url || '' }));
+      return;
+    }
     var headers = new Headers();
     var raw = result.headers || {};
     for (var key in raw) if (Object.prototype.hasOwnProperty.call(raw, key)) headers.append(key, raw[key]);
@@ -717,6 +731,34 @@ enum PluginPolyfills {
     if (!normalized) throw new Error('Unsupported algorithm: ' + name);
     return normalized;
   }
+  function algorithmName(algorithm) {
+    var name = String((algorithm && algorithm.name) || algorithm || '').toUpperCase();
+    if (name.indexOf('AES-GCM') >= 0) return 'AES-GCM';
+    if (name.indexOf('AES-CBC') >= 0) return 'AES-CBC';
+    if (name.indexOf('AES-ECB') >= 0) return 'AES-ECB';
+    if (name.indexOf('PBKDF2') >= 0) return 'PBKDF2';
+    if (name.indexOf('HMAC') >= 0) return 'HMAC';
+    return name;
+  }
+  function makeKey(type, algorithm, extractable, usages, bytes) {
+    return { type: type, algorithm: algorithm, extractable: !!extractable, usages: usages || [], _raw: bytesToBase64(bytes) };
+  }
+  function nativeResult(text) {
+    if (typeof text === 'string' && text.charAt(0) === '!') {
+      var error = new Error(text.slice(1) || 'The operation failed.');
+      error.name = 'OperationError';
+      throw error;
+    }
+    return bufferFrom(base64ToBytes(text));
+  }
+  function aes(encrypt, algorithm, key, data) {
+    var mode = algorithmName(algorithm);
+    if (mode !== 'AES-CBC' && mode !== 'AES-GCM' && mode !== 'AES-ECB') throw new Error('Unsupported algorithm: ' + mode);
+    if (mode === 'AES-GCM' && algorithm.tagLength && algorithm.tagLength !== 128) throw new Error('Only 128-bit AES-GCM tags are supported');
+    if (mode === 'AES-GCM' && algorithm.additionalData) throw new Error('AES-GCM additionalData is not supported');
+    var iv = algorithm && algorithm.iv ? bytesToBase64(toBytes(algorithm.iv)) : '';
+    return nativeResult(N.aes(encrypt, mode, key._raw, iv, bytesToBase64(toBytes(data))));
+  }
   var subtle = {
     digest: function (algorithm, data) {
       try {
@@ -725,17 +767,70 @@ enum PluginPolyfills {
       } catch (e) { return Promise.reject(e); }
     },
     importKey: function (format, keyData, algorithm, extractable, usages) {
-      if (format !== 'raw') return Promise.reject(new Error('Only raw keys are supported'));
-      var name = algorithm && algorithm.name ? String(algorithm.name).toUpperCase() : String(algorithm).toUpperCase();
-      if (name !== 'HMAC') return Promise.reject(new Error('Only HMAC keys are supported'));
-      return Promise.resolve({ type: 'secret', algorithm: { name: 'HMAC', hash: { name: hashName(algorithm.hash) } },
-        extractable: !!extractable, usages: usages || [], _raw: bytesToBase64(toBytes(keyData)) });
+      try {
+        if (String(format).toLowerCase() !== 'raw') throw new Error('Only raw keys are supported');
+        var name = algorithmName(algorithm);
+        var normalized = { name: name };
+        if (name === 'HMAC') normalized.hash = { name: hashName(algorithm.hash || 'SHA-256') };
+        var bytes = toBytes(keyData);
+        if (name === 'AES-CBC' || name === 'AES-GCM' || name === 'AES-ECB') normalized.length = bytes.length * 8;
+        if (['HMAC', 'AES-CBC', 'AES-GCM', 'AES-ECB', 'PBKDF2'].indexOf(name) === -1) throw new Error('Unsupported algorithm: ' + name);
+        return Promise.resolve(makeKey('secret', normalized, extractable, usages, bytes));
+      } catch (e) { return Promise.reject(e); }
+    },
+    exportKey: function (format, key) {
+      if (String(format).toLowerCase() !== 'raw') return Promise.reject(new Error('Only raw keys are supported'));
+      return Promise.resolve(bufferFrom(base64ToBytes(key._raw)));
+    },
+    generateKey: function (algorithm, extractable, usages) {
+      try {
+        var name = algorithmName(algorithm);
+        if (name !== 'AES-CBC' && name !== 'AES-GCM' && name !== 'HMAC') throw new Error('Unsupported algorithm: ' + name);
+        var bits = algorithm.length || 256;
+        var bytes = base64ToBytes(N.randomBytes(bits / 8));
+        var normalized = { name: name, length: bits };
+        if (name === 'HMAC') normalized.hash = { name: hashName(algorithm.hash || 'SHA-256') };
+        return Promise.resolve(makeKey('secret', normalized, extractable, usages, bytes));
+      } catch (e) { return Promise.reject(e); }
     },
     sign: function (algorithm, key, data) {
       try {
         var out = N.hmac(key.algorithm.hash.name, key._raw, bytesToBase64(toBytes(data)));
         return Promise.resolve(bufferFrom(base64ToBytes(out)));
       } catch (e) { return Promise.reject(e); }
+    },
+    verify: function (algorithm, key, signature, data) {
+      return subtle.sign(algorithm, key, data).then(function (expected) {
+        var a = new Uint8Array(expected);
+        var b = toBytes(signature);
+        if (a.length !== b.length) return false;
+        var diff = 0;
+        for (var i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+        return diff === 0;
+      });
+    },
+    encrypt: function (algorithm, key, data) {
+      try { return Promise.resolve(aes(true, algorithm, key, data)); } catch (e) { return Promise.reject(e); }
+    },
+    decrypt: function (algorithm, key, data) {
+      try { return Promise.resolve(aes(false, algorithm, key, data)); } catch (e) { return Promise.reject(e); }
+    },
+    deriveBits: function (algorithm, key, length) {
+      try {
+        if (algorithmName(algorithm) !== 'PBKDF2') throw new Error('Only PBKDF2 is supported');
+        var out = N.pbkdf2(key._raw, bytesToBase64(toBytes(algorithm.salt)), algorithm.iterations || 1000,
+          length || 256, hashName(algorithm.hash || 'SHA-256'));
+        return Promise.resolve(nativeResult(out));
+      } catch (e) { return Promise.reject(e); }
+    },
+    deriveKey: function (algorithm, key, derivedAlgorithm, extractable, usages) {
+      var bits = (derivedAlgorithm && derivedAlgorithm.length) || 256;
+      return subtle.deriveBits(algorithm, key, bits).then(function (raw) {
+        var name = algorithmName(derivedAlgorithm);
+        var normalized = { name: name, length: bits };
+        if (name === 'HMAC') normalized.hash = { name: hashName(derivedAlgorithm.hash || 'SHA-256') };
+        return makeKey('secret', normalized, extractable, usages, new Uint8Array(raw));
+      });
     }
   };
   G.crypto = {
@@ -781,9 +876,224 @@ enum PluginPolyfills {
   Object.defineProperty(storage, 'length', { get: function () { return N.storageKeys().length; } });
   G.localStorage = storage;
 
-  G.require = function (name) {
-    throw new Error("require('" + name + "') is not available in Nuvio plugins on Apple TV; bundle the module into the plugin file.");
+  // ---- Android runtime compatibility --------------------------------------
+  // What the Nuvio Android apps give plugins beyond browser globals: cheerio
+  // (jsoup there, SwiftSoup here), crypto-js 4.2.0, require() for both, and a
+  // WebAssembly placeholder.
+
+  var CONTAINS_QUOTED = /:contains\(["']([^"']+)["']\)/g;
+  function domSelector(selector) { return String(selector == null ? '' : selector).replace(CONTAINS_QUOTED, ':contains($1)'); }
+  function domIds(json) { try { return JSON.parse(json) || []; } catch (e) { return []; } }
+  function one(id) { return id && id !== '__NONE__' ? [id] : []; }
+  function unique(ids) {
+    var seen = {};
+    return ids.filter(function (id) { if (seen[id]) return false; seen[id] = true; return true; });
+  }
+
+  function cheerioWrap(docId, ids) {
+    var wrapper = {
+      _docId: docId,
+      _elementIds: ids,
+      length: ids.length,
+      cheerio: '[cheerio object]',
+      each: function (callback) {
+        for (var i = 0; i < ids.length; i++) {
+          var el = cheerioWrap(docId, [ids[i]]);
+          if (callback.call(el, i, el) === false) break;
+        }
+        return wrapper;
+      },
+      find: function (selector) {
+        var all = [];
+        for (var i = 0; i < ids.length; i++) all = all.concat(domIds(N.domFind(ids[i], domSelector(selector))));
+        return cheerioWrap(docId, all);
+      },
+      children: function (selector) {
+        var all = [];
+        for (var i = 0; i < ids.length; i++) all = all.concat(domIds(N.domChildren(ids[i], selector ? domSelector(selector) : '')));
+        return cheerioWrap(docId, all);
+      },
+      parent: function () {
+        var all = [];
+        for (var i = 0; i < ids.length; i++) all = all.concat(one(N.domParent(ids[i])));
+        return cheerioWrap(docId, unique(all));
+      },
+      parents: function (selector) {
+        var all = [];
+        for (var i = 0; i < ids.length; i++) all = all.concat(domIds(N.domParents(ids[i], selector ? domSelector(selector) : '')));
+        return cheerioWrap(docId, unique(all));
+      },
+      closest: function (selector) {
+        var all = [];
+        for (var i = 0; i < ids.length; i++) all = all.concat(one(N.domClosest(ids[i], domSelector(selector))));
+        return cheerioWrap(docId, unique(all));
+      },
+      siblings: function (selector) {
+        var all = [];
+        for (var i = 0; i < ids.length; i++) all = all.concat(domIds(N.domSiblings(ids[i], selector ? domSelector(selector) : '')));
+        return cheerioWrap(docId, unique(all));
+      },
+      next: function () {
+        var all = [];
+        for (var i = 0; i < ids.length; i++) all = all.concat(one(N.domNext(ids[i])));
+        return cheerioWrap(docId, all);
+      },
+      prev: function () {
+        var all = [];
+        for (var i = 0; i < ids.length; i++) all = all.concat(one(N.domPrev(ids[i])));
+        return cheerioWrap(docId, all);
+      },
+      text: function () { return ids.length ? N.domText(ids.join(',')) : ''; },
+      html: function () { return ids.length ? N.domHtml(ids[0]) : null; },
+      attr: function (name) {
+        if (!ids.length) return undefined;
+        if (name && typeof name === 'object') return wrapper;
+        var value = N.domAttr(ids[0], String(name));
+        return value === '__UNDEFINED__' ? undefined : value;
+      },
+      data: function (name) {
+        if (!ids.length) return undefined;
+        var value = N.domAttr(ids[0], 'data-' + String(name));
+        if (value === '__UNDEFINED__') return undefined;
+        try { return JSON.parse(value); } catch (e) { return value; }
+      },
+      val: function () { return wrapper.attr('value'); },
+      hasClass: function (name) {
+        for (var i = 0; i < ids.length; i++) {
+          var cls = N.domAttr(ids[i], 'class');
+          if (cls !== '__UNDEFINED__' && (' ' + cls + ' ').replace(/\s+/g, ' ').indexOf(' ' + name + ' ') >= 0) return true;
+        }
+        return false;
+      },
+      is: function (selector) {
+        if (typeof selector === 'function') {
+          for (var i = 0; i < ids.length; i++) {
+            var el = cheerioWrap(docId, [ids[i]]);
+            if (selector.call(el, i, el)) return true;
+          }
+          return false;
+        }
+        for (var j = 0; j < ids.length; j++) if (N.domIs(ids[j], domSelector(selector))) return true;
+        return false;
+      },
+      filter: function (selector) {
+        var kept = [];
+        for (var i = 0; i < ids.length; i++) {
+          var el = cheerioWrap(docId, [ids[i]]);
+          var keep = typeof selector === 'function' ? selector.call(el, i, el) : N.domIs(ids[i], domSelector(selector));
+          if (keep) kept.push(ids[i]);
+        }
+        return cheerioWrap(docId, kept);
+      },
+      not: function (selector) {
+        var kept = [];
+        for (var i = 0; i < ids.length; i++) {
+          var el = cheerioWrap(docId, [ids[i]]);
+          var drop = typeof selector === 'function' ? selector.call(el, i, el) : N.domIs(ids[i], domSelector(selector));
+          if (!drop) kept.push(ids[i]);
+        }
+        return cheerioWrap(docId, kept);
+      },
+      first: function () { return cheerioWrap(docId, ids.length ? [ids[0]] : []); },
+      last: function () { return cheerioWrap(docId, ids.length ? [ids[ids.length - 1]] : []); },
+      eq: function (index) {
+        var i = index < 0 ? ids.length + index : index;
+        return cheerioWrap(docId, i >= 0 && i < ids.length ? [ids[i]] : []);
+      },
+      slice: function (start, end) { return cheerioWrap(docId, ids.slice(start, end)); },
+      get: function (index) {
+        if (typeof index === 'number') {
+          var i = index < 0 ? ids.length + index : index;
+          return i >= 0 && i < ids.length ? cheerioWrap(docId, [ids[i]]) : undefined;
+        }
+        return ids.map(function (id) { return cheerioWrap(docId, [id]); });
+      },
+      map: function (callback) {
+        var results = [];
+        for (var i = 0; i < ids.length; i++) {
+          var el = cheerioWrap(docId, [ids[i]]);
+          var result = callback.call(el, i, el);
+          if (result === undefined || result === null) continue;
+          if (Array.isArray(result)) results = results.concat(result); else results.push(result);
+        }
+        return {
+          length: results.length,
+          get: function (index) { return typeof index === 'number' ? results[index] : results; },
+          toArray: function () { return results; },
+          join: function (separator) { return results.join(separator); }
+        };
+      },
+      toArray: function () { return ids.map(function (id) { return cheerioWrap(docId, [id]); }); }
+    };
+    for (var k = 0; k < ids.length; k++) {
+      (function (index) {
+        Object.defineProperty(wrapper, index, { get: function () { return cheerioWrap(docId, [ids[index]]); }, enumerable: false });
+      })(k);
+    }
+    return wrapper;
+  }
+
+  var cheerio = {
+    load: function (html) {
+      var docId = N.domLoad(String(html == null ? '' : html));
+      var $ = function (selector, context) {
+        if (selector && selector._elementIds) return selector;
+        if (context && context._elementIds) return context.find(selector);
+        if (typeof selector !== 'string' || !selector) return cheerioWrap(docId, []);
+        return cheerioWrap(docId, domIds(N.domSelect(docId, domSelector(selector))));
+      };
+      $.html = function (el) {
+        if (el && el._elementIds) return el._elementIds.length ? N.domOuterHtml(el._elementIds[0]) : '';
+        return N.domOuterHtml(docId);
+      };
+      $.text = function (el) {
+        if (el && el._elementIds) return el.text();
+        return N.domText(docId);
+      };
+      $.root = function () { return cheerioWrap(docId, [docId]); };
+      return $;
+    }
   };
+  G.cheerio = cheerio;
+
+  var cryptoJS = null;
+  function loadCryptoJS() {
+    if (!cryptoJS) {
+      var module = { exports: {} };
+      (new Function('module', 'exports', 'define', N.moduleSource('crypto-js')))(module, module.exports, undefined);
+      cryptoJS = module.exports;
+    }
+    return cryptoJS;
+  }
+  // Loaded on first use: most plugins never touch it.
+  Object.defineProperty(G, 'CryptoJS', {
+    configurable: true,
+    enumerable: false,
+    get: function () {
+      var lib = loadCryptoJS();
+      Object.defineProperty(G, 'CryptoJS', { value: lib, writable: true, configurable: true });
+      return lib;
+    },
+    set: function (value) {
+      Object.defineProperty(G, 'CryptoJS', { value: value, writable: true, configurable: true });
+    }
+  });
+
+  G.require = function (name) {
+    var id = String(name);
+    if (id === 'cheerio' || id === 'cheerio-without-node-native' || id === 'react-native-cheerio') return cheerio;
+    if (id === 'crypto-js') return loadCryptoJS();
+    throw new Error("Module '" + id + "' is not available");
+  };
+
+  if (typeof G.WebAssembly === 'undefined') {
+    G.WebAssembly = {
+      instantiate: function () {
+        N.log('warn', 'WebAssembly.instantiate called (placeholder; WebAssembly is not available on Apple TV)');
+        return Promise.resolve({ instance: { exports: {} }, module: {} });
+      }
+    };
+  }
 
   // ---- invocation ---------------------------------------------------------
   G.__nuvioInvoke = function (name, args) {

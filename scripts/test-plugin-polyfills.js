@@ -12,6 +12,9 @@ const assert = require('node:assert/strict');
 const swiftPath = process.argv[2] || require('node:path').join(__dirname, '../tvosApp/NuvioTV/Sources/Core/Plugins/PluginPolyfills.swift');
 const swift = fs.readFileSync(swiftPath, 'utf8');
 const source = swift.slice(swift.indexOf('#"""\n') + 5, swift.lastIndexOf('\n"""#'));
+const librariesPath = require('node:path').join(require('node:path').dirname(swiftPath), 'PluginLibraries.swift');
+const libraries = fs.readFileSync(librariesPath, 'utf8');
+const cryptoJsSource = libraries.slice(libraries.indexOf('#"""\n') + 5, libraries.lastIndexOf('\n"""#'));
 
 function makeContext(store = {}, storageLimit = 2 * 1024 * 1024) {
   const logs = [];
@@ -61,6 +64,31 @@ function makeContext(store = {}, storageLimit = 2 * 1024 * 1024) {
     storageRemove: (key) => { delete store[key]; },
     storageClear: () => { for (const k of Object.keys(store)) delete store[k]; },
     storageKeys: () => Object.keys(store).sort(),
+    moduleSource: (name) => (name === 'crypto-js' ? cryptoJsSource : "throw new Error('Unknown module');"),
+    aes: (encrypt, mode, keyB64, ivB64, dataB64) => {
+      try {
+        const key = Buffer.from(keyB64, 'base64');
+        const iv = Buffer.from(ivB64, 'base64');
+        const data = Buffer.from(dataB64, 'base64');
+        const bits = key.length * 8;
+        if (mode === 'AES-GCM') {
+          if (encrypt) {
+            const c = crypto.createCipheriv(`aes-${bits}-gcm`, key, iv);
+            return Buffer.concat([c.update(data), c.final(), c.getAuthTag()]).toString('base64');
+          }
+          const d = crypto.createDecipheriv(`aes-${bits}-gcm`, key, iv);
+          d.setAuthTag(data.subarray(data.length - 16));
+          return Buffer.concat([d.update(data.subarray(0, data.length - 16)), d.final()]).toString('base64');
+        }
+        const algo = mode === 'AES-ECB' ? `aes-${bits}-ecb` : `aes-${bits}-cbc`;
+        const c = encrypt ? crypto.createCipheriv(algo, key, mode === 'AES-ECB' ? null : iv) : crypto.createDecipheriv(algo, key, mode === 'AES-ECB' ? null : iv);
+        return Buffer.concat([c.update(data), c.final()]).toString('base64');
+      } catch (e) {
+        return '!' + e.message;
+      }
+    },
+    pbkdf2: (passB64, saltB64, iterations, bits, hash) =>
+      crypto.pbkdf2Sync(Buffer.from(passB64, 'base64'), Buffer.from(saltB64, 'base64'), iterations, bits / 8, hash.replace('-', '').toLowerCase()).toString('base64'),
   };
   ctx.__nuvioNative = N;
   vm.runInContext(source, ctx, { filename: 'polyfills.js' });
@@ -256,6 +284,83 @@ async function test(name, fn) {
     assert.equal(quota, 'QuotaExceededError');
     again.run(`localStorage.removeItem('n'); localStorage.clear();`);
     assert.deepEqual(shared, {});
+  });
+
+  await test('Android compatibility: fetch errors resolve, json() null, URLSearchParams arrays', async () => {
+    const env = makeContext();
+    env.run(`var module = { exports: { go: async function(base) {
+      var down = await fetch('http://127.0.0.1:1/nothing');
+      var notJson = await (await fetch(base + '/xml')).json();
+      var p = new URLSearchParams('a=1&b=2');
+      return { ok: down.ok, status: down.status, reason: down.statusText.length > 0, notJson: notJson,
+               keys: p.keys(), isArray: Array.isArray(p.entries()), iter: Array.from(p).length };
+    } } };`);
+    const res = await invoke(env, 'go', [base]);
+    assert.equal(res.error, null, res.error);
+    const v = JSON.parse(res.json);
+    assert.equal(v.ok, false);
+    assert.equal(v.status, 0);
+    assert.equal(v.reason, true);
+    assert.equal(v.notJson, null);
+    assert.deepEqual(v.keys, ['a', 'b']);
+    assert.equal(v.isArray, true);
+    assert.equal(v.iter, 2);
+  });
+
+  await test('CryptoJS (global and require) is the real crypto-js', async () => {
+    const env = makeContext();
+    env.run(`var module = { exports: { go: function() {
+      var C = require('crypto-js');
+      var enc = CryptoJS.AES.encrypt('Příliš žluťoučký kůň', 'secret').toString();
+      return {
+        same: C === CryptoJS,
+        md5: CryptoJS.MD5('abc').toString(),
+        sha256: C.SHA256('abc').toString(),
+        hmac: C.HmacSHA256('The quick brown fox jumps over the lazy dog', 'key').toString(),
+        b64: C.enc.Base64.stringify(C.enc.Utf8.parse('hello')),
+        roundtrip: CryptoJS.AES.decrypt(enc, 'secret').toString(CryptoJS.enc.Utf8),
+        cheerio: typeof require('cheerio-without-node-native').load
+      };
+    } } };`);
+    const res = await invoke(env, 'go', []);
+    assert.equal(res.error, null, res.error);
+    const v = JSON.parse(res.json);
+    assert.equal(v.same, true);
+    assert.equal(v.md5, '900150983cd24fb0d6963f7d28e17f72');
+    assert.equal(v.sha256, 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+    assert.equal(v.hmac, 'f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8');
+    assert.equal(v.b64, 'aGVsbG8=');
+    assert.equal(v.roundtrip, 'Příliš žluťoučký kůň');
+    assert.equal(v.cheerio, 'function');
+    assert.throws(() => env.run(`require('axios')`), /not available/);
+  });
+
+  await test('crypto.subtle AES-GCM, AES-CBC and PBKDF2', async () => {
+    const env = makeContext();
+    env.run(`var module = { exports: { go: async function() {
+      function hex(buf) { return Array.from(new Uint8Array(buf)).map(function(b){ return (b < 16 ? '0' : '') + b.toString(16); }).join(''); }
+      var raw = new Uint8Array(32); for (var i = 0; i < 32; i++) raw[i] = i;
+      var iv12 = new Uint8Array(12), iv16 = new Uint8Array(16);
+      var gcm = await crypto.subtle.importKey('raw', raw, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+      var sealed = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv12 }, gcm, new TextEncoder().encode('hello'));
+      var opened = new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: iv12 }, gcm, sealed));
+      var cbc = await crypto.subtle.importKey('raw', raw, 'AES-CBC', false, ['encrypt', 'decrypt']);
+      var c = await crypto.subtle.encrypt({ name: 'AES-CBC', iv: iv16 }, cbc, new TextEncoder().encode('hello world'));
+      var d = new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-CBC', iv: iv16 }, cbc, c));
+      var bad; try { await crypto.subtle.decrypt({ name: 'AES-GCM', iv: iv12 }, gcm, new Uint8Array(20)); bad = 'opened'; } catch (e) { bad = e.name; }
+      var pw = await crypto.subtle.importKey('raw', new TextEncoder().encode('password'), 'PBKDF2', false, ['deriveBits']);
+      var bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: new TextEncoder().encode('salt'), iterations: 1, hash: 'SHA-1' }, pw, 160);
+      return { gcmLen: sealed.byteLength, opened: opened, cbcLen: c.byteLength, cbc: d, bad: bad, pbkdf2: hex(bits) };
+    } } };`);
+    const res = await invoke(env, 'go', []);
+    assert.equal(res.error, null, res.error);
+    const v = JSON.parse(res.json);
+    assert.equal(v.gcmLen, 5 + 16);
+    assert.equal(v.opened, 'hello');
+    assert.equal(v.cbcLen, 16);
+    assert.equal(v.cbc, 'hello world');
+    assert.equal(v.bad, 'OperationError');
+    assert.equal(v.pbkdf2, '0c60c80f961f0e71f3a9b524af6012062fe037a6');
   });
 
   server.close();

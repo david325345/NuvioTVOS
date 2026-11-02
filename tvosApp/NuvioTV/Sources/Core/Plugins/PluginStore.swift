@@ -104,6 +104,13 @@ final class PluginStore: ObservableObject {
     @discardableResult
     func addRepository(_ input: String) async throws -> PluginRepositoryRecord {
         ensureLoaded()
+        var input = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        if Self.isShortCode(input) {
+            guard let resolved = await Self.resolveShortCode(input) else {
+                throw PluginStoreError.download("The short code \(input) could not be resolved.")
+            }
+            input = resolved
+        }
         guard let url = Self.normalizedManifestURL(input) else { throw PluginStoreError.invalidURL }
         let manifestURL = url.absoluteString
         if let existing = state.repositories.first(where: { $0.manifestURL == manifestURL }) {
@@ -263,7 +270,7 @@ final class PluginStore: ObservableObject {
         } catch {
             throw PluginStoreError.download("The manifest could not be downloaded: \(error.localizedDescription)")
         }
-        let manifest = try PluginManifest.parse(data)
+        let manifest = try PluginManifest.parse(data, fallbackName: fallbackName(for: manifestURL))
         let previousByID = Dictionary(previous.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let scope = ProfileSettings.activeProfileScope
 
@@ -293,7 +300,8 @@ final class PluginStore: ObservableObject {
                     hasSettings: info.hasSettings,
                     logo: info.logo,
                     contentLanguage: info.contentLanguage,
-                    formats: info.formats
+                    formats: info.formats,
+                    declaresSeriesType: info.declaresSeries
                 ))
             } catch {
                 failures.append(info.name)
@@ -318,12 +326,40 @@ final class PluginStore: ObservableObject {
         return (repository, scrapers)
     }
 
+    /// A repository short code as Android TV accepts them (`cspr`, `megarepo`):
+    /// letters, digits, `-` and `_` only, resolved through cutt.ly.
+    nonisolated static func isShortCode(_ input: String) -> Bool {
+        let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !text.contains("://"), !text.contains("/"), !text.contains(".") else { return false }
+        return text.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
+    }
+
+    /// Follows `https://cutt.ly/<code>` to where it points, as Android TV does.
+    private static func resolveShortCode(_ code: String) async -> String? {
+        guard let url = URL(string: "https://cutt.ly/\(code)") else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 15
+        request.setValue("NuvioTV/1.0", forHTTPHeaderField: "User-Agent")
+        guard let (_, response) = try? await URLSession.shared.data(for: request, delegate: PluginNoRedirectDelegate.shared),
+              let http = response as? HTTPURLResponse else { return nil }
+        if (300..<400).contains(http.statusCode), let location = http.value(forHTTPHeaderField: "Location"), !location.isEmpty {
+            return location
+        }
+        // Some shorteners answer 200 after their own redirects; use where it ended.
+        guard (200..<300).contains(http.statusCode), let final = http.url, final.host != "cutt.ly" else { return nil }
+        return final.absoluteString
+    }
+
     /// Accepts a raw manifest URL, a GitHub `blob` page link or a repository
-    /// root (where `manifest.json` is appended), always over http(s).
+    /// root (where `manifest.json` is appended), always over http(s); another
+    /// scheme (`stremio://`, `nuvio://`) becomes https, as on Android TV.
     nonisolated static func normalizedManifestURL(_ input: String) -> URL? {
         var text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return nil }
-        if !text.lowercased().hasPrefix("http://"), !text.lowercased().hasPrefix("https://") {
+        if let schemeEnd = text.range(of: "://") {
+            let scheme = text[..<schemeEnd.lowerBound].lowercased()
+            if scheme != "http", scheme != "https" { text = "https://" + text[schemeEnd.upperBound...] }
+        } else {
             text = "https://" + text
         }
         guard var components = URLComponents(string: text),

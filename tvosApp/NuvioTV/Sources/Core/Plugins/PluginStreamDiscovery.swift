@@ -53,10 +53,18 @@ enum PluginStreamDiscovery {
 
     /// Splits a Stremio video id (`tt0944947:1:2`, `tmdb:1399:1:2`, `kitsu:…`)
     /// into what plugins receive; `tmdbID` is the resolved TMDB id if known.
-    static func request(type: String, videoID: String, resolvedTMDBID: String?) -> Request {
-        let mediaType = PluginTypes.normalized(type) == "tv" ? "tv" : "movie"
+    /// A scraper that lists `series` in its manifest gets `series` for an
+    /// episode instead of `tv`, as on Android TV.
+    static func request(
+        type: String,
+        videoID: String,
+        resolvedTMDBID: String?,
+        scraperDeclaresSeries: Bool = false
+    ) -> Request {
+        let baseType = PluginTypes.normalized(type) == "tv" ? "tv" : "movie"
         let episode = StreamsRepository.seasonEpisode(fromVideoId: videoID)
-        let isEpisode = mediaType == "tv" && episode.season != nil && episode.episode != nil
+        let isEpisode = baseType == "tv" && episode.season != nil && episode.episode != nil
+        let mediaType = isEpisode && scraperDeclaresSeries ? "series" : baseType
         var base = videoID
         if isEpisode, let season = episode.season, let number = episode.episode,
            base.hasSuffix(":\(season):\(number)") {
@@ -91,13 +99,20 @@ enum PluginStreamDiscovery {
         guard let code = await PluginStore.shared.code(for: target.scraper) else {
             return group([], error: "The provider's code is not available. Refresh the repository.")
         }
-        let initial = request(type: type, videoID: videoID, resolvedTMDBID: nil)
+        let declaresSeries = target.scraper.declaresSeriesType == true
+        let initial = request(type: type, videoID: videoID, resolvedTMDBID: nil, scraperDeclaresSeries: declaresSeries)
         var resolvedTMDB: String?
         if initial.tmdbID == nil, let imdb = initial.imdbID {
-            resolvedTMDB = await TmdbDetailsService.pluginTmdbId(forImdb: imdb, mediaType: initial.mediaType).map(String.init)
+            let tmdbType = initial.mediaType == "movie" ? "movie" : "tv"
+            resolvedTMDB = await TmdbDetailsService.pluginTmdbId(forImdb: imdb, mediaType: tmdbType).map(String.init)
         }
-        let pluginRequest = resolvedTMDB == nil ? initial : request(type: type, videoID: videoID, resolvedTMDBID: resolvedTMDB)
+        let pluginRequest = resolvedTMDB == nil
+            ? initial
+            : request(type: type, videoID: videoID, resolvedTMDBID: resolvedTMDB, scraperDeclaresSeries: declaresSeries)
         let settings = PluginSettingsVault.settings(scraperID: target.scraper.id)
+        // At most ten plugins run at once, as on Android TV.
+        await PluginConcurrency.shared.acquire()
+        defer { Task { await PluginConcurrency.shared.release() } }
         do {
             let result = try await PluginRuntime.call(
                 code: code,
@@ -126,15 +141,17 @@ enum PluginStreamDiscovery {
     /// add-ons use, so URLs, magnets, `nzbUrl` (Nuvio Usenet), headers and
     /// subtitles behave exactly like an add-on stream.
     ///
-    /// Plugin fields follow Android (`name` or `title`; `quality`, `size` and
-    /// `language` joined into the description; `headers` as proxy headers).
-    /// Apple TV also reads the Stremio fields `description`, `behaviorHints`,
-    /// `nzbUrl`, `fileMustInclude`, `fileIdx` and `servers` when present.
+    /// Shown as on Android TV: the name (or title, or the provider) with
+    /// " - quality" when the name doesn't already say it, the title below it,
+    /// then size • language. Text containing "[object" (a plugin's stringified
+    /// object) is ignored, also as on Android. Apple TV additionally reads the
+    /// Stremio fields `description`, `behaviorHints`, `nzbUrl`,
+    /// `fileMustInclude`, `fileIdx` and `servers`.
     static func stream(from object: [String: Any], providerName: String) -> NuvioStream? {
         var stremio: [String: Any] = [:]
-        if let url = object["url"] as? String {
+        if let url = clean(object["url"]) {
             stremio["url"] = url
-        } else if let nested = object["url"] as? [String: Any], let url = nested["url"] as? String {
+        } else if let nested = object["url"] as? [String: Any], let url = clean(nested["url"]) {
             stremio["url"] = url
         }
         for key in ["externalUrl", "infoHash", "nzbUrl", "fileMustInclude", "servers", "sources"] {
@@ -142,12 +159,19 @@ enum PluginStreamDiscovery {
         }
         if let index = object["fileIdx"] as? NSNumber, !PluginJSON.isBoolean(index) { stremio["fileIdx"] = index.intValue }
 
-        let name = clean(object["name"]) ?? clean(object["title"]) ?? providerName
-        stremio["name"] = name
+        let name = clean(object["name"])
+        let title = clean(object["title"])
+        let quality = clean(object["quality"])
+        var displayName = name ?? title ?? providerName
+        if let quality, !displayName.localizedCaseInsensitiveContains(quality) {
+            displayName += " - \(quality)"
+        }
+        stremio["name"] = displayName
+        if let title = title ?? name, title != displayName { stremio["title"] = title }
         if let description = clean(object["description"]) {
             stremio["description"] = description
         } else {
-            let parts = ["quality", "size", "language"].compactMap { clean(object[$0]) }
+            let parts = ["size", "language"].compactMap { clean(object[$0]) }
             if !parts.isEmpty { stremio["description"] = parts.joined(separator: " • ") }
         }
 
@@ -156,8 +180,8 @@ enum PluginStreamDiscovery {
             var request: [String: String] = [:]
             for (key, value) in headers {
                 let name = key.trimmingCharacters(in: .whitespaces)
-                guard let text = PluginJSON.text(value)?.trimmingCharacters(in: .whitespaces),
-                      !name.isEmpty, !text.isEmpty,
+                guard let text = clean(value),
+                      !name.isEmpty,
                       name.caseInsensitiveCompare("Range") != .orderedSame else { continue }
                 request[name] = text
             }
@@ -175,8 +199,8 @@ enum PluginStreamDiscovery {
         if let subtitles = object["subtitles"] as? [Any] {
             stremio["subtitles"] = subtitles.enumerated().compactMap { index, raw -> [String: Any]? in
                 guard let subtitle = raw as? [String: Any], let url = clean(subtitle["url"]) else { return nil }
-                var entry: [String: Any] = ["url": url, "id": "\(providerName)-\(index)"]
-                if let language = clean(subtitle["lang"]) ?? clean(subtitle["language"]) { entry["lang"] = language }
+                var entry: [String: Any] = ["url": url, "id": clean(subtitle["id"]) ?? "\(providerName)-\(index)"]
+                entry["lang"] = clean(subtitle["language"]) ?? clean(subtitle["lang"]) ?? "Unknown"
                 if let label = clean(subtitle["name"]) ?? clean(subtitle["title"]) { entry["name"] = label }
                 return entry
             }
@@ -191,7 +215,36 @@ enum PluginStreamDiscovery {
     private static func clean(_ value: Any?) -> String? {
         guard let value, let text = PluginJSON.text(value) else { return nil }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
+        return trimmed.isEmpty || trimmed.contains("[object") ? nil : trimmed
+    }
+}
+
+/// Limits how many plugin calls run at once (ten, as on Android TV).
+actor PluginConcurrency {
+    static let shared = PluginConcurrency(limit: 10)
+
+    private let limit: Int
+    private var running = 0
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+
+    init(limit: Int) {
+        self.limit = limit
+    }
+
+    func acquire() async {
+        if running < limit {
+            running += 1
+            return
+        }
+        await withCheckedContinuation { waiting.append($0) }
+    }
+
+    func release() {
+        if waiting.isEmpty {
+            running = max(0, running - 1)
+        } else {
+            waiting.removeFirst().resume()
+        }
     }
 }
 

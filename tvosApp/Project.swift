@@ -169,6 +169,7 @@ let appTarget: Target = .target(
         .package(product: "MPVKit"),
         .package(product: "SwiftAssRenderer"),
         .package(product: "Realtime"),
+        .package(product: "SwiftSoup"),
     ],
     settings: .settings(
         base: [
@@ -296,6 +297,8 @@ let project = Project(
         .local(path: "../MPVKit"),
         .package(url: "https://github.com/mihai8804858/swift-ass-renderer.git", from: "1.3.1"),
         .package(url: "https://github.com/supabase/supabase-swift.git", .exact("2.55.4")),
+        // HTML parsing for plugins' cheerio (jsoup on Android; SwiftSoup is its port).
+        .package(url: "https://github.com/scinfu/SwiftSoup.git", .exact("2.14.3")),
     ],
     settings: .settings(
         base: projectBaseSettings,
