@@ -9005,7 +9005,7 @@ private struct PlaybackSettingsView: View {
 
                 SubtitleColorRow(
                     title: "Timeline Color",
-                    subtitle: "The played part of the timeline and the seek needle",
+                    subtitle: "The playhead mark on the timeline and the seek needle",
                     selection: $timelineColor,
                     accentColor: accentColor,
                     colors: PlaybackChapters.timelineColorChoices

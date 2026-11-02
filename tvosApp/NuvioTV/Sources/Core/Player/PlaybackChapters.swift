@@ -289,11 +289,12 @@ enum PlaybackChapters {
     static let colorChoices = ["#F2C94C", "#56CCF2", "#F78FB3", "#6FCF97", "#9B51E0", "#F2994A", "#27AE60", "#2F80ED"]
     static let defaultOpeningColor = "#F2C94C"
     static let defaultEndingColor = "#56CCF2"
-    /// The timeline's own color: white as it was, or one of the opening / ending colors.
+    /// The playhead mark's own color: white as it was, red, or one of the opening / ending colors.
     static let defaultTimelineColor = "#FFFFFF"
-    static let timelineColorChoices = [defaultTimelineColor] + colorChoices
+    static let timelineRed = "#EB5757"
+    static let timelineColorChoices = [defaultTimelineColor, timelineRed] + colorChoices
 
-    /// The color chosen for the timeline's played part and seek needle, as "#RRGGBB".
+    /// The color chosen for the playhead mark and the seek needle, as "#RRGGBB".
     static func timelineColorHex(in settings: UserDefaults) -> String {
         guard let value = settings.string(forKey: SettingsKey.timelineColor)?.trimmingCharacters(in: .whitespaces),
               let choice = timelineColorChoices.first(where: { $0.caseInsensitiveCompare(value) == .orderedSame })

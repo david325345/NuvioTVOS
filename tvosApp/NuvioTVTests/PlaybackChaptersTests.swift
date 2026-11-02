@@ -356,6 +356,7 @@ final class PlaybackChaptersTests: XCTestCase {
         settings.set("#123456", forKey: SettingsKey.timelineColor)
         XCTAssertEqual(PlaybackChapters.timelineColorHex(in: settings), "#FFFFFF", "a color no longer offered")
         XCTAssertEqual(PlaybackChapters.timelineColorChoices.first, "#FFFFFF")
-        XCTAssertEqual(PlaybackChapters.timelineColorChoices.count, PlaybackChapters.colorChoices.count + 1)
+        XCTAssertTrue(PlaybackChapters.timelineColorChoices.contains("#EB5757"), "red")
+        XCTAssertEqual(PlaybackChapters.timelineColorChoices.count, PlaybackChapters.colorChoices.count + 2)
     }
 }

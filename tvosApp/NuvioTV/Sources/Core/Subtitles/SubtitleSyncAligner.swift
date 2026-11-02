@@ -562,8 +562,7 @@ enum SubtitleSyncReference {
 
     static func review(in index: MatroskaSubtitleIndex, targetLineCount: Int) -> Review {
         var skipped: [UInt64: String] = [:]
-        let usable: [Candidate] = index.tracks.compactMap { track in
-            if track.isForced { skipped[track.number] = "forced"; return nil }
+        func usableTrack(_ track: MatroskaSubtitleTrack) -> Candidate? {
             if track.isCommentary { skipped[track.number] = "commentary"; return nil }
             guard track.isText || track.isPGS else {
                 skipped[track.number] = "picture subtitles (\(track.codecID))"
@@ -580,6 +579,15 @@ enum SubtitleSyncReference {
                 return nil
             }
             return Candidate(track: track, cues: lines)
+        }
+        var usable = index.tracks.filter { !$0.isForced }.compactMap(usableTrack)
+        let forced = index.tracks.filter(\.isForced)
+        if usable.isEmpty {
+            // Some releases mark their only full track forced: with nothing else to go by, it is
+            // tried like any other (signs and songs still left out by name).
+            usable = forced.compactMap(usableTrack)
+        } else {
+            for track in forced { skipped[track.number] = "forced" }
         }
         var pool = usable.filter { $0.track.isText }
         if pool.count >= 2 {

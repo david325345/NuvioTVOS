@@ -295,7 +295,7 @@ actor SubtitleAutoSync {
         report.tracks = index.tracks.map { track in
             let line = "\(track.summary) \(track.events.count)"
             if let reason = review.skipped[track.number] { return line + " · skipped: " + reason }
-            return line + " · tried"
+            return line + (track.isForced ? " · tried (marked forced, no other track)" : " · tried")
         }
         guard !candidates.isEmpty else { return await finish(.noEmbeddedSubtitles) }
 

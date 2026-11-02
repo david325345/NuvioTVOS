@@ -57,7 +57,8 @@ struct PlayerProgressTrack: View {
     var playedOpacity: Double = 0.4
     /// Optional position indicator.
     var position: Double? = nil
-    /// The played part's and its edge's color, when not white (Settings → Timeline Color).
+    /// The playhead mark's color, when not white (Settings → Timeline Color); the played part
+    /// stays white.
     var tint: Color? = nil
 
     /// The player's timeline color, nil while it is white (fork test build).
@@ -114,7 +115,7 @@ struct PlayerProgressTrack: View {
                     if p > 0 {
                         // Played progress bar (semi-opaque white)
                         Rectangle()
-                            .fill(tint.map { $0.opacity(0.85) } ?? Color.white.opacity(playedOpacity))
+                            .fill(Color.white.opacity(playedOpacity))
                             .frame(width: w * p)
 
                         // Played portion of opening & ending segments in full vibrant color
@@ -132,7 +133,7 @@ struct PlayerProgressTrack: View {
                         // Leading edge tick: bright white cap flush with the track height
                         Rectangle()
                             .fill(tint ?? Color.white)
-                            .frame(width: 2, height: h)
+                            .frame(width: tint == nil ? 2 : 4, height: h)
                             .position(x: min(max(w * p - 1, 1), w - 1), y: h / 2)
                     }
                 }
