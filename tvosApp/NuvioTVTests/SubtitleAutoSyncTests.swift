@@ -150,6 +150,35 @@ final class SubtitleAutoSyncTests: XCTestCase {
         XCTAssertEqual(pgs[0].cues[0].end, 13)
     }
 
+    func testTheDiagnosticsSayWhyATrackIsLeftOut() {
+        func track(_ number: UInt64, _ codec: String, name: String?, forced: Bool = false, events: Int) -> MatroskaSubtitleTrack {
+            MatroskaSubtitleTrack(
+                number: number, codecID: codec, language: "eng", name: name, isDefault: false,
+                isForced: forced, isHearingImpaired: false, isCommentary: false,
+                events: (0..<events).map { (start: 10 + Double($0) * 3, duration: 2) })
+        }
+        let index = MatroskaSubtitleIndex(tracks: [
+            track(2, "S_TEXT/UTF8", name: "English", events: 300),
+            track(3, "S_TEXT/ASS", name: "English", events: 310),
+            track(4, "S_TEXT/ASS", name: "Dialogue + Signs", events: 320),
+            track(5, "S_TEXT/ASS", name: nil, forced: true, events: 50),
+            track(7, "S_HDMV/PGS", name: nil, events: 600),
+            track(8, "S_VOBSUB", name: nil, events: 400),
+            track(9, "S_TEXT/ASS", name: "Full", events: 5),
+            track(11, "S_TEXT/UTF8", name: "English SRT", events: 300),
+        ])
+        let review = SubtitleSyncReference.review(in: index, targetLineCount: 305)
+        XCTAssertEqual(review.candidates.map(\.track.number), [3, 2])
+        XCTAssertEqual(review.skipped, [
+            4: "name (signs, songs…)",
+            5: "forced",
+            7: "PGS, text tracks first",
+            8: "picture subtitles (S_VOBSUB)",
+            9: "only 5 lines in the index",
+            11: "same timing as another track",
+        ])
+    }
+
     // MARK: Lining up
 
     func testAConstantShiftIsFoundAndMeasured() {

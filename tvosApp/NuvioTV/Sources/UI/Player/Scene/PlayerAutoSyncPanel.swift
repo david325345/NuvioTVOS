@@ -151,11 +151,12 @@ struct PlayerAutoSyncPanel: View {
                     row(L10n.string("player_autosync_source", fallback: "Source"), report.source)
                     row(L10n.string("player_autosync_subtitles", fallback: "Subtitles"), report.subtitle)
                     row(L10n.string("player_autosync_index", fallback: "Index"), report.index)
-                    if !report.tracks.isEmpty {
-                        row("", report.tracks.joined(separator: ", "), secondary: true)
+                    // A line per track, with why it was left out (fork test build).
+                    ForEach(Array(report.tracks.prefix(6).enumerated()), id: \.offset) { _, track in
+                        row("", track, secondary: true)
                     }
                     ForEach(Array(report.attempts.prefix(3).enumerated()), id: \.offset) { index, attempt in
-                        row(index == 0 ? L10n.string("player_autosync_reference", fallback: "Reference") : "", attempt)
+                        row(index == 0 ? L10n.string("player_autosync_reference", fallback: "Reference") : "", attempt, lines: 2)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -185,7 +186,7 @@ struct PlayerAutoSyncPanel: View {
         }
     }
 
-    private func row(_ label: String, _ value: String, secondary: Bool = false, warning: Bool = false) -> some View {
+    private func row(_ label: String, _ value: String, secondary: Bool = false, warning: Bool = false, lines: Int = 1) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 14) {
             Text(label)
                 .font(.system(size: 17, weight: .semibold))
@@ -194,7 +195,7 @@ struct PlayerAutoSyncPanel: View {
             Text(value.isEmpty ? "–" : value)
                 .font(.system(size: secondary ? 15 : 17, weight: .regular).monospacedDigit())
                 .foregroundStyle(warning ? Color(red: 1.0, green: 0.82, blue: 0.55) : .white.opacity(secondary ? 0.55 : 0.85))
-                .lineLimit(1)
+                .lineLimit(lines)
                 .truncationMode(.tail)
         }
     }

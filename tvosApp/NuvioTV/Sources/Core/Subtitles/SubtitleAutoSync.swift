@@ -289,9 +289,14 @@ actor SubtitleAutoSync {
         let index = loaded.index
         report.index = "\(index.tracks.count) subtitle tracks · \(max(1, Int(index.bytes / 1024))) kB · "
             + "\(index.requests) requests · " + String(format: "%.1f s", Double(loaded.milliseconds) / 1000)
-        report.tracks = index.tracks.map { "\($0.summary) \($0.events.count)" + ($0.isForced ? " forced" : "") }
-
-        let candidates = SubtitleSyncReference.candidates(in: index, targetLineCount: dialogue.count)
+        let review = SubtitleSyncReference.review(in: index, targetLineCount: dialogue.count)
+        let candidates = review.candidates
+        // Each track with its line count, and why it was left out (or that it was tried).
+        report.tracks = index.tracks.map { track in
+            let line = "\(track.summary) \(track.events.count)"
+            if let reason = review.skipped[track.number] { return line + " · skipped: " + reason }
+            return line + " · tried"
+        }
         guard !candidates.isEmpty else { return await finish(.noEmbeddedSubtitles) }
 
         var match: (reference: MatroskaSubtitleTrack, alignment: SubtitleSyncAlignment, fit: SubtitleSyncFit)?
@@ -357,7 +362,7 @@ actor SubtitleAutoSync {
         switch error as? SubtitleIndexError {
         case .notMatroska: return .notMatroska
         case .noIndex, .budgetExceeded: return .noIndex
-        case .noSubtitleTracks: return .noEmbeddedSubtitles
+        case .noSubtitleTracks, .tracksNotFound: return .noEmbeddedSubtitles
         case .rangeUnsupported: return .unsupportedSource
         case nil: return .indexFailed
         }
