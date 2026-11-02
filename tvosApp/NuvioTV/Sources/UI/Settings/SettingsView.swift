@@ -4445,6 +4445,8 @@ private struct IntegrationSettingsView: View {
     @State private var showingAISubtitleOptions = false
     @State private var showingP2PConsent = false
     @State private var showingAddonsSettings = false
+    @State private var showingPluginsSettings = false
+    @State private var pluginSummaryCount = 0
     @State private var addonSummaryCount = 0
     @State private var addonSummarySyncedAddons: [SyncedAddon]? = nil
     @StateObject private var debridConnection = DebridAccountConnectionViewModel()
@@ -4547,6 +4549,19 @@ private struct IntegrationSettingsView: View {
             ) {
                 showingAddonsSettings = true
             }
+
+            SettingsFeatureSummaryCard(
+                featureName: L10n.string("tvos_settings_plugins", fallback: "Plugins"),
+                status: settingsCountSummary(pluginSummaryCount, singular: "repository added", plural: "repositories added"),
+                actionSubtitle: L10n.string(
+                    "tvos_settings_plugins_open_subtitle",
+                    fallback: "JavaScript providers that run on this Apple TV, added from a manifest link"
+                ),
+                accentColor: accentColor
+            ) {
+                showingPluginsSettings = true
+            }
+            .onAppear { pluginSummaryCount = PluginStore.shared.repositories.count }
 
             SettingsGroup(
                 title: L10n.string("tvos_settings_watch_progress_title", fallback: "Continue Watching & Scrobbling"),
@@ -5028,6 +5043,20 @@ private struct IntegrationSettingsView: View {
                 subtitle: L10n.string("tvos_settings_stremio_compatible_catalogs_streams_and__cd03738a", fallback: "Stremio-compatible catalogs, streams, and subtitles")
             ) {
                 AddonsSettingsSection(accentColor: accentColor, onSyncedAddonsChange: receiveSyncedAddonSummary)
+            }
+            .modifier(ClearPresentationBackgroundIfAvailable())
+        }
+        .fullScreenCover(isPresented: $showingPluginsSettings, onDismiss: {
+            pluginSummaryCount = PluginStore.shared.repositories.count
+        }) {
+            SettingsFeatureSettingsSheet(
+                title: L10n.string("tvos_settings_plugins", fallback: "Plugins"),
+                subtitle: L10n.string(
+                    "tvos_settings_plugins_sheet_subtitle",
+                    fallback: "Plugin repositories and their providers, as in the Nuvio Android app"
+                )
+            ) {
+                PluginsSettingsSection(accentColor: accentColor)
             }
             .modifier(ClearPresentationBackgroundIfAvailable())
         }
@@ -13113,6 +13142,519 @@ private struct AddonReorderButton: View {
         .focusEffectDisabledIfAvailable()
         .animation(.easeOut(duration: 0.12), value: focused)
         .entryLockable()
+    }
+}
+
+// MARK: - Plugins
+
+/// Settings → Integrations → Plugins: repositories added by their
+/// `manifest.json` link (as on Android), their providers, and each provider's
+/// own settings form. The repository list syncs with the Nuvio account.
+private struct PluginsSettingsSection: View {
+    let accentColor: Color
+
+    @ObservedObject private var store = PluginStore.shared
+    @State private var manifestURLInput = ""
+    @State private var addStatus: String?
+    @State private var addFailed = false
+    @State private var isAdding = false
+    @State private var settingsScraper: PluginScraperRecord?
+    @State private var logScraper: PluginScraperRecord?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 28) {
+            SettingsGroup(
+                title: L10n.string("tvos_settings_plugins", fallback: "Plugins"),
+                subtitle: L10n.string(
+                    "tvos_settings_plugins_group_subtitle",
+                    fallback: "Providers written in JavaScript that run on this Apple TV. The repository list syncs with your Nuvio account; provider settings stay on this device."
+                )
+            ) {
+                SettingsTextFieldRow(
+                    title: L10n.string("tvos_settings_plugin_repository_url", fallback: "Repository URL"),
+                    subtitle: addStatus ?? L10n.string(
+                        "tvos_settings_plugin_repository_url_subtitle",
+                        fallback: "Paste the link to a plugin manifest.json — a GitHub link works too"
+                    ),
+                    placeholder: isAdding
+                        ? L10n.string("tvos_settings_plugin_adding", fallback: "Adding…")
+                        : "https://.../manifest.json",
+                    text: $manifestURLInput,
+                    fieldWidth: 560,
+                    onCommit: addRepository
+                )
+                .settingsEntryAnchor()
+
+                SettingsToggleRow(
+                    title: L10n.string("tvos_settings_plugins_enabled", fallback: "Use Plugins"),
+                    subtitle: L10n.string(
+                        "tvos_settings_plugins_enabled_subtitle",
+                        fallback: "Ask the enabled providers for streams next to your add-ons"
+                    ),
+                    isOn: Binding(
+                        get: { store.state.pluginsEnabled },
+                        set: { store.setPluginsEnabled($0) }
+                    ),
+                    accentColor: accentColor
+                )
+            }
+
+            ForEach(Array(store.state.repositories.enumerated()), id: \.element.id) { index, repository in
+                SettingsGroup(title: repository.name, subtitle: subtitle(for: repository)) {
+                    HStack(spacing: 14) {
+                        SettingsActionRow(
+                            title: L10n.string("tvos_settings_plugin_update", fallback: "Update Repository"),
+                            subtitle: repository.manifestURL,
+                            value: store.refreshing.contains(repository.manifestURL)
+                                ? L10n.string("tvos_settings_plugin_updating", fallback: "Updating…")
+                                : L10n.string("tvos_settings_plugin_update_action", fallback: "Update"),
+                            accentColor: accentColor
+                        ) {
+                            Task { await store.refreshRepository(repository.manifestURL) }
+                        }
+                        AddonReorderButton(systemImage: "trash", disabled: false) {
+                            store.removeRepository(repository.manifestURL)
+                        }
+                        AddonReorderButton(systemImage: "chevron.up", disabled: index == 0) {
+                            store.moveRepository(repository.manifestURL, up: true)
+                        }
+                        AddonReorderButton(
+                            systemImage: "chevron.down",
+                            disabled: index == store.state.repositories.count - 1
+                        ) {
+                            store.moveRepository(repository.manifestURL, up: false)
+                        }
+                    }
+
+                    ForEach(store.state.scrapers.filter { $0.repositoryURL == repository.manifestURL }) { scraper in
+                        PluginScraperSettingsRow(
+                            scraper: scraper,
+                            accentColor: accentColor,
+                            onToggle: { store.setScraperEnabled(scraper.id, enabled: !scraper.enabled) },
+                            onSettings: { settingsScraper = scraper },
+                            onLogs: { logScraper = scraper }
+                        )
+                    }
+                }
+            }
+        }
+        .onAppear { store.ensureLoaded() }
+        .sheet(item: $settingsScraper) { scraper in
+            PluginScraperSettingsSheet(scraper: scraper, accentColor: accentColor)
+                .modifier(ClearPresentationBackgroundIfAvailable())
+        }
+        .sheet(item: $logScraper) { scraper in
+            PluginLogSheet(scraper: scraper, accentColor: accentColor)
+                .modifier(ClearPresentationBackgroundIfAvailable())
+        }
+    }
+
+    private func subtitle(for repository: PluginRepositoryRecord) -> String {
+        var parts: [String] = []
+        if let version = repository.version, !version.isEmpty { parts.append("v\(version)") }
+        if let author = repository.author, !author.isEmpty { parts.append(author) }
+        parts.append(settingsCountSummary(repository.scraperCount, singular: "provider", plural: "providers"))
+        var text = parts.joined(separator: " · ")
+        if let description = repository.description, !description.isEmpty { text += "\n" + description }
+        if let error = repository.errorMessage, !error.isEmpty { text += "\n⚠︎ " + error }
+        return text
+    }
+
+    private func addRepository() {
+        let input = manifestURLInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !input.isEmpty, !isAdding else { return }
+        isAdding = true
+        addStatus = L10n.string("tvos_settings_plugin_adding", fallback: "Adding…")
+        Task { @MainActor in
+            defer { isAdding = false }
+            do {
+                let repository = try await store.addRepository(input)
+                manifestURLInput = ""
+                addFailed = false
+                addStatus = L10n.format(
+                    "tvos_settings_plugin_added",
+                    fallback: "Added %@",
+                    repository.name
+                )
+            } catch is CancellationError {
+                addStatus = nil
+            } catch {
+                addFailed = true
+                addStatus = "✕ " + error.localizedDescription
+            }
+        }
+    }
+}
+
+private struct PluginScraperSettingsRow: View {
+    let scraper: PluginScraperRecord
+    let accentColor: Color
+    let onToggle: () -> Void
+    let onSettings: () -> Void
+    let onLogs: () -> Void
+
+    @FocusState private var isFocused: Bool
+
+    private var isActive: Bool { scraper.enabled && scraper.manifestEnabled }
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Button(action: onToggle) {
+                SettingsRowShell(isFocused: isFocused, accentColor: accentColor) {
+                    artwork
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 8) {
+                            Text(scraper.name)
+                                .font(.system(size: 22, weight: .semibold))
+                                .foregroundColor(isActive ? .white : .white.opacity(0.46))
+                                .lineLimit(1)
+                            Text("v\(scraper.version)")
+                                .font(.system(size: 15, weight: .medium))
+                                .foregroundColor(.white.opacity(0.4))
+                        }
+                        Text(details)
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundColor(.white.opacity(isActive ? 0.56 : 0.36))
+                            .lineLimit(2)
+                    }
+
+                    Spacer(minLength: 20)
+
+                    Text(isActive
+                         ? L10n.string("settings_fusion_badge_url_active", fallback: "Active")
+                         : L10n.string("tvos_settings_disabled", fallback: "Disabled"))
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundColor(isActive ? .white.opacity(0.7) : .white.opacity(0.42))
+                        .lineLimit(1)
+                }
+            }
+            .buttonStyle(PosterCardButtonStyle())
+            .focused($isFocused)
+            .focusEffectDisabledIfAvailable()
+            .entryLockable()
+            .disabled(!scraper.manifestEnabled)
+
+            AddonReorderButton(systemImage: "gearshape", disabled: false, action: onSettings)
+            AddonReorderButton(systemImage: "doc.text.magnifyingglass", disabled: false, action: onLogs)
+        }
+    }
+
+    private var details: String {
+        var parts: [String] = []
+        let types = scraper.supportedTypes.map { $0 == "tv" ? "Series" : $0.capitalized }
+        if !types.isEmpty { parts.append(types.joined(separator: ", ")) }
+        if !scraper.contentLanguage.isEmpty { parts.append(scraper.contentLanguage.joined(separator: ", ").uppercased()) }
+        if !scraper.description.isEmpty { parts.append(scraper.description) }
+        return parts.joined(separator: " · ")
+    }
+
+    private var artwork: some View {
+        Group {
+            if let logo = scraper.logo, let url = URL(string: logo) {
+                AsyncImage(url: url) { phase in
+                    if let image = phase.image {
+                        image.resizable().aspectRatio(contentMode: .fit)
+                    } else {
+                        fallbackGlyph
+                    }
+                }
+            } else {
+                fallbackGlyph
+            }
+        }
+        .frame(width: 48, height: 48)
+        .opacity(isActive ? 1 : 0.42)
+    }
+
+    private var fallbackGlyph: some View {
+        Image(systemName: "puzzlepiece.extension")
+            .font(.system(size: 26))
+            .foregroundColor(isActive ? accentColor : .white.opacity(0.38))
+    }
+}
+
+/// A provider's own settings, built from the form its `onSettings()` returns
+/// (text and password fields, choices, switches and notes, as on Android).
+private struct PluginScraperSettingsSheet: View {
+    let scraper: PluginScraperRecord
+    let accentColor: Color
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var fields: [PluginSettingField] = []
+    @State private var texts: [String: String] = [:]
+    @State private var toggles: [String: Bool] = [:]
+    @State private var isLoading = true
+    @State private var loadError: String?
+    @State private var canVerify = false
+    @State private var status: String?
+    @State private var isWorking = false
+
+    var body: some View {
+        SettingsFeatureSettingsSheet(
+            title: scraper.name,
+            subtitle: L10n.string(
+                "tvos_settings_plugin_settings_subtitle",
+                fallback: "Saved on this Apple TV only, for the active profile"
+            )
+        ) {
+            VStack(alignment: .leading, spacing: 18) {
+                if isLoading {
+                    SettingsInfoRow(
+                        title: L10n.string("tvos_settings_plugin_settings_loading", fallback: "Loading the provider's settings…"),
+                        value: ""
+                    )
+                } else if let loadError {
+                    SettingsInfoRow(title: L10n.string("tvos_settings_plugin_settings_error", fallback: "Settings unavailable"), value: loadError, isDiagnostic: true)
+                } else if fields.isEmpty {
+                    SettingsInfoRow(
+                        title: L10n.string("tvos_settings_plugin_settings_none", fallback: "This provider has no settings."),
+                        value: ""
+                    )
+                } else {
+                    ForEach(fields) { field in
+                        fieldRow(field)
+                    }
+
+                    SettingsActionRow(
+                        title: L10n.string("tvos_settings_plugin_settings_save", fallback: "Save"),
+                        subtitle: status ?? L10n.string(
+                            "tvos_settings_plugin_settings_save_subtitle",
+                            fallback: "The provider uses the new values on its next search"
+                        ),
+                        value: isWorking ? "…" : L10n.string("tvos_settings_plugin_settings_save_action", fallback: "Save"),
+                        accentColor: accentColor,
+                        action: save
+                    )
+
+                    if canVerify {
+                        SettingsActionRow(
+                            title: L10n.string("tvos_settings_plugin_settings_verify", fallback: "Verify"),
+                            subtitle: L10n.string(
+                                "tvos_settings_plugin_settings_verify_subtitle",
+                                fallback: "Let the provider check these values (keys, addresses) before you save"
+                            ),
+                            value: isWorking ? "…" : L10n.string("tvos_settings_plugin_settings_verify_action", fallback: "Verify"),
+                            accentColor: accentColor,
+                            action: verify
+                        )
+                    }
+                }
+            }
+            .settingsEntryAnchor()
+        }
+        .task { await load() }
+    }
+
+    @ViewBuilder
+    private func fieldRow(_ field: PluginSettingField) -> some View {
+        switch field.kind {
+        case .text(let isPassword, let placeholder):
+            SettingsTextFieldRow(
+                title: field.label,
+                subtitle: field.description ?? "",
+                placeholder: placeholder ?? L10n.string("debrid_not_set", fallback: "Not set"),
+                text: Binding(
+                    get: { texts[field.key] ?? "" },
+                    set: { texts[field.key] = $0 }
+                ),
+                isSecure: isPassword,
+                fieldWidth: 420
+            )
+        case .select(let options):
+            SettingsChoiceRow(
+                title: field.label,
+                subtitle: field.description ?? "",
+                selection: Binding(
+                    get: { texts[field.key] ?? options.first?.value ?? "" },
+                    set: { texts[field.key] = $0 }
+                ),
+                options: options.map(\.value),
+                optionLabels: Dictionary(options.map { ($0.value, $0.label) }, uniquingKeysWith: { first, _ in first }),
+                accentColor: accentColor
+            )
+        case .toggle:
+            SettingsToggleRow(
+                title: field.label,
+                subtitle: field.description ?? "",
+                isOn: Binding(
+                    get: { toggles[field.key] ?? false },
+                    set: { toggles[field.key] = $0 }
+                ),
+                accentColor: accentColor
+            )
+        case .info:
+            VStack(alignment: .leading, spacing: 6) {
+                if !field.label.isEmpty {
+                    Text(field.label)
+                        .font(.system(size: 21, weight: .semibold))
+                        .foregroundColor(.white)
+                }
+                if let description = field.description, !description.isEmpty {
+                    Text(description)
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundColor(.white.opacity(0.6))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.horizontal, 20)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func load() async {
+        isLoading = true
+        let saved = PluginSettingsVault.settings(scraperID: scraper.id)
+        do {
+            let layout = try await PluginSettingsService.layout(for: scraper)
+            var nextTexts: [String: String] = [:]
+            var nextToggles: [String: Bool] = [:]
+            for field in layout where !field.key.isEmpty {
+                let value = saved[field.key]
+                switch field.kind {
+                case .toggle:
+                    nextToggles[field.key] = (value as? Bool) ?? field.defaultBool ?? false
+                case .text, .select:
+                    nextTexts[field.key] = value.flatMap(PluginJSON.text) ?? field.defaultText ?? ""
+                case .info:
+                    break
+                }
+            }
+            fields = layout
+            texts = nextTexts
+            toggles = nextToggles
+            if let code = await PluginStore.shared.code(for: scraper) {
+                canVerify = PluginSettingsService.hasVerify(code: code)
+            }
+            loadError = nil
+        } catch {
+            loadError = error.localizedDescription
+        }
+        isLoading = false
+    }
+
+    private var currentValues: [String: Any] {
+        var values = PluginSettingsVault.settings(scraperID: scraper.id)
+        for field in fields where !field.key.isEmpty {
+            switch field.kind {
+            case .toggle:
+                values[field.key] = toggles[field.key] ?? false
+            case .text, .select:
+                values[field.key] = (texts[field.key] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            case .info:
+                break
+            }
+        }
+        return values
+    }
+
+    private func save() {
+        guard !isWorking else { return }
+        if PluginSettingsVault.save(currentValues, scraperID: scraper.id) {
+            status = "✓ " + L10n.string("tvos_settings_plugin_settings_saved", fallback: "Saved")
+            dismiss()
+        } else {
+            status = "✕ " + L10n.string("tvos_settings_plugin_settings_save_failed", fallback: "The settings could not be saved")
+        }
+    }
+
+    private func verify() {
+        guard !isWorking else { return }
+        isWorking = true
+        status = L10n.string("tvos_settings_plugin_settings_verifying", fallback: "Checking…")
+        let values = currentValues
+        Task { @MainActor in
+            let result = await PluginSettingsService.verify(scraper: scraper, settings: values)
+            isWorking = false
+            if let result {
+                status = (result.ok ? "✓ " : "✕ ") + result.message
+            } else {
+                status = L10n.string("tvos_settings_plugin_settings_no_verify", fallback: "This provider cannot check its settings")
+            }
+        }
+    }
+}
+
+/// The provider's recent console output, to see why it found nothing.
+private struct PluginLogSheet: View {
+    let scraper: PluginScraperRecord
+    let accentColor: Color
+
+    @State private var entries: [PluginLogEntry] = []
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
+
+    var body: some View {
+        SettingsFeatureSettingsSheet(
+            title: L10n.format("tvos_settings_plugin_logs_title", fallback: "%@ Logs", scraper.name),
+            subtitle: L10n.string(
+                "tvos_settings_plugin_logs_subtitle",
+                fallback: "The newest lines the provider wrote with console.log, on this Apple TV since the app started"
+            )
+        ) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 14) {
+                    SettingsActionRow(
+                        title: L10n.string("tvos_settings_plugin_logs_refresh", fallback: "Refresh"),
+                        subtitle: settingsCountSummary(entries.count, singular: "line", plural: "lines"),
+                        value: L10n.string("tvos_settings_plugin_logs_refresh_action", fallback: "Refresh"),
+                        accentColor: accentColor
+                    ) {
+                        entries = PluginLogStore.shared.entries(for: scraper.id)
+                    }
+                    AddonReorderButton(systemImage: "trash", disabled: entries.isEmpty) {
+                        PluginLogStore.shared.clear(scraper.id)
+                        entries = []
+                    }
+                }
+
+                ForEach(entries.reversed()) { entry in
+                    PluginLogLine(entry: entry, time: Self.timeFormatter.string(from: entry.date))
+                }
+            }
+            .settingsEntryAnchor()
+        }
+        .onAppear { entries = PluginLogStore.shared.entries(for: scraper.id) }
+    }
+}
+
+private struct PluginLogLine: View {
+    let entry: PluginLogEntry
+    let time: String
+
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 14) {
+            Text(time)
+                .font(.system(size: 15, weight: .medium, design: .monospaced))
+                .foregroundColor(.white.opacity(0.45))
+            Text(entry.message)
+                .font(.system(size: 16, weight: .regular, design: .monospaced))
+                .foregroundColor(color)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.white.opacity(isFocused ? 0.16 : 0.05))
+        )
+        .focusable(true)
+        .focused($isFocused)
+    }
+
+    private var color: Color {
+        switch entry.level {
+        case .error: return Color(red: 1, green: 0.55, blue: 0.5)
+        case .warn: return Color(red: 1, green: 0.82, blue: 0.45)
+        default: return .white.opacity(0.85)
+        }
     }
 }
 
