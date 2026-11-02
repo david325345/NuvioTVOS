@@ -74,25 +74,20 @@ extension PlayerView {
         }
     }
 
-    /// Playing with the controls shown and the timeline selected: the gestures that the controls
-    /// don't use there are still heard (`PlayerGesturePassive`), without taking the remote.
+    /// Whenever the gesture layer doesn't hold the remote (the controls shown, paused) and no
+    /// panel or menu is up: bound gestures are still heard, without taking the remote, so the
+    /// controls work as before and the gesture's action comes on top.
     var isPassiveGestureActive: Bool {
         viewModel.areGesturesEnabled
             && didReportPlaybackStarted
             && !isWakingFromBackground
             && !isLoadingOverlayVisible
-            && PlayerGestureCaptureStatus.keepsCapture(viewModel.status)
-            && viewModel.showControls
-            && viewModel.isTimelineFocused
+            && !isGestureCaptureActive
             && !viewModel.controlsAutoHideSuspended
-            && !viewModel.showPauseOverlay
             && !viewModel.isScrubbing
             && !viewModel.isHoldingSeek
             && !viewModel.isSwitchingSource
             && viewModel.currentErrorDiagnostic == nil
-            && !nextEpisodeFocused
-            && !cancelAutoPlayFocused
-            && !skipSegmentFocused
             && !viewModel.showSettingsPanel
             && !viewModel.showScenePanel
             && !viewModel.isSceneDetailVisible
@@ -126,7 +121,7 @@ extension PlayerView {
     }
 
     func handlePassiveGesture(_ gesture: RemoteGesture) {
-        if PlayerGesturePassive.allows(gesture), let action = PlayerGestureSettings.bindings().action(for: gesture) {
+        if let action = PlayerGestureSettings.bindings().action(for: gesture) {
             viewModel.performGestureAction(action)
             return
         }
@@ -178,22 +173,9 @@ extension PlayerView {
     }
 }
 
-/// Which gestures are heard with the controls shown (the timeline selected, playing): the ones the
-/// controls don't use there. Clicks, short swipes, swipes up or down and circles stay theirs.
+/// Gestures with the controls shown: every bound one does its action, on top of what the
+/// controls do with it (for now, while testing).
 enum PlayerGesturePassive {
-    static func allows(_ gesture: RemoteGesture) -> Bool {
-        switch gesture {
-        case let .swipe(direction, long):
-            return long && (direction == .left || direction == .right)
-        case let .swipeBack(direction):
-            return direction == .left || direction == .right
-        case .tap(_, double: true), .hold:
-            return true
-        case .click, .tap, .circle:
-            return false
-        }
-    }
-
     /// The sides whose tap seeks on the timeline and whose double tap is bound: there the tap
     /// waits to see whether a second one follows, and the gesture layer seeks.
     static func waitingTapSides(_ bindings: PlayerGestureBindings) -> Set<PadSide> {
