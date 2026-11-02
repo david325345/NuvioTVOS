@@ -345,4 +345,17 @@ final class PlaybackChaptersTests: XCTestCase {
         XCTAssertEqual(12 + PlayerProgressTrack.currentPieceLift, 2 * PlayerProgressTrack.otherPieceHeight(for: 12))
         XCTAssertEqual(PlayerProgressTrack.otherPieceHeight(for: 2), 3)
     }
+
+    func testTheTimelineColorIsWhiteUntilAnotherIsChosen() throws {
+        let suite = "PlaybackChaptersTests.timelineColor"
+        let settings = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { settings.removePersistentDomain(forName: suite) }
+        XCTAssertEqual(PlaybackChapters.timelineColorHex(in: settings), "#FFFFFF")
+        settings.set("#56ccf2", forKey: SettingsKey.timelineColor)
+        XCTAssertEqual(PlaybackChapters.timelineColorHex(in: settings), "#56CCF2")
+        settings.set("#123456", forKey: SettingsKey.timelineColor)
+        XCTAssertEqual(PlaybackChapters.timelineColorHex(in: settings), "#FFFFFF", "a color no longer offered")
+        XCTAssertEqual(PlaybackChapters.timelineColorChoices.first, "#FFFFFF")
+        XCTAssertEqual(PlaybackChapters.timelineColorChoices.count, PlaybackChapters.colorChoices.count + 1)
+    }
 }

@@ -38,6 +38,8 @@ struct SubtitleSyncFit: Equatable, Sendable {
     /// Share of the lines' time the reference covers, and what chance alone gives.
     var match: Double = 0
     var chance: Double = 0
+    /// What chance alone gives for a line start within `startTolerance` of a reference start.
+    var startChance: Double = 0
 }
 
 enum SubtitleSyncVerdict: Equatable, Sendable {
@@ -84,6 +86,12 @@ enum SubtitleSyncAligner {
     /// Match against what chance gives on a reference this dense (anime-titulky: < 1.2 = the
     /// reference doesn't belong to the subtitle).
     static let minLift: Double = 1.2
+    /// A reference covering this much of the time by chance is dense (dialogue and signs in one
+    /// track): its overlap tells little, so the line starts decide…
+    static let denseReferenceChance: Double = 0.5
+    /// …when this many times more of them land on a reference start than chance gives
+    /// (KAA DVD: 68 % of the starts against ~35 % by chance, overlap 79 % against 70 %).
+    static let minStartLift: Double = 1.5
     /// The main mapping has to put this share of the line starts on the reference before
     /// parts are looked for.
     static let partsMinStartShare: Double = 0.5
@@ -154,6 +162,11 @@ enum SubtitleSyncAligner {
         var fit = evaluate(lines: lines, referenceStarts: starts, intervals: intervals, plan: plan, timeline: timeline)
         fit.mapping = plan.main
         remarks.append(.score(match: fit.match, chance: fit.chance))
+        let startShare = Double(fit.startMatches) / Double(max(fit.checkable, 1))
+        let startLift = fit.startChance > 0 ? startShare / fit.startChance : 0
+        if fit.chance >= denseReferenceChance {
+            remarks.append(.startScore(share: startShare, chance: fit.startChance))
+        }
         let beforeStart = lines.filter { plan($0.start) < -1 }.count
         if beforeStart > 0 { remarks.append(.beforeStart(lines: beforeStart)) }
 
@@ -163,7 +176,8 @@ enum SubtitleSyncAligner {
         let covered = fit.coverage >= minCoverage
             || (fit.coverage >= minSparseCoverage && lift >= sparseLift && Double(fit.startMatches) >= minStartShare * checkable)
         let enoughStarts = Double(fit.startMatches) >= max(Double(minLines), minStartShare * checkable)
-        guard enoughLines, covered, enoughStarts, fit.longestMiss <= maxMissRun, lift >= minLift else {
+        let lifted = lift >= minLift || (fit.chance >= denseReferenceChance && startLift >= minStartLift)
+        guard enoughLines, covered, enoughStarts, fit.longestMiss <= maxMissRun, lifted else {
             return SubtitleSyncAlignment(fit: fit, verdict: .noMatch, plan: plan, remarks: remarks)
         }
         // A rival is a different mapping that fits about as well. One that matches a part of the
@@ -263,9 +277,11 @@ enum SubtitleSyncAligner {
         let match = SubtitleSyncParts.overlap(pairs, timeline.merged) / max(total, 1)
         // Chance: how densely the reference covers the time the lines span.
         var chance = 0.0
+        var startChance = 0.0
         if let first = pairs.first?.start, let last = pairs.last?.start, last > first {
             let inside = timeline.merged.reduce(0.0) { $0 + max(0, min(last, $1.end) - max(first, $1.start)) }
             chance = inside / (last - first)
+            startChance = startWindowShare(starts, from: first, to: last)
         }
         return SubtitleSyncFit(
             mapping: plan.main,
@@ -276,7 +292,23 @@ enum SubtitleSyncAligner {
             lineCount: lines.count,
             checkable: checkable,
             match: match,
-            chance: chance)
+            chance: chance,
+            startChance: startChance)
+    }
+
+    /// The share of `from…to` within `startTolerance` of a reference start: the chance that a
+    /// line start put anywhere in it hits one.
+    static func startWindowShare(_ starts: [Double], from: Double, to: Double) -> Double {
+        guard to > from else { return 0 }
+        var covered = 0.0
+        var reach = -Double.infinity
+        for start in starts.sorted() {
+            let low = max(start - startTolerance, from), high = min(start + startTolerance, to)
+            guard high > low else { continue }
+            covered += max(0, high - max(low, reach))
+            reach = max(reach, high)
+        }
+        return min(covered / (to - from), 1)
     }
 
     /// Matched starts weigh most (they pin the timing down); overlap counts lines a translation

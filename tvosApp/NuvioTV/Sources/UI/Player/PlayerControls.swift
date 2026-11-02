@@ -1195,7 +1195,8 @@ private struct PlayerTimelineBar: View {
                         emphasized: isTimelineFocused || isSeekingOrScrubbing,
                         glassTrack: true,
                         markers: markers,
-                        segments: segments
+                        segments: segments,
+                        tint: PlayerProgressTrack.playerTint
                     )
 
                     // Also for single left / right presses (fork test build): the needle shows
@@ -1213,7 +1214,7 @@ private struct PlayerTimelineBar: View {
 
                         // Active scrub/seek needle: extends upwards toward preview card and is flush at bottom of track
                         Rectangle()
-                            .fill(Color.white)
+                            .fill(PlayerProgressTrack.playerTint ?? Color.white)
                             .frame(width: 2, height: needleHeight)
                             .position(x: targetX, y: bottomOfTrack - needleHeight / 2)
                             .transition(.identity)

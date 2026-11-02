@@ -17,6 +17,17 @@ jobs:
           submodules: recursive
       - name: Install Tuist
         run: brew install tuist
+      - name: Make it a separate app (Nuvio Test)
+        # Its own bundle ID, name and App Group, so the test build installs next to the
+        # release app instead of replacing it. Only this job: the tests keep the real IDs.
+        run: |
+          set -euo pipefail
+          perl -pi -e 's/^let bundleID = "com\.pyksel\.nuviotvos"$/let bundleID = "com.pyksel.nuviotvos.test"/' tvosApp/Project.swift
+          grep -q '^let bundleID = "com.pyksel.nuviotvos.test"$' tvosApp/Project.swift
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Nuvio Test" tvosApp/NuvioTV/Info.plist
+          perl -pi -e 's/group\.com\.pyksel\.nuviotvos</group.com.pyksel.nuviotvos.test</' \
+            tvosApp/NuvioTV/NuvioTV.entitlements tvosApp/TopShelf/TopShelf.entitlements
+          echo "::notice::bundle com.pyksel.nuviotvos.test · Nuvio Test · group.com.pyksel.nuviotvos.test"
       - name: Build unsigned IPA
         run: |
           set -o pipefail
@@ -45,7 +56,7 @@ jobs:
           <dict>
             <key>com.apple.security.application-groups</key>
             <array>
-              <string>group.com.pyksel.nuviotvos</string>
+              <string>group.com.pyksel.nuviotvos.test</string>
             </array>
           </dict>
           </plist>

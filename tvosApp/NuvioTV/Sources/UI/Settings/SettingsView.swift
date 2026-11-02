@@ -360,6 +360,8 @@ enum SettingsKey {
     /// The opening's and the ending's color on the timeline ("#RRGGBB", see `PlaybackChapters.colorChoices`).
     static let timelineOpeningColor = "nuvio.tv.settings.playback.timelineOpeningColor"
     static let timelineEndingColor = "nuvio.tv.settings.playback.timelineEndingColor"
+    /// The timeline's played part and seek needle ("#RRGGBB", see `PlaybackChapters.timelineColorChoices`).
+    static let timelineColor = "nuvio.tv.settings.playback.timelineColor"
     /// Whether the opening and the ending are colored on the timeline (off by default).
     static let timelineSegmentsEnabled = "nuvio.tv.settings.playback.timelineSegmentsEnabled"
     /// Legacy preference retained for compatibility; seeking snap is always enabled.
@@ -438,7 +440,7 @@ enum SettingsKey {
         forcedSubtitles, subtitleSize, frameRateMatching, networkCache, hybridDiskCacheEnabled, hybridDiskCacheLimitGB, playbackTrackSelections, showAudioLanguages,
         externalPlayerForwardSubtitles, assOverrideMode,
         playerShowPiP, playerShowEpisodes, playerShowSources, playerShowSubtitles, playerShowAudio, playerButtonOrder, seekPreviewEnabled, seekPreviewBeyondBuffer, seekrApiKey, seekrEnabled, showLoadingStatus,
-        timelineOpeningColor, timelineEndingColor, timelineSegmentsEnabled, timelineSnapEnabled,
+        timelineOpeningColor, timelineEndingColor, timelineColor, timelineSegmentsEnabled, timelineSnapEnabled,
         subtitleAutoSync, subtitleAutoSyncToleranceMs,
         audioDelayPersistEnabled, persistentAudioDelayMs,
         sceneFeatureEnabled, sceneTabOrder, sceneTabDisabled,
@@ -8671,6 +8673,7 @@ private struct PlaybackSettingsView: View {
     @AppStorage(SettingsKey.seekrEnabled) private var seekrEnabled = false
     @AppStorage(SettingsKey.timelineOpeningColor) private var timelineOpeningColor = PlaybackChapters.defaultOpeningColor
     @AppStorage(SettingsKey.timelineEndingColor) private var timelineEndingColor = PlaybackChapters.defaultEndingColor
+    @AppStorage(SettingsKey.timelineColor) private var timelineColor = PlaybackChapters.defaultTimelineColor
     @AppStorage(SettingsKey.timelineSegmentsEnabled) private var timelineSegmentsEnabled = false
     @AppStorage(SettingsKey.subtitleAutoSync) private var subtitleAutoSync = false
     @AppStorage(SettingsKey.subtitleAutoSyncToleranceMs) private var subtitleAutoSyncToleranceMs = 0
@@ -8998,6 +9001,14 @@ private struct PlaybackSettingsView: View {
                     selection: $timelineEndingColor,
                     accentColor: accentColor,
                     colors: PlaybackChapters.colorChoices
+                )
+
+                SubtitleColorRow(
+                    title: "Timeline Color",
+                    subtitle: "The played part of the timeline and the seek needle",
+                    selection: $timelineColor,
+                    accentColor: accentColor,
+                    colors: PlaybackChapters.timelineColorChoices
                 )
 
                 SettingsToggleRow(

@@ -57,6 +57,14 @@ struct PlayerProgressTrack: View {
     var playedOpacity: Double = 0.4
     /// Optional position indicator.
     var position: Double? = nil
+    /// The played part's and its edge's color, when not white (Settings → Timeline Color).
+    var tint: Color? = nil
+
+    /// The player's timeline color, nil while it is white (fork test build).
+    static var playerTint: Color? {
+        let hex = PlaybackChapters.timelineColorHex(in: ProfileSettings.current)
+        return hex == PlaybackChapters.defaultTimelineColor ? nil : Color(hex: hex)
+    }
 
     @State private var animatedBuffered: Double = 0
 
@@ -106,7 +114,7 @@ struct PlayerProgressTrack: View {
                     if p > 0 {
                         // Played progress bar (semi-opaque white)
                         Rectangle()
-                            .fill(Color.white.opacity(playedOpacity))
+                            .fill(tint.map { $0.opacity(0.85) } ?? Color.white.opacity(playedOpacity))
                             .frame(width: w * p)
 
                         // Played portion of opening & ending segments in full vibrant color
@@ -123,7 +131,7 @@ struct PlayerProgressTrack: View {
 
                         // Leading edge tick: bright white cap flush with the track height
                         Rectangle()
-                            .fill(Color.white)
+                            .fill(tint ?? Color.white)
                             .frame(width: 2, height: h)
                             .position(x: min(max(w * p - 1, 1), w - 1), y: h / 2)
                     }
@@ -292,7 +300,8 @@ struct SeekHUD: View {
                     buffered: duration > 0 ? buffered / duration : 0,
                     height: 10,
                     showThumb: false,
-                    emphasized: true
+                    emphasized: true,
+                    tint: PlayerProgressTrack.playerTint
                 )
                 .frame(height: 14)
 
@@ -449,7 +458,8 @@ struct InfuseScrubHUD: View {
                             buffered: buffered / duration,
                             height: 10,
                             showThumb: false,
-                            emphasized: true
+                            emphasized: true,
+                            tint: PlayerProgressTrack.playerTint
                         )
                         .frame(height: 14)
                         .offset(y: previewHeight + 54)
@@ -526,7 +536,8 @@ struct PeekBar: View {
                     buffered: clock.duration > 0 ? min(clock.buffered / clock.duration, 1) : 0,
                     height: 8,
                     showThumb: false,
-                    emphasized: false
+                    emphasized: false,
+                    tint: PlayerProgressTrack.playerTint
                 )
                 HStack {
                     endpointLabel(
