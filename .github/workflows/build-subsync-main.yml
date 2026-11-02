@@ -116,7 +116,8 @@ jobs:
             -only-testing:NuvioTVTests/PlayerGestureBindingTests \
             -only-testing:NuvioTVTests/RemoteBackGuardTests \
             -only-testing:NuvioTVTests/GestureAnimationTests \
-            -only-testing:NuvioTVTests/CustomGestureTests
+            -only-testing:NuvioTVTests/CustomGestureTests \
+            -only-testing:NuvioTVTests/AudioSubtitleSyncTests
       - name: Seek preview test results
         if: always()
         env:
@@ -128,7 +129,7 @@ jobs:
             def walk(node, suite, out)
               name = node["name"].to_s
               suite = name if node["nodeType"] == "Test Suite"
-              if node["nodeType"] == "Test Case" && ["SeekPreviewLaneTests", "UsenetPoolTests", "PlaybackChaptersTests", "PlayerControlsSettingsTests", "TopShelfLayoutTests", "TopShelfArtworkPrunerTests", "UsenetSettingsSyncTests", "SeekrTrickplayTests", "SceneNavigationTests", "SubtitleAutoSyncTests", "RemoteGestureRecognizerTests", "PlayerGestureBindingTests", "RemoteBackGuardTests", "GestureAnimationTests", "CustomGestureTests"].include?(suite)
+              if node["nodeType"] == "Test Case" && ["SeekPreviewLaneTests", "UsenetPoolTests", "PlaybackChaptersTests", "PlayerControlsSettingsTests", "TopShelfLayoutTests", "TopShelfArtworkPrunerTests", "UsenetSettingsSyncTests", "SeekrTrickplayTests", "SceneNavigationTests", "SubtitleAutoSyncTests", "RemoteGestureRecognizerTests", "PlayerGestureBindingTests", "RemoteBackGuardTests", "GestureAnimationTests", "CustomGestureTests", "AudioSubtitleSyncTests"].include?(suite)
                 out << ["#{suite}.#{name}", node["result"]]
               end
               (node["children"] || []).each { |child| walk(child, suite, out) }

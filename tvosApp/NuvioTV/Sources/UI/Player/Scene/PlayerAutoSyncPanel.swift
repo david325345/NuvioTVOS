@@ -3,6 +3,8 @@ import SwiftUI
 /// The AutoSubSync tab of the bottom panel: run AutoSubSync on the playing add-on subtitle by
 /// hand, switch between its synced copy and its own timing, and see what the last run looked at:
 /// the reference tried, the parts with shifts of their own, and what couldn't be checked.
+/// Sync by Audio (AetherEngine) lines it up with the speech in the soundtrack instead and keeps
+/// following it; while it has something to show, the right side is about it.
 struct PlayerAutoSyncPanel: View {
     @ObservedObject var viewModel: PlayerViewModel
     let focusedControlID: FocusState<String?>.Binding
@@ -11,18 +13,20 @@ struct PlayerAutoSyncPanel: View {
 
     static let runID = "autosync.run"
     static let toggleID = "autosync.toggle"
+    static let audioID = "autosync.audio"
 
     var body: some View {
         let subtitle = viewModel.activeAddonSubtitle
         let state = subtitle.flatMap { viewModel.subtitleAutoSyncStates[$0.url] }
         let report = subtitle.flatMap { viewModel.subtitleAutoSyncReports[$0.url] }
         let usingOriginal = subtitle.map { viewModel.isSubtitleAutoSyncUsingOriginal($0.url) } ?? false
+        let audio = viewModel.audioSyncStatus.flatMap { $0.subtitleURL == subtitle?.url ? $0 : nil }
         return HStack(alignment: .top, spacing: 40) {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 14) {
                 Text(subtitleTitle(subtitle))
                     .font(.system(size: 24, weight: .semibold))
                     .foregroundStyle(.white)
-                    .lineLimit(2)
+                    .lineLimit(1)
                 Text(statusText(state, usingOriginal: usingOriginal))
                     .font(.system(size: 20, weight: .medium).monospacedDigit())
                     .foregroundStyle(statusColor(state))
@@ -51,12 +55,19 @@ struct PlayerAutoSyncPanel: View {
                         }
                     }
                 }
-                .padding(.top, 6)
+                .padding(.top, 4)
+                audioRow(subtitle: subtitle, audio: audio)
             }
-            .frame(width: 480, alignment: .leading)
+            .frame(width: 520, alignment: .leading)
 
-            diagnostics(report, hasSubtitle: subtitle != nil, checked: state != nil)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            Group {
+                if let audio {
+                    audioDiagnostics(audio)
+                } else {
+                    diagnostics(report, hasSubtitle: subtitle != nil, checked: state != nil)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 60)
         .padding(.top, 8)
@@ -72,6 +83,7 @@ struct PlayerAutoSyncPanel: View {
         title: String,
         systemImage: String,
         enabled: Bool,
+        upToTabs: Bool = true,
         action: @escaping () -> Void
     ) -> some View {
         let isFocused = focusedControlID.wrappedValue == id
@@ -93,10 +105,117 @@ struct PlayerAutoSyncPanel: View {
         .focusEffectDisabledIfAvailable()
         .onExitCommand(perform: onDismiss)
         .onMoveCommand { direction in
-            if direction == .up { focusContext.onMoveUpFromContent() }
+            if direction == .up, upToTabs { focusContext.onMoveUpFromContent() }
         }
         .scaleEffect(isFocused ? 1.05 : 1)
         .animation(.easeOut(duration: 0.14), value: isFocused)
+    }
+
+    // MARK: Sync by Audio
+
+    private var isOnAether: Bool { viewModel.activeEngineKind == .aether }
+
+    private func audioRow(subtitle: NuvioSubtitle?, audio: AudioSyncStatus?) -> some View {
+        let running = viewModel.isAudioSyncRunning && audio?.isRunning == true
+        return HStack(spacing: 18) {
+            controlButton(
+                id: Self.audioID,
+                title: running
+                    ? L10n.string("player_autosync_audio_stop", fallback: "Stop Listening")
+                    : L10n.string("player_autosync_audio", fallback: "Sync by Audio"),
+                systemImage: running ? "stop.circle" : "waveform",
+                enabled: subtitle != nil && (running || isOnAether),
+                upToTabs: false
+            ) {
+                viewModel.toggleAudioSync()
+            }
+            Text(audioSummary(audio))
+                .font(.system(size: 18, weight: .medium).monospacedDigit())
+                .foregroundStyle(audioColor(audio))
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func audioSummary(_ audio: AudioSyncStatus?) -> String {
+        guard isOnAether || audio?.isRunning == true else {
+            return L10n.string("player_autosync_audio_needs_aether", fallback: "Needs AetherEngine (playing on MPV)")
+        }
+        guard let audio else {
+            return L10n.string("player_autosync_audio_hint", fallback: "Listens to the speech and follows it")
+        }
+        switch audio.phase {
+        case .reading:
+            return "Reading the subtitle…"
+        case .listening:
+            return String(format: "Listening · %.0f s heard", audio.heard)
+        case .following:
+            return String(format: "Following · %@", Self.seconds(audio.applied ?? 0))
+                + (audio.pending.map { " → " + Self.seconds($0) } ?? "")
+        case .stopped(let reason):
+            return audio.applied.map { "\(reason) · kept " + Self.seconds($0) } ?? reason
+        }
+    }
+
+    private func audioColor(_ audio: AudioSyncStatus?) -> Color {
+        switch audio?.phase {
+        case .following?: return Color(red: 0.42, green: 0.86, blue: 0.52)
+        case .stopped?: return Color(red: 1.0, green: 0.74, blue: 0.36)
+        default: return .white.opacity(0.7)
+        }
+    }
+
+    private func audioDiagnostics(_ audio: AudioSyncStatus) -> some View {
+        HStack(alignment: .top, spacing: 28) {
+            VStack(alignment: .leading, spacing: 8) {
+                row(L10n.string("player_autosync_engine", fallback: "Engine"), isOnAether ? "AetherEngine · audio tap (downmix)" : "MPV")
+                row(L10n.string("player_autosync_subtitles", fallback: "Subtitles"), audio.lines > 0 ? "\(audio.lines) dialogue lines" : "")
+                row(L10n.string("player_autosync_heard", fallback: "Heard"), heardText(audio))
+                if let last = audio.last {
+                    row(L10n.string("player_autosync_estimate", fallback: "Estimate"), estimateText(last, count: audio.estimates), lines: 2)
+                    row("", last.doubt.map { "not sure: " + $0 } ?? "sure", secondary: true, warning: last.doubt != nil)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+
+            VStack(alignment: .leading, spacing: 8) {
+                row(L10n.string("player_autosync_applied", fallback: "Delay"),
+                    (audio.applied.map(Self.seconds) ?? "–")
+                        + (audio.pending.map { " · next " + Self.seconds($0) + " (waits for a gap)" } ?? ""))
+                ForEach(Array(audio.changes.suffix(4).reversed().enumerated()), id: \.offset) { index, change in
+                    row(index == 0 ? L10n.string("player_autosync_changes", fallback: "Changes") : "",
+                        Self.clock(change.at) + "  " + Self.seconds(change.shift), secondary: index > 0)
+                }
+                if let note = audio.note {
+                    row(L10n.string("player_autosync_notes", fallback: "Notes"), note, secondary: true, lines: 2)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+    }
+
+    private func heardText(_ audio: AudioSyncStatus) -> String {
+        guard audio.heard > 0 else { return "" }
+        var text = String(format: "%.0f s of the last %.0f s", audio.heard,
+                          AudioSubtitleSync.windowBefore + AudioSubtitleSync.windowAfter)
+        if let last = audio.last { text += String(format: " · speech %.0f %%", last.speech * 100) }
+        return text
+    }
+
+    private func estimateText(_ estimate: AudioSyncEstimate, count: Int) -> String {
+        Self.seconds(estimate.shift)
+            + String(format: " · standout %.1f · rival %.2f · halves %.2f s · %d lines · #%d",
+                     estimate.standout, estimate.rival, estimate.halvesApart, estimate.lines, count)
+    }
+
+    private static func seconds(_ value: Double) -> String {
+        String(format: "%+.2f s", value)
+    }
+
+    private static func clock(_ time: Double) -> String {
+        let total = Int(max(time, 0))
+        let h = total / 3600, m = total / 60 % 60, s = total % 60
+        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
     }
 
     // MARK: Text
