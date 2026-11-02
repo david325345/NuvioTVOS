@@ -162,6 +162,9 @@ struct PluginRepositoryRecord: Codable, Identifiable, Equatable {
     var scraperCount: Int
     var lastUpdated: Date?
     var errorMessage: String?
+    /// Developer mode: download the scrapers' code again before every call, so
+    /// edits on the author's computer show up without updating the repository.
+    var alwaysReload: Bool?
 }
 
 /// One scraper from a repository. `id` matches Android's

@@ -74,9 +74,15 @@ final class PluginStore: ObservableObject {
     }
 
     /// The scraper's JavaScript; downloads it again when the system purged the
-    /// cached copy.
+    /// cached copy, or every time for a repository in developer mode.
     func code(for scraper: PluginScraperRecord) async -> String? {
         let scope = ProfileSettings.activeProfileScope
+        let reload = state.repositories.first { $0.manifestURL == scraper.repositoryURL }?.alwaysReload == true
+        if reload, let url = Self.codeURL(repositoryURL: scraper.repositoryURL, filename: scraper.filename),
+           let fresh = try? await Self.downloadText(url) {
+            Self.writeCode(fresh, scope: scope, scraperID: scraper.id)
+            return fresh
+        }
         if let code = Self.readCode(scope: scope, scraperID: scraper.id) { return code }
         guard let url = Self.codeURL(repositoryURL: scraper.repositoryURL, filename: scraper.filename),
               let code = try? await Self.downloadText(url) else { return nil }
@@ -145,7 +151,9 @@ final class PluginStore: ObservableObject {
             guard ProfileSettings.activeProfileID == profileID else { return }
             ensureLoaded()
             guard let index = state.repositories.firstIndex(where: { $0.manifestURL == manifestURL }) else { return }
-            state.repositories[index] = repository
+            var updated = repository
+            updated.alwaysReload = state.repositories[index].alwaysReload
+            state.repositories[index] = updated
             state.scrapers.removeAll { $0.repositoryURL == manifestURL }
             state.scrapers.append(contentsOf: scrapers)
             let kept = Set(scrapers.map(\.id))
@@ -179,6 +187,13 @@ final class PluginStore: ObservableObject {
         state.scrapers.removeAll { $0.repositoryURL == manifestURL }
         persist()
         notifyRepositoriesChanged()
+    }
+
+    func setAlwaysReload(_ manifestURL: String, enabled: Bool) {
+        ensureLoaded()
+        guard let index = state.repositories.firstIndex(where: { $0.manifestURL == manifestURL }) else { return }
+        state.repositories[index].alwaysReload = enabled ? true : nil
+        persist()
     }
 
     func moveRepository(_ manifestURL: String, up: Bool) {

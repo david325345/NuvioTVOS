@@ -436,6 +436,90 @@ final class PluginRuntimeTests: XCTestCase {
         XCTAssertEqual(movie.mediaType, "movie")
         XCTAssertTrue(movie.arguments[2] is NSNull)
     }
+
+    // MARK: - Set Up from a Computer
+
+    func testWebServerParsesRequests() {
+        func parse(_ text: String) -> PluginHTTPServerCore.ParseResult {
+            PluginHTTPServerCore.parse(Data(text.utf8))
+        }
+
+        guard case .complete(let get) = parse("GET /tok/api/scrapers/logs?id=a%3Ab HTTP/1.1\r\nHost: x\r\n\r\n") else {
+            return XCTFail("GET not parsed")
+        }
+        XCTAssertEqual(get.method, "GET")
+        XCTAssertEqual(get.path, "/tok/api/scrapers/logs")
+        XCTAssertEqual(get.query["id"], "a:b")
+
+        let body = #"{"id":"x","enabled":false}"#
+        let head = "POST /tok/api/scrapers/enabled HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: \(body.utf8.count)\r\n\r\n"
+        guard case .incomplete = parse(head + body.prefix(5)) else { return XCTFail("partial body accepted") }
+        guard case .complete(let post) = parse(head + body) else { return XCTFail("POST not parsed") }
+        XCTAssertEqual(post.json["id"] as? String, "x")
+        XCTAssertEqual(post.json["enabled"] as? Bool, false)
+
+        guard case .incomplete = parse("GET / HTTP/1.1\r\nHost:") else { return XCTFail("partial head accepted") }
+        guard case .invalid = parse("GET /\r\n\r\n") else { return XCTFail("bad request line accepted") }
+        guard case .invalid = parse("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n") else {
+            return XCTFail("chunked body accepted")
+        }
+        guard case .invalid = parse("POST / HTTP/1.1\r\nContent-Length: 99999999\r\n\r\n") else {
+            return XCTFail("oversized body accepted")
+        }
+    }
+
+    func testWebSettingsNeverSendSavedPasswordsBack() {
+        let fields = PluginSettingField.parseLayout([
+            ["type": "text", "key": "apikey", "label": "API key", "isPassword": true],
+            ["type": "text", "key": "url", "label": "URL", "defaultValue": "https://a"],
+            ["type": "select", "key": "res", "label": "Resolution", "options": ["2160p", "1080p"]],
+            ["type": "toggle", "key": "cz", "label": "Prefer CZ", "defaultValue": true],
+            ["type": "info", "label": "Note"]
+        ] as [Any])
+        let saved: [String: Any] = ["apikey": "secret-key-1234", "res": "1080p", "other": 7]
+
+        let values = PluginSettingsService.formValues(fields: fields, saved: saved)
+        XCTAssertEqual(values["apikey"] as? String, "")
+        XCTAssertEqual(values["url"] as? String, "https://a")
+        XCTAssertEqual(values["res"] as? String, "1080p")
+        XCTAssertEqual(values["cz"] as? Bool, true)
+        XCTAssertEqual(PluginSettingsService.passwordHints(fields: fields, saved: saved), ["apikey": "••••1234"])
+
+        let kept = PluginSettingsService.merged(fields: fields, input: ["apikey": "", "cz": "false", "res": "2160p"], saved: saved)
+        XCTAssertEqual(kept["apikey"] as? String, "secret-key-1234")
+        XCTAssertEqual(kept["cz"] as? Bool, false)
+        XCTAssertEqual(kept["res"] as? String, "2160p")
+        XCTAssertEqual(kept["other"] as? Int, 7)
+
+        let changed = PluginSettingsService.merged(fields: fields, input: ["apikey": " new-key "], saved: saved)
+        XCTAssertEqual(changed["apikey"] as? String, "new-key")
+
+        let cleared = PluginSettingsService.merged(fields: fields, input: ["apikey": "__clear__"], saved: saved)
+        XCTAssertNil(cleared["apikey"])
+    }
+
+    @MainActor
+    func testWebPageAndStateAreServed() async throws {
+        typealias Request = PluginHTTPServerCore.Request
+        let page = await PluginWebAPI.handle(Request(method: "GET", path: "/", query: [:], body: Data()))
+        XCTAssertEqual(page.status, 200)
+        XCTAssertTrue(page.contentType.hasPrefix("text/html"))
+        XCTAssertTrue(String(decoding: page.body, as: UTF8.self).contains("Nuvio Plugins"))
+
+        let state = await PluginWebAPI.handle(Request(method: "GET", path: "/api/state", query: [:], body: Data()))
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: state.body) as? [String: Any])
+        XCTAssertEqual(json["ok"] as? Bool, true)
+        XCTAssertNotNil(json["repositories"] as? [Any])
+
+        let missing = await PluginWebAPI.handle(Request(method: "GET", path: "/nope", query: [:], body: Data()))
+        XCTAssertEqual(missing.status, 404)
+    }
+
+    func testTestSamplesBuildVideoIDs() {
+        XCTAssertEqual(PluginTester.Sample.movie.videoID, "tt0133093")
+        XCTAssertEqual(PluginTester.Sample.episode.videoID, "tt0903747:1:1")
+        XCTAssertEqual(PluginTester.Sample.episode.label, "tt0903747 S1E1")
+    }
 }
 
 /// Answers plugin `fetch` requests in tests.

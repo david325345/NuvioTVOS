@@ -13160,6 +13160,8 @@ private struct PluginsSettingsSection: View {
     @State private var isAdding = false
     @State private var settingsScraper: PluginScraperRecord?
     @State private var logScraper: PluginScraperRecord?
+    @State private var testScraper: PluginScraperRecord?
+    @State private var showingWebSetup = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 28) {
@@ -13197,6 +13199,18 @@ private struct PluginsSettingsSection: View {
                     ),
                     accentColor: accentColor
                 )
+
+                SettingsActionRow(
+                    title: L10n.string("tvos_settings_plugins_web_setup", fallback: "Set Up from a Computer"),
+                    subtitle: L10n.string(
+                        "tvos_settings_plugins_web_setup_subtitle",
+                        fallback: "Add repositories, enter API keys, test providers and read their logs in a browser on the same network"
+                    ),
+                    value: L10n.string("tvos_settings_plugins_web_setup_action", fallback: "Open"),
+                    accentColor: accentColor
+                ) {
+                    showingWebSetup = true
+                }
             }
 
             ForEach(Array(store.state.repositories.enumerated()), id: \.element.id) { index, repository in
@@ -13226,12 +13240,26 @@ private struct PluginsSettingsSection: View {
                         }
                     }
 
+                    SettingsToggleRow(
+                        title: L10n.string("tvos_settings_plugin_developer_mode", fallback: "Developer Mode"),
+                        subtitle: L10n.string(
+                            "tvos_settings_plugin_developer_mode_subtitle",
+                            fallback: "Download the providers' code again before every search, so changes show without updating the repository"
+                        ),
+                        isOn: Binding(
+                            get: { repository.alwaysReload == true },
+                            set: { store.setAlwaysReload(repository.manifestURL, enabled: $0) }
+                        ),
+                        accentColor: accentColor
+                    )
+
                     ForEach(store.state.scrapers.filter { $0.repositoryURL == repository.manifestURL }) { scraper in
                         PluginScraperSettingsRow(
                             scraper: scraper,
                             accentColor: accentColor,
                             onToggle: { store.setScraperEnabled(scraper.id, enabled: !scraper.enabled) },
                             onSettings: { settingsScraper = scraper },
+                            onTest: { testScraper = scraper },
                             onLogs: { logScraper = scraper }
                         )
                     }
@@ -13245,6 +13273,14 @@ private struct PluginsSettingsSection: View {
         }
         .sheet(item: $logScraper) { scraper in
             PluginLogSheet(scraper: scraper, accentColor: accentColor)
+                .modifier(ClearPresentationBackgroundIfAvailable())
+        }
+        .sheet(item: $testScraper) { scraper in
+            PluginTestSheet(scraper: scraper, accentColor: accentColor)
+                .modifier(ClearPresentationBackgroundIfAvailable())
+        }
+        .sheet(isPresented: $showingWebSetup) {
+            PluginWebSetupSheet(accentColor: accentColor)
                 .modifier(ClearPresentationBackgroundIfAvailable())
         }
     }
@@ -13291,6 +13327,7 @@ private struct PluginScraperSettingsRow: View {
     let accentColor: Color
     let onToggle: () -> Void
     let onSettings: () -> Void
+    let onTest: () -> Void
     let onLogs: () -> Void
 
     @FocusState private var isFocused: Bool
@@ -13336,6 +13373,7 @@ private struct PluginScraperSettingsRow: View {
             .disabled(!scraper.manifestEnabled)
 
             AddonReorderButton(systemImage: "gearshape", disabled: false, action: onSettings)
+            AddonReorderButton(systemImage: "play.circle", disabled: false, action: onTest)
             AddonReorderButton(systemImage: "doc.text.magnifyingglass", disabled: false, action: onLogs)
         }
     }
@@ -13654,6 +13692,251 @@ private struct PluginLogLine: View {
         case .error: return Color(red: 1, green: 0.55, blue: 0.5)
         case .warn: return Color(red: 1, green: 0.82, blue: 0.45)
         default: return .white.opacity(0.85)
+        }
+    }
+}
+
+/// "Test" next to a provider: one stream search for a sample movie or
+/// episode, with what came back and what the provider logged meanwhile.
+private struct PluginTestSheet: View {
+    let scraper: PluginScraperRecord
+    let accentColor: Color
+
+    @State private var running: PluginTester.Sample?
+    @State private var report: PluginTester.Report?
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
+
+    var body: some View {
+        SettingsFeatureSettingsSheet(
+            title: L10n.format("tvos_settings_plugin_test_title", fallback: "Test %@", scraper.name),
+            subtitle: L10n.string(
+                "tvos_settings_plugin_test_subtitle",
+                fallback: "One stream search for a sample title, with the provider's current settings"
+            )
+        ) {
+            VStack(alignment: .leading, spacing: 14) {
+                if scraper.supportedTypes.isEmpty || scraper.supportedTypes.contains("movie") {
+                    sampleRow(
+                        .movie,
+                        title: L10n.string("tvos_settings_plugin_test_movie", fallback: "Movie"),
+                        subtitle: "The Matrix · tt0133093"
+                    )
+                }
+                if scraper.supportedTypes.isEmpty || scraper.supportedTypes.contains("tv") {
+                    sampleRow(
+                        .episode,
+                        title: L10n.string("tvos_settings_plugin_test_episode", fallback: "Episode"),
+                        subtitle: "Breaking Bad S1E1 · tt0903747"
+                    )
+                }
+
+                if let report {
+                    SettingsInfoRow(title: report.sample.label, value: report.summary, isDiagnostic: report.error != nil)
+
+                    ForEach(Array(report.streams.prefix(30).enumerated()), id: \.offset) { _, stream in
+                        PluginTestStreamRow(stream: stream)
+                    }
+
+                    ForEach(report.log) { entry in
+                        PluginLogLine(entry: entry, time: Self.timeFormatter.string(from: entry.date))
+                    }
+                }
+            }
+            .settingsEntryAnchor()
+        }
+    }
+
+    private func sampleRow(_ sample: PluginTester.Sample, title: String, subtitle: String) -> some View {
+        SettingsActionRow(
+            title: title,
+            subtitle: subtitle,
+            value: running == sample
+                ? L10n.string("tvos_settings_plugin_test_running", fallback: "Searching…")
+                : L10n.string("tvos_settings_plugin_test_action", fallback: "Run"),
+            accentColor: accentColor
+        ) {
+            guard running == nil else { return }
+            running = sample
+            Task { @MainActor in
+                let result = await PluginTester.run(scraper, sample: sample)
+                report = result
+                running = nil
+            }
+        }
+    }
+}
+
+private struct PluginTestStreamRow: View {
+    let stream: NuvioStream
+
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(stream.name ?? "—")
+                .font(.system(size: 19, weight: .semibold))
+                .foregroundColor(.white)
+                .fixedSize(horizontal: false, vertical: true)
+            if let description = stream.description, !description.isEmpty {
+                Text(description)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundColor(.white.opacity(0.58))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.white.opacity(isFocused ? 0.16 : 0.05))
+        )
+        .focusable(true)
+        .focused($isFocused)
+    }
+}
+
+/// "Set Up from a Computer": runs `PluginWebServer` while open and shows its
+/// address as a QR code and as text.
+private struct PluginWebSetupSheet: View {
+    let accentColor: Color
+
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var server = PluginWebServer.shared
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        formatter.dateStyle = .none
+        return formatter
+    }()
+
+    var body: some View {
+        SettingsFeatureSettingsSheet(
+            title: L10n.string("tvos_settings_plugins_web_setup", fallback: "Set Up from a Computer"),
+            subtitle: L10n.string(
+                "tvos_settings_plugins_web_setup_sheet_subtitle",
+                fallback: "Open this address in a browser on a computer or phone connected to the same network as this Apple TV"
+            )
+        ) {
+            VStack(alignment: .leading, spacing: 26) {
+                HStack(alignment: .center, spacing: 40) {
+                    qrCode
+
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text(address)
+                            .font(.system(size: 30, weight: .bold, design: .monospaced))
+                            .foregroundColor(.white)
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.6)
+                        Text(status)
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundColor(statusColor)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text(L10n.string(
+                            "tvos_settings_plugins_web_setup_note",
+                            fallback: "Keep this screen open while you use the page. It stops when you close this screen or after 15 minutes without use. Saved passwords and keys are never shown in full."
+                        ))
+                        .font(.system(size: 17, weight: .medium))
+                        .foregroundColor(.white.opacity(0.55))
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                if canRestart {
+                    SettingsActionRow(
+                        title: L10n.string("tvos_settings_plugins_web_setup_retry", fallback: "Try Again"),
+                        subtitle: L10n.string(
+                            "tvos_settings_plugins_web_setup_retry_subtitle",
+                            fallback: "Start the page again"
+                        ),
+                        value: L10n.string("tvos_settings_plugins_web_setup_retry_action", fallback: "Start"),
+                        accentColor: accentColor
+                    ) {
+                        server.start()
+                    }
+                }
+
+                SettingsActionRow(
+                    title: L10n.string("tvos_settings_plugins_web_setup_done", fallback: "Done"),
+                    subtitle: L10n.string(
+                        "tvos_settings_plugins_web_setup_done_subtitle",
+                        fallback: "Stop the page and go back to Plugins"
+                    ),
+                    value: L10n.string("tvos_settings_plugins_web_setup_done_action", fallback: "Close"),
+                    accentColor: accentColor
+                ) {
+                    dismiss()
+                }
+            }
+            .settingsEntryAnchor()
+        }
+        .onAppear { server.start() }
+        .onDisappear { server.stop() }
+    }
+
+    @ViewBuilder
+    private var qrCode: some View {
+        if case .ready(let url) = server.phase, let image = SettingsQRCode.image(for: url.absoluteString) {
+            Image(decorative: image, scale: 1, orientation: .up)
+                .interpolation(.none)
+                .resizable()
+                .frame(width: 240, height: 240)
+                .padding(14)
+                .background(Color.white, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        } else {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.white.opacity(0.08))
+                .frame(width: 268, height: 268)
+                .overlay(ProgressView().opacity(server.phase == .starting ? 1 : 0))
+        }
+    }
+
+    private var canRestart: Bool {
+        switch server.phase {
+        case .failed, .stopped: return true
+        case .starting, .ready: return false
+        }
+    }
+
+    private var address: String {
+        switch server.phase {
+        case .ready(let url): return url.absoluteString
+        case .starting: return L10n.string("tvos_settings_plugins_web_setup_starting", fallback: "Starting…")
+        case .failed, .stopped: return "—"
+        }
+    }
+
+    private var status: String {
+        switch server.phase {
+        case .ready:
+            if let lastActivity = server.lastActivity {
+                return L10n.format(
+                    "tvos_settings_plugins_web_setup_connected",
+                    fallback: "✓ A browser used the page at %@",
+                    Self.timeFormatter.string(from: lastActivity)
+                )
+            }
+            return L10n.string("tvos_settings_plugins_web_setup_waiting", fallback: "Waiting for a browser…")
+        case .starting:
+            return ""
+        case .failed(let message):
+            return "✕ " + message
+        case .stopped:
+            return L10n.string("tvos_settings_plugins_web_setup_stopped", fallback: "The page has stopped.")
+        }
+    }
+
+    private var statusColor: Color {
+        switch server.phase {
+        case .failed: return Color(red: 1, green: 0.55, blue: 0.5)
+        case .ready where server.lastActivity != nil: return Color(red: 0.45, green: 0.85, blue: 0.55)
+        default: return .white.opacity(0.7)
         }
     }
 }
