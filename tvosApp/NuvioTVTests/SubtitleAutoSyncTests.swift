@@ -179,6 +179,33 @@ final class SubtitleAutoSyncTests: XCTestCase {
         ])
     }
 
+    func testAForcedTrackIsTriedWhenItIsTheOnlyOne() {
+        func track(_ number: UInt64, name: String?, forced: Bool, events: Int) -> MatroskaSubtitleTrack {
+            MatroskaSubtitleTrack(
+                number: number, codecID: "S_TEXT/ASS", language: "eng", name: name, isDefault: true,
+                isForced: forced, isHearingImpaired: false, isCommentary: false,
+                events: (0..<events).map { (start: 10 + Double($0) * 3, duration: 2) })
+        }
+        // One English track, marked forced by the release, with the whole dialogue.
+        let only = MatroskaSubtitleIndex(tracks: [track(2, name: nil, forced: true, events: 300)])
+        let review = SubtitleSyncReference.review(in: only, targetLineCount: 320)
+        XCTAssertEqual(review.candidates.map(\.track.number), [2])
+        XCTAssertNil(review.skipped[2])
+
+        // Signs marked forced stay out even then, by their name.
+        let signs = MatroskaSubtitleIndex(tracks: [track(2, name: "Signs & Songs", forced: true, events: 40)])
+        XCTAssertEqual(SubtitleSyncReference.review(in: signs, targetLineCount: 320).candidates.count, 0)
+
+        // With a full track that isn't forced, the forced one is left out.
+        let both = MatroskaSubtitleIndex(tracks: [
+            track(2, name: nil, forced: true, events: 300),
+            track(3, name: "Full", forced: false, events: 310),
+        ])
+        let picked = SubtitleSyncReference.review(in: both, targetLineCount: 320)
+        XCTAssertEqual(picked.candidates.map(\.track.number), [3])
+        XCTAssertEqual(picked.skipped[2], "forced")
+    }
+
     func testTheChanceOfALineStartOnAReferenceStart() {
         // Windows of ±0.5 s: 9.5…10.9 (two that overlap) and 19.5…20.5, of 100 s.
         XCTAssertEqual(SubtitleSyncAligner.startWindowShare([10, 10.4, 20], from: 0, to: 100), 0.024, accuracy: 0.0001)
