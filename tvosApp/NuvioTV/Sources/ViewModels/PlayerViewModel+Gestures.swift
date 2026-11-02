@@ -138,4 +138,12 @@ extension PlayerViewModel {
         PlayerGestureSettings.save(sensitivity)
         gestureTuning = sensitivity.tuning
     }
+
+    /// Switches between the ready-made gestures and one's own.
+    func setGestureExpert(_ expert: Bool) {
+        PlayerGestureSettings.setExpert(expert)
+        isGestureExpert = expert
+        gestureTuning = PlayerGestureSettings.activeSensitivity().tuning
+        customGestureShapes = PlayerGestureSettings.activeShapes()
+    }
 }

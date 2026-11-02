@@ -1859,6 +1859,7 @@ struct PlayerSettingsPanel: View {
         case gestureSensitivity(String)
         case gestureNewCustom
         case gestureCustomDelete(String)
+        case gestureExpert
     }
 
     /// Swatches shown in the Text Color row (white, gray, yellow, blue, red, green).
@@ -1957,7 +1958,7 @@ struct PlayerSettingsPanel: View {
             }
 
             if isShowingGestureGallery {
-                PlayerGestureGalleryView(bindings: gestureBindings) {
+                PlayerGestureGalleryView(bindings: viewModel.isGestureExpert ? gestureBindings : .defaults) {
                     isShowingGestureGallery = false
                     DispatchQueue.main.async { focus = .gestureGallery }
                 }
@@ -3076,28 +3077,41 @@ struct PlayerSettingsPanel: View {
                             viewModel.setGesturesEnabled(!viewModel.areGesturesEnabled)
                         }
 
+                        toggleRow(
+                            title: "Expert mode",
+                            isOn: viewModel.isGestureExpert,
+                            focusKey: .gestureExpert
+                        ) {
+                            gestureNote = nil
+                            viewModel.setGestureExpert(!viewModel.isGestureExpert)
+                        }
+
                         simpleRow(title: "Gesture overview", isSelected: false, focusKey: .gestureGallery) {
                             isShowingGestureGallery = true
                         }
 
-                        simpleRow(title: "New custom gesture", isSelected: false, focusKey: .gestureNewCustom) {
-                            gestureNote = nil
-                            isMakingCustomGesture = true
+                        if viewModel.isGestureExpert {
+                            simpleRow(title: "New custom gesture", isSelected: false, focusKey: .gestureNewCustom) {
+                                gestureNote = nil
+                                isMakingCustomGesture = true
+                            }
+
+                            ForEach(viewModel.customGestureShapes) { shape in
+                                customShapeRow(shape)
+                            }
+
+                            simpleRow(title: "Reset to defaults", isSelected: false, focusKey: .gestureReset) {
+                                gestureBindings = .defaults
+                                PlayerGestureSettings.save(.defaults)
+                                gestureSensitivity = PlayerGestureSensitivity()
+                                viewModel.setGestureSensitivity(gestureSensitivity)
+                                gestureNote = "The ready-made gestures and the default sensitivity"
+                            }
                         }
 
-                        ForEach(viewModel.customGestureShapes) { shape in
-                            customShapeRow(shape)
-                        }
-
-                        simpleRow(title: "Reset to defaults", isSelected: false, focusKey: .gestureReset) {
-                            gestureBindings = .defaults
-                            PlayerGestureSettings.save(.defaults)
-                            gestureSensitivity = PlayerGestureSensitivity()
-                            viewModel.setGestureSensitivity(gestureSensitivity)
-                            gestureNote = "Default gestures and sensitivity: long swipe right / left = next / previous chapter"
-                        }
-
-                        Text("With the controls hidden, a gesture with an action replaces what the player does with it (like click right = seek). With the controls shown or paused, a gesture with an action does it on top of what the controls do. With a double click or tap set, a single one waits to see whether a second one follows.")
+                        Text(viewModel.isGestureExpert
+                             ? "With the controls hidden, a gesture with an action replaces what the player does with it (like click right = seek). With the controls shown or paused, a gesture with an action does it on top of what the controls do. With a double click or tap set, a single one waits to see whether a second one follows."
+                             : "Ready-made gestures that keep clear of what the player does itself. Turn on Expert mode to change them, draw your own and tune the sensitivity.")
                             .font(.system(size: 20, weight: .medium))
                             .foregroundColor(.white.opacity(0.5))
                             .fixedSize(horizontal: false, vertical: true)
@@ -3110,13 +3124,15 @@ struct PlayerSettingsPanel: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
 
-                        Text("Sensitivity (testing)")
-                            .font(.system(size: 22, weight: .bold))
-                            .foregroundColor(.white.opacity(0.55))
-                            .padding(.top, 14)
+                        if viewModel.isGestureExpert {
+                            Text("Sensitivity")
+                                .font(.system(size: 22, weight: .bold))
+                                .foregroundColor(.white.opacity(0.55))
+                                .padding(.top, 14)
 
-                        ForEach(PlayerGestureSensitivityKnob.allCases) { knob in
-                            gestureSensitivityRow(knob)
+                            ForEach(PlayerGestureSensitivityKnob.allCases) { knob in
+                                gestureSensitivityRow(knob)
+                            }
                         }
                     }
                     .padding(.vertical, 6)
@@ -3126,20 +3142,58 @@ struct PlayerSettingsPanel: View {
             .frame(width: 520, alignment: .leading)
 
             VStack(alignment: .leading, spacing: 18) {
-                columnHeader("Actions · press to record a gesture")
-                ScrollView(showsIndicators: false) {
+                if viewModel.isGestureExpert {
+                    columnHeader("Actions · press to record a gesture")
+                    ScrollView(showsIndicators: false) {
+                        VStack(spacing: 12) {
+                            ForEach(PlayerGestureAction.allCases) { action in
+                                gestureActionRow(action)
+                            }
+                        }
+                        .padding(.vertical, 6)
+                    }
+                    .focusSection()
+                } else {
+                    columnHeader("Ready-made gestures")
                     VStack(spacing: 12) {
-                        ForEach(PlayerGestureAction.allCases) { action in
-                            gestureActionRow(action)
+                        ForEach(PlayerGestureBindings.defaults.bindings, id: \.action) { binding in
+                            readyMadeGestureRow(binding)
                         }
                     }
                     .padding(.vertical, 6)
+                    Text("The player's own clicks, taps and swipes stay as they are: click or tap a side = ±10 s, hold a side = rewind / fast forward, swipe up = controls, swipe down = InSight.")
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundColor(.white.opacity(0.5))
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .focusSection()
             }
             .frame(width: 900, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// A ready-made gesture (Expert mode off): what it does and how it goes; not to be changed.
+    private func readyMadeGestureRow(_ binding: PlayerGestureBinding) -> some View {
+        HStack(spacing: 16) {
+            AnimatedGesturePad(gesture: binding.gesture)
+                .frame(width: 44, height: 44 * RemotePadCanvas.aspect)
+            Text(binding.action.title)
+                .font(.system(size: 25, weight: .semibold))
+                .foregroundColor(.white)
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            Text(binding.gesture.title)
+                .font(.system(size: 21, weight: .bold))
+                .foregroundColor(.white.opacity(0.75))
+                .lineLimit(1)
+        }
+        .padding(.leading, 18)
+        .padding(.trailing, 26)
+        .frame(height: 62)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.white.opacity(0.07))
+        )
     }
 
     /// A shape of one's own: what it does, and a button that deletes it (and what it did).

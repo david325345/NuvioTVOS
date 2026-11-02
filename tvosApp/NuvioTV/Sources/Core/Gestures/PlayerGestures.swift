@@ -41,10 +41,19 @@ struct PlayerGestureBindings: Codable, Equatable, Sendable {
         self.bindings = bindings
     }
 
-    /// A long swipe jumps chapters; everything else keeps the player's own meaning.
+    /// The ready-made gestures (Expert mode off), and where Expert mode starts and resets to.
+    /// None of them takes what the player does itself (clicks and taps on a side seek, holding
+    /// a side rewinds, a swipe up or down shows the controls or InSight), and none is a double
+    /// tap, so a single tap never waits.
     static let defaults = PlayerGestureBindings(bindings: [
         PlayerGestureBinding(gesture: .swipe(.right, long: true), action: .nextChapter),
         PlayerGestureBinding(gesture: .swipe(.left, long: true), action: .previousChapter),
+        PlayerGestureBinding(gesture: .swipeBack(.right), action: .skipIntro),
+        PlayerGestureBinding(gesture: .swipeBack(.left), action: .back30),
+        PlayerGestureBinding(gesture: .swipeBack(.up), action: .toggleSubtitles),
+        PlayerGestureBinding(gesture: .swipeBack(.down), action: .cycleAudio),
+        PlayerGestureBinding(gesture: .hold(.center), action: .openChapters),
+        PlayerGestureBinding(gesture: .circle(clockwise: true), action: .nextEpisode),
     ])
 
     func action(for gesture: RemoteGesture) -> PlayerGestureAction? {
@@ -114,6 +123,33 @@ enum PlayerGestureSettings {
     static func save(_ sensitivity: PlayerGestureSensitivity, in settings: UserDefaults = ProfileSettings.current) {
         guard let data = try? JSONEncoder().encode(sensitivity) else { return }
         settings.set(data, forKey: sensitivityKey)
+    }
+
+    // MARK: Expert mode
+
+    static let expertKey = "nuvio.tv.settings.playback.remoteGestureExpert"
+
+    /// Off: the ready-made gestures with the default sensitivity and no shapes of one's own.
+    /// One's own gestures, shapes and sensitivity stay saved and apply again in expert mode.
+    static func isExpert(in settings: UserDefaults = ProfileSettings.current) -> Bool {
+        settings.object(forKey: expertKey) as? Bool ?? false
+    }
+
+    static func setExpert(_ expert: Bool, in settings: UserDefaults = ProfileSettings.current) {
+        settings.set(expert, forKey: expertKey)
+    }
+
+    /// The gestures that work now.
+    static func activeBindings(in settings: UserDefaults = ProfileSettings.current) -> PlayerGestureBindings {
+        isExpert(in: settings) ? bindings(in: settings) : .defaults
+    }
+
+    static func activeSensitivity(in settings: UserDefaults = ProfileSettings.current) -> PlayerGestureSensitivity {
+        isExpert(in: settings) ? sensitivity(in: settings) : PlayerGestureSensitivity()
+    }
+
+    static func activeShapes(in settings: UserDefaults = ProfileSettings.current) -> [CustomGestureShape] {
+        isExpert(in: settings) ? CustomGestureStore.shapes(in: settings) : []
     }
 }
 

@@ -247,10 +247,12 @@ class PlayerViewModel: ObservableObject {
     @Published var playbackSpeed: PlaybackSpeed = .normal
     /// Remote gestures (fork test build): switched on in the player's Gestures tab.
     @Published var areGesturesEnabled = PlayerGestureSettings.isEnabled()
+    /// Expert mode: one's own gestures, shapes and sensitivity (off: the ready-made gestures).
+    @Published var isGestureExpert = PlayerGestureSettings.isExpert()
     /// The recognizer's settings from the Gestures tab's sensitivity.
-    @Published var gestureTuning = PlayerGestureSettings.sensitivity().tuning
-    /// Shapes of one's own, made in the Gestures tab.
-    @Published var customGestureShapes = CustomGestureStore.shapes()
+    @Published var gestureTuning = PlayerGestureSettings.activeSensitivity().tuning
+    /// Shapes of one's own, made in the Gestures tab (none with Expert mode off).
+    @Published var customGestureShapes = PlayerGestureSettings.activeShapes()
     /// The gesture layer holds the remote (playing, controls hidden): the touch taps and edge
     /// clicks below leave it to that layer, which plays the built-in ones itself.
     var isGestureCaptureActive = false

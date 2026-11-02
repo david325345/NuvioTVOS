@@ -47,7 +47,7 @@ extension PlayerView {
         PlayerGestureCapture(
             isActive: isGestureCaptureActive,
             waitsForDouble: { double in
-                PlayerGestureSettings.bindings().action(for: double) != nil
+                PlayerGestureSettings.activeBindings().action(for: double) != nil
             },
             onGesture: handleRemoteGesture,
             onPressEnded: handleRemoteGesturePressEnded,
@@ -100,7 +100,7 @@ extension PlayerView {
         PlayerGestureObserver(
             isActive: isPassiveGestureActive,
             waitsForDouble: { double in
-                PlayerGestureSettings.bindings().action(for: double) != nil
+                PlayerGestureSettings.activeBindings().action(for: double) != nil
             },
             onGesture: handlePassiveGesture,
             setPadObserver: { observer in
@@ -118,12 +118,12 @@ extension PlayerView {
 
     private func syncPassiveTapSides(_ active: Bool) {
         viewModel.passiveGestureTapSides = active
-            ? PlayerGesturePassive.waitingTapSides(PlayerGestureSettings.bindings())
+            ? PlayerGesturePassive.waitingTapSides(PlayerGestureSettings.activeBindings())
             : []
     }
 
     func handlePassiveGesture(_ gesture: RemoteGesture) {
-        if let action = PlayerGestureSettings.bindings().action(for: gesture) {
+        if let action = PlayerGestureSettings.activeBindings().action(for: gesture) {
             viewModel.performGestureAction(action)
             return
         }
@@ -134,7 +134,7 @@ extension PlayerView {
     }
 
     func handleRemoteGesture(_ gesture: RemoteGesture) {
-        if let action = PlayerGestureSettings.bindings().action(for: gesture) {
+        if let action = PlayerGestureSettings.activeBindings().action(for: gesture) {
             viewModel.performGestureAction(action)
             return
         }

@@ -65,4 +65,55 @@ final class PlayerGestureBindingTests: XCTestCase {
         XCTAssertEqual(RemoteGesture.hold(.top).title, "Touch and hold top")
         XCTAssertEqual(PlayerGestureAction.nextChapter.title, "Next chapter")
     }
+
+    // MARK: Expert mode
+
+    func testTheReadyMadeGesturesKeepClearOfThePlayer() {
+        let bindings = PlayerGestureBindings.defaults.bindings
+        XCTAssertEqual(bindings.count, 8)
+        XCTAssertEqual(Set(bindings.map(\.action)).count, bindings.count, "one gesture per action")
+        for binding in bindings {
+            XCTAssertNil(PlayerBuiltInGesture.action(for: binding.gesture), "\(binding.gesture.title) is the player's")
+            if case .tap(_, double: true) = binding.gesture { XCTFail("a double tap makes a single one wait") }
+            if case .click = binding.gesture { XCTFail("clicks stay the player's") }
+        }
+        XCTAssertTrue(PlayerGesturePassive.waitingTapSides(.defaults).isEmpty)
+    }
+
+    func testExpertModeKeepsOnesOwnGestures() throws {
+        let suite = "PlayerGestureBindingTests.expert"
+        let settings = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { settings.removePersistentDomain(forName: suite) }
+        XCTAssertFalse(PlayerGestureSettings.isExpert(in: settings))
+
+        var own = PlayerGestureBindings.defaults
+        own.bind(.tap(.left, double: true), to: .back30)
+        PlayerGestureSettings.save(own, in: settings)
+        var sensitivity = PlayerGestureSensitivity()
+        sensitivity.cycle(.doubleWindow)
+        PlayerGestureSettings.save(sensitivity, in: settings)
+        let shape = CustomGestureShape(id: "shape-z", name: "Shape 1", drawings: [[PadPoint(x: 0, y: 0), PadPoint(x: 1, y: 1)]])
+        CustomGestureStore.save([shape], in: settings)
+
+        // Off: the ready-made gestures, the default sensitivity, no shapes.
+        XCTAssertEqual(PlayerGestureSettings.activeBindings(in: settings), .defaults)
+        XCTAssertEqual(PlayerGestureSettings.activeSensitivity(in: settings), PlayerGestureSensitivity())
+        XCTAssertEqual(PlayerGestureSettings.activeShapes(in: settings), [])
+
+        // On: one's own, as they were saved.
+        PlayerGestureSettings.setExpert(true, in: settings)
+        XCTAssertTrue(PlayerGestureSettings.isExpert(in: settings))
+        XCTAssertEqual(PlayerGestureSettings.activeBindings(in: settings), own)
+        XCTAssertEqual(PlayerGestureSettings.activeSensitivity(in: settings), sensitivity)
+        XCTAssertEqual(PlayerGestureSettings.activeShapes(in: settings), [shape])
+    }
+
+    func testExpertModeStartsFromTheReadyMadeGestures() throws {
+        let suite = "PlayerGestureBindingTests.expertStart"
+        let settings = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { settings.removePersistentDomain(forName: suite) }
+        PlayerGestureSettings.setExpert(true, in: settings)
+        XCTAssertEqual(PlayerGestureSettings.activeBindings(in: settings), .defaults)
+        XCTAssertEqual(PlayerGestureSettings.activeBindings(in: settings).action(for: .hold(.center)), .openChapters)
+    }
 }

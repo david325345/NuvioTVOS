@@ -211,7 +211,7 @@ enum GestureFamily: String, CaseIterable, Identifiable {
         case .doubleTap: return PadSide.playerSides.map { .tap($0, double: true) }
         case .hold: return PadSide.playerSides.map { .hold($0) }
         case .circle: return [.circle(clockwise: true), .circle(clockwise: false)]
-        case .custom: return CustomGestureStore.shapes().map { .custom($0.id) }
+        case .custom: return PlayerGestureSettings.activeShapes().map { .custom($0.id) }
         }
     }
 
