@@ -530,7 +530,7 @@ final class PluginRuntimeTests: XCTestCase {
         }
         """
         let scrapers = try PluginManifest.parse(Data(json.utf8)).scrapers
-        XCTAssertEqual(scrapers.map(\.resources), [["stream"], ["subtitles"], ["stream", "subtitles"], ["stream"]])
+        XCTAssertEqual(scrapers.map(\.resources), [["stream"], ["subtitles", "catalog"], ["stream", "subtitles"], ["meta"]])
         XCTAssertEqual(scrapers[1].idPrefixes, ["tt"])
         XCTAssertEqual(scrapers[0].idPrefixes, [])
 
@@ -608,6 +608,130 @@ final class PluginRuntimeTests: XCTestCase {
         let subtitles = PluginSubtitleDiscovery.subtitles(from: result, providerName: "Subs")
         XCTAssertEqual(subtitles.first?.url, "https://s.example.com/tt0903747:1:2.srt")
         XCTAssertEqual(subtitles.first?.label, "series 1x2 Breaking.Bad.S01E02.mkv")
+    }
+
+    // MARK: - Catalogs, metadata, ratings (virtual add-ons)
+
+    private func addonRecord(
+        resources: [String],
+        idPrefixes: [String]? = nil,
+        catalogs: String? = nil,
+        ratingSources: String? = nil
+    ) -> PluginScraperRecord {
+        PluginScraperRecord(
+            id: "https://example.com/manifest.json:tvmaze", repositoryURL: "https://example.com/manifest.json",
+            scraperID: "tvmaze", name: "TVmaze", description: "Example", version: "1.0.0", filename: "tvmaze.js",
+            supportedTypes: ["tv"], enabled: true, manifestEnabled: true, hasSettings: false, logo: nil,
+            contentLanguage: [], formats: nil, declaresSeriesType: nil, resources: resources, idPrefixes: idPrefixes,
+            catalogsJSON: catalogs, ratingSourcesJSON: ratingSources
+        )
+    }
+
+    func testVirtualAddonManifestFollowsTheStremioFormat() throws {
+        let record = addonRecord(
+            resources: ["catalog", "meta", "ratings"],
+            idPrefixes: ["tvmaze:", "tt"],
+            catalogs: #"[{"type":"tv","id":"today","name":"Streaming Today","extra":[{"name":"skip"},{"options":["x"]}],"genres":["Drama",3]},{"id":"no-type"}]"#,
+            ratingSources: #"[{"source":"tvmaze","name":"TVmaze","max":10,"episodes":true},{"name":"no source"}]"#
+        )
+        let manifest = try XCTUnwrap(PluginAddonRegistry.manifest(for: record))
+        XCTAssertEqual(manifest["id"] as? String, "nuvio.plugin." + PluginAddonRegistry.key(for: record.id))
+        let catalogs = try XCTUnwrap(manifest["catalogs"] as? [[String: Any]])
+        XCTAssertEqual(catalogs.count, 1)
+        XCTAssertEqual(catalogs[0]["type"] as? String, "series")
+        XCTAssertEqual((catalogs[0]["extra"] as? [[String: Any]])?.count, 1)
+        XCTAssertEqual(catalogs[0]["genres"] as? [String], ["Drama", "3"])
+        let resources = try XCTUnwrap(manifest["resources"] as? [[String: Any]])
+        XCTAssertEqual(resources.compactMap { $0["name"] as? String }, ["catalog", "meta", "ratings"])
+        XCTAssertEqual(resources[1]["idPrefixes"] as? [String], ["tvmaze:"], "metadata only for the plugin's own ids")
+        XCTAssertEqual(resources[2]["idPrefixes"] as? [String], ["tvmaze:", "tt"])
+        XCTAssertEqual((manifest["ratingSources"] as? [[String: Any]])?.count, 1)
+
+        // The app's own ratings decoder reads it like an add-on manifest.
+        let data = try JSONSerialization.data(withJSONObject: manifest)
+        let decoded = try JSONDecoder().decode(AddonRatingsManifest.self, from: data)
+        XCTAssertTrue(decoded.supportsRatings(type: "series", id: "tt0903747"))
+        XCTAssertFalse(decoded.supportsRatings(type: "series", id: "kitsu:1"))
+        XCTAssertEqual(decoded.ratingSources?.first?.source, "tvmaze")
+
+        XCTAssertNil(PluginAddonRegistry.manifest(for: addonRecord(resources: ["stream"])))
+        XCTAssertNil(PluginAddonRegistry.manifest(for: addonRecord(resources: ["meta"], idPrefixes: ["tt"])),
+                     "no metadata for IMDb ids")
+        XCTAssertNil(PluginAddonRegistry.manifest(for: addonRecord(resources: ["catalog"], catalogs: "[]")))
+        XCTAssertEqual(PluginAddonRegistry.ownPrefixes(["tt", "t", "tmdb:", "kitsu:", "tvmaze:"]), ["kitsu:", "tvmaze:"])
+    }
+
+    func testVirtualAddonRoutes() throws {
+        let host = "https://\(PluginAddonRegistry.host)/abc"
+        let manifest = try XCTUnwrap(PluginAddonService.Route(url: URL(string: "\(host)/manifest.json?v=1")!))
+        XCTAssertEqual(manifest.resource, "manifest")
+        XCTAssertEqual(manifest.key, "abc")
+
+        let catalog = try XCTUnwrap(PluginAddonService.Route(url: URL(string: "\(host)/catalog/series/today/genre=Sci-Fi%20%26%20Fantasy&skip=20.json?v=1")!))
+        XCTAssertEqual(catalog.resource, "catalog")
+        XCTAssertEqual(catalog.type, "series")
+        XCTAssertEqual(catalog.id, "today")
+        XCTAssertEqual(catalog.extra, ["genre": "Sci-Fi & Fantasy", "skip": "20"])
+
+        let meta = try XCTUnwrap(PluginAddonService.Route(url: URL(string: "\(host)/meta/series/tvmaze%3A82.json")!))
+        XCTAssertEqual(meta.id, "tvmaze:82")
+        let ratings = try XCTUnwrap(PluginAddonService.Route(url: AddonTransportUrls.buildResourceURL(
+            manifestURL: URL(string: "\(host)/manifest.json?v=1")!, resource: "ratings", type: "series", id: "tt0903747:1:2"
+        )!))
+        XCTAssertEqual(ratings.id, "tt0903747:1:2")
+        XCTAssertEqual(ratings.resource, "ratings")
+
+        XCTAssertNil(PluginAddonService.Route(url: URL(string: "https://example.com/abc/manifest.json")!))
+        XCTAssertNil(PluginAddonService.Route(url: URL(string: "\(host)/catalog/series.json")!))
+    }
+
+    func testVirtualAddonResultsAreNormalized() throws {
+        let metas = PluginAddonService.metas(from: [["id": "tvmaze:1", "name": "A"], ["name": "no id"], ["id": 2]] as [Any], type: "series")
+        XCTAssertEqual(metas.compactMap { $0["id"] as? String }, ["tvmaze:1", "2"])
+        XCTAssertEqual(metas.first?["type"] as? String, "series")
+        XCTAssertEqual(PluginAddonService.metas(from: ["metas": [["id": "x"]]] as [String: Any], type: "movie").count, 1)
+
+        let wrapped = try XCTUnwrap(PluginAddonService.meta(from: ["meta": ["name": "Show"]] as [String: Any], type: "series", id: "tvmaze:1"))
+        XCTAssertEqual(wrapped["id"] as? String, "tvmaze:1")
+        let bare = try XCTUnwrap(PluginAddonService.meta(from: ["id": "tvmaze:2", "name": "Bare"] as [String: Any], type: "series", id: "tvmaze:2"))
+        XCTAssertEqual(bare["name"] as? String, "Bare")
+        XCTAssertNil(PluginAddonService.meta(from: [] as [Any], type: "series", id: "x"))
+
+        let ratings = PluginAddonService.ratings(from: ["ratings": [
+            ["source": "tvmaze", "value": 8.4, "url": "https://tvmaze.com/shows/1"],
+            ["source": "csfd", "value": "7,5"],
+            ["source": "bad", "value": true],
+            ["value": 5]
+        ]] as [String: Any])
+        XCTAssertEqual(ratings.compactMap { $0["source"] as? String }, ["tvmaze", "csfd"])
+        XCTAssertEqual(ratings[1]["value"] as? Double, 7.5)
+    }
+
+    func testVirtualAddonIsServedThroughURLSession() async throws {
+        let scope = ProfileSettings.activeProfileScope
+        let record = addonRecord(resources: ["catalog"], catalogs: #"[{"type":"series","id":"today","name":"Today"}]"#)
+        let repository = PluginRepositoryRecord(
+            manifestURL: record.repositoryURL, name: "Examples", description: nil, version: "1", author: nil,
+            scraperCount: 1, lastUpdated: nil, errorMessage: nil, alwaysReload: nil
+        )
+        PluginAddonRegistry.shared.update(state: PluginStore.State(pluginsEnabled: true, repositories: [repository], scrapers: [record]), scope: scope)
+        defer { PluginAddonRegistry.shared.update(state: PluginStore.loadState(scope: scope), scope: scope) }
+
+        let url = try XCTUnwrap(PluginAddonRegistry.shared.manifestURLs.first)
+        XCTAssertTrue(CinemetaCatalogRepository.configuredStreamAddonManifestURLs.contains(url))
+        let configuration = URLSessionConfiguration.ephemeral
+        PluginAddonURLProtocol.install(in: configuration)
+        let (data, response) = try await URLSession(configuration: configuration).data(from: url)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        let manifest = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(manifest["name"] as? String, "TVmaze")
+
+        let missing = url.deletingLastPathComponent().appendingPathComponent("meta/series/x.json")
+        let (_, notFound) = try await URLSession(configuration: configuration).data(from: missing)
+        XCTAssertEqual((notFound as? HTTPURLResponse)?.statusCode, 404)
+
+        PluginAddonRegistry.shared.update(state: PluginStore.State(pluginsEnabled: false, repositories: [repository], scrapers: [record]), scope: scope)
+        XCTAssertTrue(PluginAddonRegistry.shared.manifestURLs.isEmpty, "Use Plugins off hides them")
     }
 
     func testTestSamplesBuildVideoIDs() {

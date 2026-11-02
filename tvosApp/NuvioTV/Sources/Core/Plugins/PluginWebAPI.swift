@@ -139,6 +139,14 @@ enum PluginWebAPI {
                         "kind": streamKind(stream)
                     ]
                 },
+                "sections": report.sections.map { section -> [String: Any] in
+                    [
+                        "title": section.title,
+                        "summary": section.summary,
+                        "lines": section.lines,
+                        "error": section.error.map { $0 as Any } ?? NSNull()
+                    ]
+                },
                 "subtitles": report.subtitles.prefix(100).map { subtitle in
                     [
                         "language": subtitle.language,

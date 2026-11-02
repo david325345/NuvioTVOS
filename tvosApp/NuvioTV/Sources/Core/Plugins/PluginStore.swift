@@ -24,12 +24,17 @@ final class PluginStore: ObservableObject {
         var scrapers: [PluginScraperRecord] = []
     }
 
-    @Published private(set) var state = State()
+    @Published private(set) var state = State() {
+        didSet {
+            // Catalogs, metadata and ratings reach the app as virtual add-ons.
+            if let loadedScope { PluginAddonRegistry.shared.update(state: state, scope: loadedScope) }
+        }
+    }
     /// Manifest URLs being downloaded right now.
     @Published private(set) var refreshing: Set<String> = []
 
     private var loadedScope: String?
-    private static let directory = "NuvioPlugins"
+    nonisolated private static let directory = "NuvioPlugins"
 
     private init() {}
 
@@ -266,7 +271,7 @@ final class PluginStore: ObservableObject {
         )
     }
 
-    private static func loadState(scope: String) -> State {
+    nonisolated static func loadState(scope: String) -> State {
         guard let data = LargePayloadStore.read(key: "\(scope).state", directory: directory),
               let state = try? JSONDecoder().decode(State.self, from: data) else {
             return State()
@@ -286,6 +291,7 @@ final class PluginStore: ObservableObject {
             throw PluginStoreError.download("The manifest could not be downloaded: \(error.localizedDescription)")
         }
         let manifest = try PluginManifest.parse(data, fallbackName: fallbackName(for: manifestURL))
+        let rawScrapers = PluginManifest.rawScrapers(data)
         let previousByID = Dictionary(previous.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let scope = ProfileSettings.activeProfileScope
 
@@ -318,7 +324,9 @@ final class PluginStore: ObservableObject {
                     formats: info.formats,
                     declaresSeriesType: info.declaresSeries,
                     resources: info.resources,
-                    idPrefixes: info.idPrefixes.isEmpty ? nil : info.idPrefixes
+                    idPrefixes: info.idPrefixes.isEmpty ? nil : info.idPrefixes,
+                    catalogsJSON: PluginManifest.jsonArrayText(rawScrapers[info.id]?["catalogs"]),
+                    ratingSourcesJSON: PluginManifest.jsonArrayText(rawScrapers[info.id]?["ratingSources"])
                 ))
             } catch {
                 failures.append(info.name)
@@ -481,8 +489,11 @@ enum PluginSettingsVault {
     static func save(_ settings: [String: Any], scraperID: String, profileScope: String = ProfileSettings.activeProfileScope) -> Bool {
         guard JSONSerialization.isValidJSONObject(settings),
               let data = try? JSONSerialization.data(withJSONObject: settings) else { return false }
-        // Cached plugin subtitles may depend on the old values.
-        Task { await PluginSubtitleCache.shared.removeAll() }
+        // Cached plugin answers may depend on the old values.
+        Task {
+            await PluginSubtitleCache.shared.removeAll()
+            await PluginAddonResponseCache.shared.removeAll()
+        }
         var add = baseQuery(scraperID, profileScope)
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         add[kSecValueData as String] = data

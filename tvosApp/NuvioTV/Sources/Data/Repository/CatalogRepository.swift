@@ -229,6 +229,8 @@ actor StremioManifestDataCache {
         config.timeoutIntervalForRequest = 8
         config.timeoutIntervalForResource = 10
         config.waitsForConnectivity = false
+        // Plugins with catalogs, metadata or ratings (virtual add-ons).
+        PluginAddonURLProtocol.install(in: config)
         return URLSession(configuration: config)
     }()
 
@@ -446,6 +448,8 @@ final class CinemetaCatalogRepository: CatalogRepository {
         config.timeoutIntervalForRequest = 8
         config.timeoutIntervalForResource = 10
         config.waitsForConnectivity = false
+        // Plugins with catalogs, metadata or ratings (virtual add-ons).
+        PluginAddonURLProtocol.install(in: config)
         return URLSession(configuration: config)
     }()
     private static var networkSessionOverrideForTesting: URLSession?
@@ -1298,10 +1302,13 @@ final class CinemetaCatalogRepository: CatalogRepository {
     }
 
     static func configuredStreamAddonManifestURLs(in defaults: UserDefaults) -> [URL] {
-        configuredStreamAddonPreferences(in: defaults).compactMap { preference in
+        let installed = configuredStreamAddonPreferences(in: defaults).compactMap { preference -> URL? in
             guard preference.enabled else { return nil }
             return normalizedManifestURL(from: preference.url)
         }
+        // Plugins with catalogs, metadata or ratings act as add-ons that exist
+        // only on this Apple TV; they are never part of the synced add-on list.
+        return installed + PluginAddonRegistry.shared.manifestURLs
     }
 
     static func configuredStreamAddonPreferences(in defaults: UserDefaults = ProfileSettings.current) -> [StreamAddonPreference] {

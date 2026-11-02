@@ -298,7 +298,7 @@ final class StreamsRepository: ObservableObject {
 
         let enabledURLs = addonManifestURLs
         // Plugin scrapers run beside the add-ons, one group each (Android parity).
-        let pluginTargets = PluginStreamDiscovery.targets(type: type)
+        let pluginTargets = PluginStreamDiscovery.targets(type: type, videoID: videoId)
 
         guard !enabledURLs.isEmpty || !pluginTargets.isEmpty else {
             state = StreamsDiscoveryState(
@@ -618,6 +618,8 @@ final class StreamsRepository: ObservableObject {
         config.timeoutIntervalForRequest = 8
         config.timeoutIntervalForResource = 10
         config.waitsForConnectivity = false
+        // Plugins with catalogs, metadata or ratings (virtual add-ons).
+        PluginAddonURLProtocol.install(in: config)
         return URLSession(configuration: config)
     }()
 

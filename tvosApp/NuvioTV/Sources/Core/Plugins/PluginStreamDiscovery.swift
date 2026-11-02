@@ -11,12 +11,12 @@ enum PluginStreamDiscovery {
 
     /// Enabled scrapers that handle this content type.
     @MainActor
-    static func targets(type: String) -> [Target] {
+    static func targets(type: String, videoID: String? = nil) -> [Target] {
         let normalized = PluginTypes.normalized(type)
         guard normalized == "movie" || normalized == "tv" else { return [] }
-        return PluginStore.shared.activeScrapers(for: normalized).map {
-            Target(groupID: "plugin:\($0.id)", displayName: $0.name, scraper: $0)
-        }
+        return PluginStore.shared.activeScrapers(for: normalized)
+            .filter { scraper in videoID.map { scraper.accepts(id: $0) } ?? true }
+            .map { Target(groupID: "plugin:\($0.id)", displayName: $0.name, scraper: $0) }
     }
 
     /// The identifiers one stream request hands a plugin.

@@ -13380,9 +13380,8 @@ private struct PluginScraperSettingsRow: View {
 
     private var details: String {
         var parts: [String] = []
-        if scraper.provides(PluginResources.subtitles) {
-            parts.append(scraper.provides(PluginResources.stream) ? "Streams + Subtitles" : "Subtitles")
-        }
+        let offers = PluginResourceNames.summary(scraper)
+        if !offers.isEmpty { parts.append(offers) }
         let types = scraper.supportedTypes.map { $0 == "tv" ? "Series" : $0.capitalized }
         if !types.isEmpty { parts.append(types.joined(separator: ", ")) }
         if !scraper.contentLanguage.isEmpty { parts.append(scraper.contentLanguage.joined(separator: ", ").uppercased()) }
@@ -13719,7 +13718,7 @@ private struct PluginTestSheet: View {
             title: L10n.format("tvos_settings_plugin_test_title", fallback: "Test %@", scraper.name),
             subtitle: L10n.string(
                 "tvos_settings_plugin_test_subtitle",
-                fallback: "One search for a sample title (streams and/or subtitles, whatever the provider offers), with its current settings"
+                fallback: "Asks the provider for everything it offers (streams, subtitles, catalogs, metadata, ratings) for a sample title, with its current settings"
             )
         ) {
             VStack(alignment: .leading, spacing: 14) {
@@ -13747,6 +13746,13 @@ private struct PluginTestSheet: View {
 
                     ForEach(Array(report.subtitles.prefix(30).enumerated()), id: \.offset) { _, subtitle in
                         PluginTestSubtitleRow(subtitle: subtitle)
+                    }
+
+                    ForEach(Array(report.sections.enumerated()), id: \.offset) { _, section in
+                        SettingsInfoRow(title: section.title, value: section.error ?? section.summary, isDiagnostic: section.error != nil)
+                        ForEach(Array(section.lines.enumerated()), id: \.offset) { _, line in
+                            PluginTestTextRow(text: line)
+                        }
                     }
 
                     ForEach(report.log) { entry in
@@ -13805,6 +13811,28 @@ private struct PluginTestStreamRow: View {
         )
         .focusable(true)
         .focused($isFocused)
+    }
+}
+
+private struct PluginTestTextRow: View {
+    let text: String
+
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 17, weight: .medium))
+            .foregroundColor(.white.opacity(0.8))
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.white.opacity(isFocused ? 0.16 : 0.05))
+            )
+            .focusable(true)
+            .focused($isFocused)
     }
 }
 

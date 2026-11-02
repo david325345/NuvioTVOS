@@ -168,7 +168,8 @@ h3.section { margin: 14px 0 4px; font-size: 14px; color: var(--muted); }
     var panel = el('div', { class: 'panel hidden' });
     var types = (scraper.types || []).map(function (t) { return t === 'tv' ? 'Series' : t.charAt(0).toUpperCase() + t.slice(1); }).join(', ');
     var resources = scraper.resources || ['stream'];
-    var offers = resources.length === 1 && resources[0] === 'stream' ? '' : resources.map(function (r) { return r === 'stream' ? 'Streams' : r.charAt(0).toUpperCase() + r.slice(1); }).join(' + ');
+    var names = { stream: 'Streams', subtitles: 'Subtitles', catalog: 'Catalogs', meta: 'Metadata', ratings: 'Ratings' };
+    var offers = resources.length === 1 && resources[0] === 'stream' ? '' : resources.map(function (r) { return names[r] || r; }).join(' + ');
     var info = [offers, types, (scraper.languages || []).join(', ').toUpperCase(), scraper.description].filter(Boolean).join(' · ');
     var toggle = el('input', { type: 'checkbox', onchange: function (e) {
       api('scrapers/enabled', { id: scraper.id, enabled: e.target.checked }).then(function (r) { apply(r); });
@@ -315,6 +316,14 @@ h3.section { margin: 14px 0 4px; font-size: 14px; color: var(--muted); }
             ]));
           });
         }
+        (r.sections || []).forEach(function (section) {
+          output.appendChild(el('h3', { text: section.title, class: 'section' }));
+          if (section.error) output.appendChild(el('p', { class: 'error', text: '✕ ' + section.error }));
+          (section.lines || []).forEach(function (line) {
+            output.appendChild(el('div', { class: 'stream' }, [el('div', { text: line })]));
+          });
+          if (!section.error && !(section.lines || []).length) output.appendChild(el('p', { class: 'muted', text: section.summary }));
+        });
         if (r.log && r.log.length) output.appendChild(logView(r.log));
       });
     }, 'primary');

@@ -59,6 +59,29 @@ struct PluginManifest: Decodable {
         return manifest
     }
 
+    /// The scraper objects of a manifest as raw JSON, by id — for the Apple TV
+    /// extensions that are passed through as they are (`catalogs`,
+    /// `ratingSources`).
+    static func rawScrapers(_ data: Data) -> [String: [String: Any]] {
+        guard let root = try? JSONSerialization.jsonObject(with: data) else { return [:] }
+        let list = (root as? [Any]) ?? ((root as? [String: Any])?["scrapers"] as? [Any]) ?? []
+        var result: [String: [String: Any]] = [:]
+        for item in list {
+            guard let object = item as? [String: Any], let id = object["id"].flatMap(PluginJSON.text) else { continue }
+            let key = id.trimmingCharacters(in: .whitespacesAndNewlines)
+            if result[key] == nil { result[key] = object }
+        }
+        return result
+    }
+
+    /// `value` as compact JSON text when it is a non-empty array.
+    static func jsonArrayText(_ value: Any?) -> String? {
+        guard let array = value as? [Any], !array.isEmpty,
+              JSONSerialization.isValidJSONObject(array),
+              let data = try? JSONSerialization.data(withJSONObject: array) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
     fileprivate static func text<Key: CodingKey>(_ container: KeyedDecodingContainer<Key>, _ key: Key) -> String? {
         if let value = try? container.decodeIfPresent(String.self, forKey: key) {
             let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -89,8 +112,9 @@ struct PluginManifestScraper: Decodable {
     let disabledPlatforms: [String]
     let formats: [String]?
     /// Apple TV extension: what the provider answers, Stremio-style —
-    /// `stream` (`getStreams`, the default when missing) and `subtitles`
-    /// (`getSubtitles`). Android ignores the key.
+    /// `stream` (`getStreams`, the default when missing), `subtitles`
+    /// (`getSubtitles`), `catalog` (`getCatalog`), `meta` (`getMeta`) and
+    /// `ratings` (`getRatings`). Android ignores the key.
     let resources: [String]
     /// Apple TV extension: content ids the provider handles (`tt`, `kitsu:`…);
     /// empty means all.
@@ -165,6 +189,12 @@ struct PluginManifestScraper: Decodable {
 enum PluginResources {
     static let stream = "stream"
     static let subtitles = "subtitles"
+    static let catalog = "catalog"
+    static let meta = "meta"
+    static let ratings = "ratings"
+    /// Resources a plugin answers through a virtual add-on
+    /// (``PluginAddonRegistry``).
+    static let addonResources = [catalog, meta, ratings]
 
     /// Lowercased, known names only, `stream` when nothing is listed.
     static func normalized(_ names: [String]) -> [String] {
@@ -174,11 +204,35 @@ enum PluginResources {
             switch name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
             case "stream", "streams": value = stream
             case "subtitles", "subtitle", "subs": value = subtitles
+            case "catalog", "catalogs": value = catalog
+            case "meta", "metadata": value = meta
+            case "ratings", "rating": value = ratings
             default: continue
             }
             if !result.contains(value) { result.append(value) }
         }
         return result.isEmpty ? [stream] : result
+    }
+}
+
+/// "Streams + Subtitles + Catalogs" for the provider rows (TV and web).
+enum PluginResourceNames {
+    static func name(_ resource: String) -> String {
+        switch resource {
+        case PluginResources.stream: return "Streams"
+        case PluginResources.subtitles: return "Subtitles"
+        case PluginResources.catalog: return "Catalogs"
+        case PluginResources.meta: return "Metadata"
+        case PluginResources.ratings: return "Ratings"
+        default: return resource.capitalized
+        }
+    }
+
+    /// Empty for a provider that only gives streams (the usual case).
+    static func summary(_ scraper: PluginScraperRecord) -> String {
+        let resources = scraper.resources ?? [PluginResources.stream]
+        guard resources != [PluginResources.stream] else { return "" }
+        return resources.map(name).joined(separator: " + ")
     }
 }
 
@@ -239,6 +293,10 @@ struct PluginScraperRecord: Codable, Identifiable, Equatable {
     var resources: [String]?
     /// See ``PluginManifestScraper/idPrefixes``.
     var idPrefixes: [String]?
+    /// Apple TV extension: the provider's Stremio `catalogs` array, as JSON.
+    var catalogsJSON: String?
+    /// Apple TV extension: the provider's Nuvio `ratingSources` array, as JSON.
+    var ratingSourcesJSON: String?
 
     func supports(type: String) -> Bool {
         supportedTypes.contains(PluginTypes.normalized(type))
