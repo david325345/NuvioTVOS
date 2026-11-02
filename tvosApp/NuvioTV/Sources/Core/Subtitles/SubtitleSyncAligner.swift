@@ -519,12 +519,34 @@ enum SubtitleSyncReference {
     /// SDH; closest to the subtitle's line count. PGS only without text, English and "Full" or
     /// "Dialogue" first.
     static func candidates(in index: MatroskaSubtitleIndex, targetLineCount: Int) -> [Candidate] {
+        review(in: index, targetLineCount: targetLineCount).candidates
+    }
+
+    /// The tracks to try, and why each of the others was left out (for the diagnostics).
+    struct Review: Sendable {
+        var candidates: [Candidate]
+        var skipped: [UInt64: String]
+    }
+
+    static func review(in index: MatroskaSubtitleIndex, targetLineCount: Int) -> Review {
+        var skipped: [UInt64: String] = [:]
         let usable: [Candidate] = index.tracks.compactMap { track in
-            guard !track.isForced, !track.isCommentary, track.isText || track.isPGS,
-                  !matches(unwantedName, track.name) else { return nil }
+            if track.isForced { skipped[track.number] = "forced"; return nil }
+            if track.isCommentary { skipped[track.number] = "commentary"; return nil }
+            guard track.isText || track.isPGS else {
+                skipped[track.number] = "picture subtitles (\(track.codecID))"
+                return nil
+            }
+            if matches(unwantedName, track.name) { skipped[track.number] = "name (signs, songs…)"; return nil }
             let lines = cues(of: track)
-            guard lines.count >= (track.isPGS ? minLines : minEvents),
-                  let first = lines.first, let last = lines.last, last.end - first.start >= minSpan else { return nil }
+            guard lines.count >= (track.isPGS ? minLines : minEvents) else {
+                skipped[track.number] = "only \(lines.count) lines in the index"
+                return nil
+            }
+            guard let first = lines.first, let last = lines.last, last.end - first.start >= minSpan else {
+                skipped[track.number] = "spans under \(Int(minSpan)) s"
+                return nil
+            }
             return Candidate(track: track, cues: lines)
         }
         var pool = usable.filter { $0.track.isText }
@@ -533,15 +555,28 @@ enum SubtitleSyncReference {
             let counts = pool.map { $0.cues.count }.sorted()
             let median = counts[counts.count / 2]
             let clean = pool.filter { Double($0.cues.count) <= crowdedTrackFactor * Double(median) }
-            if !clean.isEmpty { pool = clean }
+            if !clean.isEmpty {
+                for crowded in pool where !clean.contains(where: { $0.track.number == crowded.track.number }) {
+                    skipped[crowded.track.number] = "far more lines than the others (signs or karaoke)"
+                }
+                pool = clean
+            }
         }
         let text = !pool.isEmpty
-        if !text { pool = usable.filter { $0.track.isPGS } }
+        if !text {
+            pool = usable.filter { $0.track.isPGS }
+        } else {
+            for picture in usable where picture.track.isPGS {
+                skipped[picture.track.number] = "PGS, text tracks first"
+            }
+        }
 
         var seen = Set<String>()
         pool = pool.filter { candidate in
             let key = "\(candidate.cues.count):\(Int((candidate.cues[0].start * 20).rounded())):\(Int((candidate.cues[candidate.cues.count - 1].start * 20).rounded()))"
-            return seen.insert(key).inserted
+            let isNew = seen.insert(key).inserted
+            if !isNew { skipped[candidate.track.number] = "same timing as another track" }
+            return isNew
         }
         let target = Double(max(targetLineCount, 1))
         func isEnglish(_ track: MatroskaSubtitleTrack) -> Bool {
@@ -565,11 +600,15 @@ enum SubtitleSyncReference {
         func closeness(_ candidate: Candidate) -> Double {
             abs(log(Double(candidate.cues.count) / target))
         }
-        return Array(pool.sorted { a, b in
+        let ordered = pool.sorted { a, b in
             if tier(a.track) != tier(b.track) { return tier(a.track) < tier(b.track) }
             if hearingImpaired(a.track) != hearingImpaired(b.track) { return !hearingImpaired(a.track) }
             return closeness(a) < closeness(b)
-        }.prefix(maxCandidates))
+        }
+        for left in ordered.dropFirst(maxCandidates) {
+            skipped[left.track.number] = "not tried (\(maxCandidates) better ones first)"
+        }
+        return Review(candidates: Array(ordered.prefix(maxCandidates)), skipped: skipped)
     }
 
     private static func matches(_ expression: NSRegularExpression, _ value: String?) -> Bool {

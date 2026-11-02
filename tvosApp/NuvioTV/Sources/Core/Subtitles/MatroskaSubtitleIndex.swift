@@ -9,6 +9,8 @@ enum SubtitleIndexError: Error, Equatable {
     case notMatroska
     case noIndex
     case noSubtitleTracks
+    /// The file's track list couldn't be found (no SeekHead entry, not in the head).
+    case tracksNotFound
     case rangeUnsupported
     case budgetExceeded
 }
@@ -142,7 +144,7 @@ struct MatroskaSubtitleIndex: Sendable {
 
         guard let tracksPosition = positions[tracksID],
               let tracksBody = try await reader.element(at: tracksPosition, expecting: tracksID, maxBytes: maxTracksBytes, head: head.data) else {
-            throw SubtitleIndexError.noSubtitleTracks
+            throw SubtitleIndexError.tracksNotFound
         }
         var tracks = parseTracks(tracksBody)
         guard !tracks.isEmpty else { throw SubtitleIndexError.noSubtitleTracks }
