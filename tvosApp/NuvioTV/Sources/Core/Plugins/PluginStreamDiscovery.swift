@@ -167,7 +167,8 @@ enum PluginStreamDiscovery {
             displayName += " - \(quality)"
         }
         stremio["name"] = displayName
-        if let title = title ?? name, title != displayName { stremio["title"] = title }
+        // The title becomes its own line only when it isn't already the name.
+        if let name, let title, title != name { stremio["title"] = title }
         if let description = clean(object["description"]) {
             stremio["description"] = description
         } else {
