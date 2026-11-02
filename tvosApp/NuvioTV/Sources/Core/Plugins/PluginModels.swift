@@ -133,13 +133,21 @@ struct PluginManifestScraper: Decodable {
         disabledPlatforms = ((try? container.decodeIfPresent([String].self, forKey: .disabledPlatforms)) ?? nil) ?? []
         formats = ((try? container.decodeIfPresent([String].self, forKey: .formats)) ?? nil)
             ?? ((try? container.decodeIfPresent([String].self, forKey: .supportedFormats)) ?? nil)
-        let resourceNames = ((try? container.decodeIfPresent([String].self, forKey: .resources)) ?? nil)
-            ?? ((try? container.decodeIfPresent([NamedResource].self, forKey: .resources)) ?? nil)?.map(\.name)
-            ?? []
+        var resourceNames: [String] = []
+        if let names = try? container.decodeIfPresent([String].self, forKey: .resources) {
+            resourceNames = names
+        } else if let objects = try? container.decodeIfPresent([NamedResource].self, forKey: .resources) {
+            resourceNames = objects.map(\.name)
+        }
         resources = PluginResources.normalized(resourceNames)
-        idPrefixes = (((try? container.decodeIfPresent([String].self, forKey: .idPrefixes)) ?? nil) ?? [])
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
+        var prefixes: [String] = []
+        if let rawPrefixes = try? container.decodeIfPresent([String].self, forKey: .idPrefixes) {
+            for prefix in rawPrefixes {
+                let trimmed = prefix.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { prefixes.append(trimmed) }
+            }
+        }
+        idPrefixes = prefixes
     }
 
     /// Apple TV runs a scraper unless the manifest disables `tvos`, or limits
