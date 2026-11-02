@@ -5054,6 +5054,8 @@ private struct TvDetailsBackdrop: View {
 private struct TvDetailsLogo: View {
     let meta: NuvioMeta
     var alignment: Alignment = .leading
+    var width: CGFloat = 560
+    var height: CGFloat = 162
 
     var body: some View {
         Group {
@@ -5072,18 +5074,18 @@ private struct TvDetailsLogo: View {
                 titleFallback
             }
         }
-        .frame(width: 560, height: 162, alignment: alignment)
+        .frame(width: width, height: height, alignment: alignment)
     }
 
     private var titleFallback: some View {
         Text(meta.name)
-            .font(.appFont(size: 58, weight: .bold))
+            .font(.appFont(size: max(30, (58 * height / 162).rounded()), weight: .bold))
             .foregroundColor(.white)
             .lineLimit(2)
             .minimumScaleFactor(0.74)
             .shadow(color: .black.opacity(0.65), radius: 14, y: 6)
             .multilineTextAlignment(alignment == .center ? .center : .leading)
-            .frame(maxWidth: 560, alignment: alignment)
+            .frame(maxWidth: width, alignment: alignment)
     }
 }
 
@@ -8419,6 +8421,14 @@ private struct TvStreamPickerOverlay: View {
     @State private var showSortOptions = false
     @AppStorage(SettingsKey.cachedOnlyStreams) private var cachedOnly = false
     @AppStorage(SettingsKey.preserveAddonStreamOrder) private var preserveAddonOrder = false
+    // Settings → Playback → Stream List.
+    @AppStorage(SettingsKey.streamListTextScale) private var streamListTextScale = 100
+    @AppStorage(SettingsKey.streamListCardSize) private var streamListCardSize = StreamListStyle.CardSize.standard.rawValue
+    @AppStorage(SettingsKey.streamListWidth) private var streamListWidth = StreamListStyle.Width.standard.rawValue
+    @AppStorage(SettingsKey.streamListNameLines) private var streamListNameLines = 2
+    @AppStorage(SettingsKey.streamListDescriptionLines) private var streamListDescriptionLines = 6
+    @AppStorage(SettingsKey.streamListEpisodeHeader) private var streamListEpisodeHeader = true
+    @AppStorage(SettingsKey.streamListExpandFocused) private var streamListExpandFocused = false
     /// Cached filter+sort result. Rebuilt only when derivation inputs change —
     /// never when focus moves between cards.
     @State private var displayedStreams: [NuvioStream] = []
@@ -8480,6 +8490,18 @@ private struct TvStreamPickerOverlay: View {
         )
     }
 
+    private var streamListStyle: StreamListStyle {
+        StreamListStyle(
+            textScale: streamListTextScale,
+            cardSize: streamListCardSize,
+            width: streamListWidth,
+            nameLines: streamListNameLines,
+            descriptionLines: streamListDescriptionLines,
+            episodeHeader: streamListEpisodeHeader,
+            expandFocused: streamListExpandFocused
+        )
+    }
+
     private var streamCardPresentationCacheKey: TvStreamCardPresentationCacheKey {
         TvStreamCardPresentationCacheKey(
             listKey: displayedStreamsCacheKey,
@@ -8496,13 +8518,14 @@ private struct TvStreamPickerOverlay: View {
             // leaves the filters and the first stream card below the viewport.
             let canvasWidth = min(proxy.size.width, 1_920)
             let canvasHeight = min(proxy.size.height, 1_080)
-            let summaryWidth = min(canvasWidth * 0.34, 620)
-            let panelWidth = min(canvasWidth * 0.56, 1_080)
-            let panelHeight = min(max(canvasHeight - 300, 440), 720)
-            let panelStackHeight = panelHeight + 118
+            let layout = streamListStyle.layout(width: canvasWidth, height: canvasHeight)
+            let summaryWidth = layout.summaryWidth
+            let panelWidth = layout.panelWidth
+            let panelHeight = layout.panelHeight
+            let panelStackHeight = layout.stackHeight
             let panelCenterY = canvasHeight / 2
             let panelTopY = panelCenterY - panelStackHeight / 2
-            let streamBoxCenterY = panelTopY + 118 + panelHeight / 2
+            let streamBoxCenterY = panelTopY + panelStackHeight - panelHeight / 2
 
             ZStack {
                 TvDetailsBackdrop(meta: meta)
@@ -8511,18 +8534,25 @@ private struct TvStreamPickerOverlay: View {
                 // The summary and picker are independent layers. Their former
                 // shared HStack let the summary's async logo/intrinsic height
                 // move the picker during tvOS focus layout.
-                leftSummary
-                    .frame(width: summaryWidth, alignment: .center)
-                    .position(
-                        x: 96 + summaryWidth / 2,
-                        y: streamBoxCenterY
-                    )
+                if layout.showsSummary {
+                    leftSummary(width: summaryWidth)
+                        .frame(width: summaryWidth, alignment: .center)
+                        .position(
+                            x: 96 + summaryWidth / 2,
+                            y: streamBoxCenterY
+                        )
+                }
 
-                VStack(alignment: .leading, spacing: 28) {
+                VStack(alignment: .leading, spacing: layout.stackSpacing) {
                     filterRow
                         // A horizontal ScrollView has no intrinsic cross-axis
                         // size, so constrain it independently of focus changes.
-                        .frame(height: 90)
+                        .frame(height: StreamListStyle.filterRowHeight)
+
+                    if layout.showsHeader {
+                        episodeHeader
+                            .frame(height: StreamListStyle.headerHeight)
+                    }
 
                     streamPanel
                         .frame(
@@ -8796,9 +8826,44 @@ private struct TvStreamPickerOverlay: View {
         }
     }
 
-    private var leftSummary: some View {
-        VStack(alignment: .center, spacing: 30) {
-            TvDetailsLogo(meta: meta, alignment: .center)
+    /// The logo and the episode above the list, when the list takes the whole width.
+    private var episodeHeader: some View {
+        HStack(alignment: .center, spacing: 36) {
+            TvDetailsLogo(meta: meta, alignment: .leading, width: 420, height: 96)
+
+            Rectangle()
+                .fill(Color.white.opacity(0.22))
+                .frame(width: 2, height: 72)
+
+            VStack(alignment: .leading, spacing: 8) {
+                if let episode {
+                    (Text(L10n.format("details_season_episode", fallback: "Season %1$d · Episode %2$d", episode.season, episode.episode))
+                        .font(.system(size: 34, weight: .semibold))
+                        .foregroundColor(.white)
+                    + Text(episode.title.isEmpty ? "" : "  ·  " + episode.title)
+                        .font(.system(size: 34, weight: .regular))
+                        .foregroundColor(.white.opacity(0.75)))
+                        .lineLimit(1)
+                }
+
+                if !summaryItems.isEmpty {
+                    Text(summaryItems.joined(separator: "  •  "))
+                        .font(.system(size: 24, weight: .medium))
+                        .foregroundColor(.white.opacity(0.6))
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func leftSummary(width: CGFloat) -> some View {
+        let contentWidth = min(560, width)
+        return VStack(alignment: .center, spacing: 30) {
+            TvDetailsLogo(meta: meta, alignment: .center, width: contentWidth)
 
             if let episode {
                 VStack(spacing: 12) {
@@ -8841,14 +8906,14 @@ private struct TvStreamPickerOverlay: View {
                         .padding(.top, 4)
                     }
                 }
-                .frame(width: 560, alignment: .center)
+                .frame(width: contentWidth, alignment: .center)
             } else if !summaryItems.isEmpty {
                 Text(summaryItems.joined(separator: "  •  "))
                     .font(.system(size: 34, weight: .medium))
                     .foregroundColor(.white.opacity(0.68))
                     .lineSpacing(8)
                     .multilineTextAlignment(.center)
-                    .frame(width: 560, alignment: .center)
+                    .frame(width: contentWidth, alignment: .center)
             }
         }
     }
@@ -8959,6 +9024,7 @@ private struct TvStreamPickerOverlay: View {
 
     private var streamPanel: some View {
         // Resolve once per panel body — focus changes hit the cache path only.
+        let style = streamListStyle
         let streamsToShow = activeVisibleStreams
         let totalCount = activeDisplayedStreams.count
         let badgeSettings = streamBadgeSettings
@@ -9005,7 +9071,7 @@ private struct TvStreamPickerOverlay: View {
             } else {
                 ScrollViewReader { proxy in
                     ScrollView(.vertical, showsIndicators: false) {
-                        LazyVStack(spacing: 28) {
+                        LazyVStack(spacing: style.metrics.cardSpacing) {
                             ForEach(streamsToShow) { stream in
                                 // Focus appearance is owned by the card via local
                                 // @FocusState + ExternalFocusBinding so only the
@@ -9014,6 +9080,7 @@ private struct TvStreamPickerOverlay: View {
                                     stream: stream,
                                     presentation: streamCardPresentations[stream.id]
                                         ?? TvStreamCardPresentation(pending: badgeSettings),
+                                    style: style,
                                     externalFocus: $focusedItem,
                                     action: { select(stream, player: nil) },
                                     onSelectPlayer: { player in select(stream, player: player) }
@@ -9056,7 +9123,7 @@ private struct TvStreamPickerOverlay: View {
                                 .padding(.bottom, 12)
                             }
                         }
-                        .padding(40)
+                        .padding(style.metrics.panelPadding)
                     }
                     .focusSection()
                     .onAppear {
@@ -9445,6 +9512,8 @@ private struct TvStreamCard: View {
     private let fileSizeLabel: String?
     private let badgePlacement: StreamBadgePlacement
     private let showAddonLogo: Bool
+    /// Settings → Playback → Stream List.
+    private let style: StreamListStyle
     let externalFocus: FocusState<String?>.Binding
     let action: () -> Void
     var onSelectPlayer: ((ExternalPlayer) -> Void)? = nil
@@ -9460,11 +9529,13 @@ private struct TvStreamCard: View {
     init(
         stream: NuvioStream,
         presentation: TvStreamCardPresentation,
+        style: StreamListStyle = StreamListStyle(),
         externalFocus: FocusState<String?>.Binding,
         action: @escaping () -> Void,
         onSelectPlayer: ((ExternalPlayer) -> Void)? = nil
     ) {
         self.stream = stream
+        self.style = style
         self.importedBadges = presentation.importedBadges
         self.fileSizeLabel = presentation.fileSizeLabel
         self.badgePlacement = presentation.badgePlacement
@@ -9480,38 +9551,45 @@ private struct TvStreamCard: View {
 
     var body: some View {
         let showImportedBadges = !importedBadges.isEmpty || fileSizeLabel != nil
+        let metrics = style.metrics
+        let badgeScale = CGFloat(style.textScale) / 100
+        // The focused card can show everything (Expand Focused Card).
+        let expanded = style.expandFocused && isFocused
+        let nameLines = expanded ? nil : style.nameLines
+        let descriptionLines = expanded ? nil : style.descriptionLines
 
         Button(action: action) {
             HStack(alignment: .center, spacing: 34) {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: metrics.lineSpacing) {
                     if showImportedBadges && badgePlacement == .top {
                         TvStreamImportedBadgeRow(
                             badges: importedBadges,
                             fileSizeLabel: fileSizeLabel,
-                            isScrolling: isFocused
+                            isScrolling: isFocused,
+                            scale: badgeScale
                         )
                     }
 
                     Text(primaryName)
-                        .font(.system(size: 34, weight: .bold))
+                        .font(.system(size: style.font(34), weight: .bold))
                         .foregroundColor(.white)
-                        .lineLimit(2)
+                        .lineLimit(nameLines)
                         .fixedSize(horizontal: false, vertical: true)
 
                     if let secondaryName {
                         Text(secondaryName)
-                            .font(.system(size: 38, weight: .medium))
+                            .font(.system(size: style.font(38), weight: .medium))
                             .foregroundColor(.white)
-                            .lineLimit(2)
+                            .lineLimit(nameLines)
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
                     if let description = stream.description, !description.isEmpty {
                         Text(description)
-                            .font(.system(size: 26, weight: .regular))
+                            .font(.system(size: style.font(26), weight: .regular))
                             .foregroundColor(.white.opacity(0.62))
                             .lineSpacing(5)
-                            .lineLimit(6)
+                            .lineLimit(descriptionLines)
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
@@ -9519,7 +9597,8 @@ private struct TvStreamCard: View {
                         TvStreamImportedBadgeRow(
                             badges: importedBadges,
                             fileSizeLabel: fileSizeLabel,
-                            isScrolling: isFocused
+                            isScrolling: isFocused,
+                            scale: badgeScale
                         )
                             .padding(.top, 4)
                     }
@@ -9534,7 +9613,7 @@ private struct TvStreamCard: View {
 
                         if let addonName = stream.addonName {
                             Text(addonName)
-                                .font(.system(size: 22, weight: .medium))
+                                .font(.system(size: style.font(22), weight: .medium))
                                 .foregroundColor(.white.opacity(0.42))
                                 .lineLimit(2)
                                 .multilineTextAlignment(.center)
@@ -9543,9 +9622,9 @@ private struct TvStreamCard: View {
                     }
                 }
             }
-            .padding(.horizontal, 36)
-            .padding(.vertical, 34)
-            .frame(minHeight: 250)
+            .padding(.horizontal, metrics.horizontalPadding)
+            .padding(.vertical, metrics.verticalPadding)
+            .frame(minHeight: metrics.minHeight)
             .frame(maxWidth: .infinity, alignment: .leading)
             // Lightweight fill instead of per-card Liquid Glass (panel keeps glass).
             .background(
@@ -9594,8 +9673,9 @@ private struct TvStreamCard: View {
     /// (never a warning-looking one) while it loads or when the manifest has none.
     @ViewBuilder
     private var addonLogo: some View {
+        let size = style.metrics.logoSize
         let fallback = Image(systemName: "play.tv.fill")
-            .font(.system(size: 62, weight: .semibold))
+            .font(.system(size: (size * 0.65).rounded(), weight: .semibold))
             .foregroundColor(.white.opacity(0.9))
 
         if let logo = stream.addonLogoURL, let url = URL(string: logo) {
@@ -9609,9 +9689,9 @@ private struct TvStreamCard: View {
                     ProgressView().tint(.white)
                 }
             }
-            .frame(width: 96, height: 96)
+            .frame(width: size, height: size)
         } else {
-            fallback.frame(width: 96, height: 96)
+            fallback.frame(width: size, height: size)
         }
     }
 }
@@ -9628,6 +9708,8 @@ private struct TvStreamImportedBadgeRow: View {
     let badges: [StreamBadgeFilter]
     let fileSizeLabel: String?
     let isScrolling: Bool
+    /// The stream list's text size (Settings → Playback → Stream List).
+    var scale: CGFloat = 1
 
     @State private var contentWidth: CGFloat = 0
     @State private var animationStart = Date()
@@ -9658,7 +9740,7 @@ private struct TvStreamImportedBadgeRow: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .clipped()
-        .frame(height: 42)
+        .frame(height: (42 * scale).rounded())
         .onPreferenceChange(TvStreamBadgeRowWidthKey.self) { width in
             guard abs(width - contentWidth) > 0.5 else { return }
             contentWidth = width
@@ -9690,15 +9772,15 @@ private struct TvStreamImportedBadgeRow: View {
     private var badgeContent: some View {
         HStack(spacing: 10) {
             ForEach(Array(badges.enumerated()), id: \.offset) { _, badge in
-                TvStreamImportedBadge(badge: badge)
+                TvStreamImportedBadge(badge: badge, scale: scale)
             }
 
             if let fileSizeLabel {
                 Text(fileSizeLabel)
-                    .font(.system(size: 18, weight: .bold))
+                    .font(.system(size: (18 * scale).rounded(), weight: .bold))
                     .foregroundColor(.white.opacity(0.9))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 7)
+                    .padding(.horizontal, 12 * scale)
+                    .padding(.vertical, 7 * scale)
                     .background(
                         Capsule().fill(Color.white.opacity(0.12))
                     )
@@ -9722,6 +9804,7 @@ private struct TvStreamImportedBadgeRow: View {
 
 private struct TvStreamImportedBadge: View {
     let badge: StreamBadgeFilter
+    var scale: CGFloat = 1
 
     var body: some View {
         Group {
@@ -9741,9 +9824,9 @@ private struct TvStreamImportedBadge: View {
                 fallbackText
             }
         }
-        .frame(minWidth: 54, maxWidth: 150, minHeight: 30, maxHeight: 30)
-        .padding(.horizontal, 6)
-        .padding(.vertical, 4)
+        .frame(minWidth: 54 * scale, maxWidth: 150 * scale, minHeight: 30 * scale, maxHeight: 30 * scale)
+        .padding(.horizontal, 6 * scale)
+        .padding(.vertical, 4 * scale)
         .background(background)
         .overlay(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
@@ -9754,7 +9837,7 @@ private struct TvStreamImportedBadge: View {
 
     private var fallbackText: some View {
         Text(badge.name)
-            .font(.system(size: 16, weight: .bold))
+            .font(.system(size: (16 * scale).rounded(), weight: .bold))
             .foregroundColor(color(from: badge.textColor) ?? .white)
             .lineLimit(1)
             .minimumScaleFactor(0.7)

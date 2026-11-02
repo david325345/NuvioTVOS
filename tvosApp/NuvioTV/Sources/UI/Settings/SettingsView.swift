@@ -310,6 +310,13 @@ enum SettingsKey {
     static let showFileSizeBadges = "nuvio.tv.settings.playback.showFileSizeBadges"
     static let showAddonLogo = "nuvio.tv.settings.playback.showAddonLogo"
     static let streamBadgePlacement = "nuvio.tv.settings.playback.streamBadgePlacement"
+    static let streamListTextScale = "nuvio.tv.settings.playback.streamListTextScale"
+    static let streamListCardSize = "nuvio.tv.settings.playback.streamListCardSize"
+    static let streamListWidth = "nuvio.tv.settings.playback.streamListWidth"
+    static let streamListNameLines = "nuvio.tv.settings.playback.streamListNameLines"
+    static let streamListDescriptionLines = "nuvio.tv.settings.playback.streamListDescriptionLines"
+    static let streamListEpisodeHeader = "nuvio.tv.settings.playback.streamListEpisodeHeader"
+    static let streamListExpandFocused = "nuvio.tv.settings.playback.streamListExpandFocused"
     static let autoPlayNext = "nuvio.tv.settings.playback.autoPlayNext"
     static let autoPlayNextCountdown = "nuvio.tv.settings.playback.autoPlayNextCountdown"
     static let autoSkipIntro = "nuvio.tv.settings.playback.autoSkipIntro"
@@ -434,6 +441,7 @@ enum SettingsKey {
         playerEngine, trueHDSpatialAudio, preferDualLayerDolbyVision, lowResUpscaling, losslessAudioBridge, trickplayServer, externalPlayer, smartStreamSelection, reuseLastLink, reuseLastLinkCacheHours, rememberLastSourceFocus, smartStreamUseTopResult, smartStreamQuality, smartSubtitleMatching,
         backgroundStreamPreFetch,
         cachedOnlyStreams, preferHardwareDecodedStreams, preserveAddonStreamOrder, streamSortOption, streamBadgeRules, showFileSizeBadges, showAddonLogo, streamBadgePlacement,
+        streamListTextScale, streamListCardSize, streamListWidth, streamListNameLines, streamListDescriptionLines, streamListEpisodeHeader, streamListExpandFocused,
         autoPlayNext, autoPlayNextCountdown, autoSkipIntro, autoSkipRecap, autoSkipOutro, autoSkipMovieCredits, streamAutoPlayPreferBingeGroup, streamAutoPlayReuseBingeGroup, postPlayRecommendationsEnabled, trailersEnabled, backgroundTrailersEnabled, trailerPreviewSound, trailerDelay,
         focusedPosterBackdropEnabled, focusedPosterBackdropDelay, audioLanguage,
         subtitleLanguages, subtitleLanguage, subtitleLanguageSecondary, subtitleLanguageTertiary,
@@ -8689,6 +8697,13 @@ private struct PlaybackSettingsView: View {
     @AppStorage(SettingsKey.showFileSizeBadges) private var showFileSizeBadges = true
     @AppStorage(SettingsKey.showAddonLogo) private var showAddonLogo = false
     @AppStorage(SettingsKey.streamBadgePlacement) private var streamBadgePlacement = StreamBadgePlacement.bottom.rawValue
+    @AppStorage(SettingsKey.streamListTextScale) private var streamListTextScale = 100
+    @AppStorage(SettingsKey.streamListCardSize) private var streamListCardSize = StreamListStyle.CardSize.standard.rawValue
+    @AppStorage(SettingsKey.streamListWidth) private var streamListWidth = StreamListStyle.Width.standard.rawValue
+    @AppStorage(SettingsKey.streamListNameLines) private var streamListNameLines = 2
+    @AppStorage(SettingsKey.streamListDescriptionLines) private var streamListDescriptionLines = 6
+    @AppStorage(SettingsKey.streamListEpisodeHeader) private var streamListEpisodeHeader = true
+    @AppStorage(SettingsKey.streamListExpandFocused) private var streamListExpandFocused = false
     @AppStorage(SettingsKey.autoPlayNext) private var autoPlayNext = true
     @AppStorage(SettingsKey.autoSkipIntro) private var autoSkipIntro = false
     @AppStorage(SettingsKey.autoSkipRecap) private var autoSkipRecap = false
@@ -9383,6 +9398,16 @@ private struct PlaybackSettingsView: View {
             }
 
             SettingsGroup(
+                title: L10n.string("tvos_settings_stream_list", fallback: "Stream List"),
+                subtitle: L10n.string(
+                    "tvos_settings_stream_list_subtitle",
+                    fallback: "How the sources look when you open an episode or a film"
+                )
+            ) {
+                streamListSettingsRows
+            }
+
+            SettingsGroup(
                 title: L10n.string("tvos_settings_stream_badges", fallback: "Stream Badges"),
                 subtitle: L10n.string(
                     "tvos_settings_stream_badges_subtitle",
@@ -9531,6 +9556,90 @@ private struct PlaybackSettingsView: View {
         guard !ordered.isEmpty else { return L10n.string("tvos_settings_system", fallback: "System") }
         guard ordered.count > 2 else { return ordered.joined(separator: ", ") }
         return "\(ordered[0]), \(ordered[1]) +\(ordered.count - 2)"
+    }
+
+    @ViewBuilder
+    private var streamListSettingsRows: some View {
+        let textScaleBinding = Binding<String>(
+            get: { StreamListStyle.textScaleLabel(streamListTextScale) },
+            set: { streamListTextScale = StreamListStyle.textScale(fromLabel: $0) }
+        )
+        let cardSizeBinding = Binding<String>(
+            get: { (StreamListStyle.CardSize(rawValue: streamListCardSize) ?? .standard).label },
+            set: { label in
+                streamListCardSize = (StreamListStyle.CardSize.allCases.first { $0.label == label } ?? .standard).rawValue
+            }
+        )
+        let widthBinding = Binding<String>(
+            get: { (StreamListStyle.Width(rawValue: streamListWidth) ?? .standard).label },
+            set: { label in
+                streamListWidth = (StreamListStyle.Width.allCases.first { $0.label == label } ?? .standard).rawValue
+            }
+        )
+        let nameLinesBinding = Binding<String>(
+            get: { StreamListStyle.linesLabel(streamListNameLines) },
+            set: { streamListNameLines = StreamListStyle.lines(fromLabel: $0) }
+        )
+        let descriptionLinesBinding = Binding<String>(
+            get: { StreamListStyle.linesLabel(streamListDescriptionLines) },
+            set: { streamListDescriptionLines = StreamListStyle.lines(fromLabel: $0) }
+        )
+
+        SettingsOptionRow(
+            title: L10n.string("tvos_settings_stream_list_text_size", fallback: "Text Size"),
+            subtitle: L10n.string("tvos_settings_stream_list_text_size_subtitle", fallback: "Name, details and badges of each stream, 60 % to 130 %"),
+            selection: textScaleBinding,
+            options: StreamListStyle.textScales.map(StreamListStyle.textScaleLabel),
+            accentColor: accentColor,
+            optionLabel: { $0 }
+        )
+
+        SettingsOptionRow(
+            title: L10n.string("tvos_settings_stream_list_card_size", fallback: "Card Size"),
+            subtitle: L10n.string("tvos_settings_stream_list_card_size_subtitle", fallback: "Compact fits more streams on screen"),
+            selection: cardSizeBinding,
+            options: StreamListStyle.CardSize.allCases.map(\.label),
+            accentColor: accentColor
+        )
+
+        SettingsOptionRow(
+            title: L10n.string("tvos_settings_stream_list_width", fallback: "List Width"),
+            subtitle: L10n.string("tvos_settings_stream_list_width_subtitle", fallback: "Wide narrows the summary, Full leaves it out for the longest names"),
+            selection: widthBinding,
+            options: StreamListStyle.Width.allCases.map(\.label),
+            accentColor: accentColor
+        )
+
+        SettingsToggleRow(
+            title: L10n.string("tvos_settings_stream_list_episode_header", fallback: "Episode Info Above the List"),
+            subtitle: L10n.string("tvos_settings_stream_list_episode_header_subtitle", fallback: "With Full width: the logo and the episode between the add-ons and the first stream"),
+            isOn: $streamListEpisodeHeader,
+            accentColor: accentColor,
+            enabled: streamListWidth == StreamListStyle.Width.full.rawValue
+        )
+
+        SettingsOptionRow(
+            title: L10n.string("tvos_settings_stream_list_name_lines", fallback: "Name Lines"),
+            subtitle: L10n.string("tvos_settings_stream_list_name_lines_subtitle", fallback: "Lines of the stream name before it is cut"),
+            selection: nameLinesBinding,
+            options: StreamListStyle.nameLineChoices.map(StreamListStyle.linesLabel),
+            accentColor: accentColor
+        )
+
+        SettingsOptionRow(
+            title: L10n.string("tvos_settings_stream_list_description_lines", fallback: "Description Lines"),
+            subtitle: L10n.string("tvos_settings_stream_list_description_lines_subtitle", fallback: "The file name and details under it"),
+            selection: descriptionLinesBinding,
+            options: StreamListStyle.descriptionLineChoices.map(StreamListStyle.linesLabel),
+            accentColor: accentColor
+        )
+
+        SettingsToggleRow(
+            title: L10n.string("tvos_settings_stream_list_expand_focused", fallback: "Expand Focused Card (Experimental)"),
+            subtitle: L10n.string("tvos_settings_stream_list_expand_focused_subtitle", fallback: "The selected stream shows its whole name and description"),
+            isOn: $streamListExpandFocused,
+            accentColor: accentColor
+        )
     }
 
     @ViewBuilder
