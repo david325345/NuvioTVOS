@@ -103,7 +103,7 @@ final class GestureAnimationTests: XCTestCase {
         let bindings = PlayerGestureBindings.defaults
         XCTAssertEqual(PlayerGestureMeaning(of: .swipe(.right, long: true), in: bindings), .action(.nextChapter))
         XCTAssertEqual(PlayerGestureMeaning(of: .click(.right, .single), in: bindings), .builtIn(.seekForward))
-        XCTAssertEqual(PlayerGestureMeaning(of: .circle(clockwise: true), in: bindings), .free)
+        XCTAssertEqual(PlayerGestureMeaning(of: .circle(clockwise: false), in: bindings), .free)
         XCTAssertEqual(PlayerGestureMeaning.free.title, "free")
         XCTAssertEqual(PlayerGestureMeaning.builtIn(.seekForward).title, "player: seek forward")
     }
