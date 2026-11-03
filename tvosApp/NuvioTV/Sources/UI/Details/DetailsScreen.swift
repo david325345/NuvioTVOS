@@ -8429,6 +8429,11 @@ private struct TvStreamPickerOverlay: View {
     @AppStorage(SettingsKey.streamListDescriptionLines) private var streamListDescriptionLines = 6
     @AppStorage(SettingsKey.streamListEpisodeHeader) private var streamListEpisodeHeader = true
     @AppStorage(SettingsKey.streamListExpandFocused) private var streamListExpandFocused = false
+    @AppStorage(SettingsKey.streamListDetailSize) private var streamListDetailSize = StreamListStyle.Step.standard.rawValue
+    @AppStorage(SettingsKey.streamListBadgeSize) private var streamListBadgeSize = StreamListStyle.Step.standard.rawValue
+    @AppStorage(SettingsKey.streamListLogoSize) private var streamListLogoSize = StreamListStyle.Step.standard.rawValue
+    @AppStorage(SettingsKey.streamListSpacing) private var streamListSpacing = StreamListStyle.Spacing.standard.rawValue
+    @AppStorage(SettingsKey.streamListHeight) private var streamListHeight = StreamListStyle.Height.standard.rawValue
     /// Cached filter+sort result. Rebuilt only when derivation inputs change —
     /// never when focus moves between cards.
     @State private var displayedStreams: [NuvioStream] = []
@@ -8498,7 +8503,12 @@ private struct TvStreamPickerOverlay: View {
             nameLines: streamListNameLines,
             descriptionLines: streamListDescriptionLines,
             episodeHeader: streamListEpisodeHeader,
-            expandFocused: streamListExpandFocused
+            expandFocused: streamListExpandFocused,
+            detailSize: streamListDetailSize,
+            badgeSize: streamListBadgeSize,
+            logoSize: streamListLogoSize,
+            spacing: streamListSpacing,
+            height: streamListHeight
         )
     }
 
@@ -9454,6 +9464,172 @@ private struct TvStreamFilterButton: View {
     }
 }
 
+/// The stream list as `style` draws it, with sample streams, for the Stream List editor in
+/// Settings: the whole screen at 1920 × 1080 (summary, filters, episode line, cards), scaled to
+/// `width`. Nothing in it takes the focus; the first card is drawn as focused.
+struct StreamListPreview: View {
+    let style: StreamListStyle
+    let showAddonLogo: Bool
+    let width: CGFloat
+
+    @FocusState private var focus: String?
+
+    private static let canvas = CGSize(width: 1920, height: 1080)
+
+    static let samples: [NuvioStream] = [
+        NuvioStream(
+            url: "https://preview.invalid/1.mkv",
+            name: "AIOStreams [TB+]\n2160p · HDR10 · WEB-DL · Dual Audio · Multi Subs",
+            description: "Sousou.no.Frieren.S01E05.Phantoms.of.the.Dead.2160p.CR.WEB-DL.DUAL.AAC2.0.H.265-VARYG.mkv\nQuality: WEB-DL · 2160p · HDR10\nCodec: HEVC 10bit · AAC 2.0\nAudio: Japanese, English\nSubtitles: English, Spanish, Portuguese, French, German, Italian, Arabic, Russian\nSize: 2.9 GB · Cached\nSource: Nyaa · Group: VARYG",
+            addonName: "AIOStreams",
+            videoSize: 2_900_000_000),
+        NuvioStream(
+            url: "https://preview.invalid/2.mkv",
+            name: "NimeToDex\n1080p · BD",
+            description: "[Judas] Sousou no Frieren - S01E05 (BD 1080p HEVC x265 10bit Dual-Audio) [Multi-Subs].mkv\nSize: 1.6 GB · Seeds: 214",
+            addonName: "NimeToDex",
+            videoSize: 1_600_000_000),
+        NuvioStream(
+            url: "https://preview.invalid/3.mkv",
+            name: "Torrentio\n1080p",
+            description: "[Erai-raws] Sousou no Frieren - 05 [1080p CR WEB-DL AVC AAC][MultiSub][ENG][POR-BR][SPA-LA][SPA][ARA][FRE][GER][ITA][RUS].mkv\nSeeds: 86 · Size: 1.3 GB",
+            addonName: "Torrentio",
+            videoSize: 1_300_000_000),
+        NuvioStream(
+            url: "https://preview.invalid/4.mkv",
+            name: "Usenet Direct\n1080p",
+            description: "Sousou.no.Frieren.S01E05.1080p.NF.WEB-DL.AAC2.0.H.264-VARYG\nSize: 1.4 GB",
+            addonName: "Usenet Direct",
+            videoSize: 1_400_000_000),
+    ]
+
+    var body: some View {
+        let scale = width / Self.canvas.width
+        let layout = style.layout(width: Self.canvas.width, height: Self.canvas.height)
+        let settings = StreamBadgeSettingsStore.snapshot
+        let badges = StreamBadgeSettingsSnapshot(
+            rules: settings.rules, showFileSizeBadges: settings.showFileSizeBadges,
+            showAddonLogo: showAddonLogo, badgePlacement: settings.badgePlacement)
+        let panelTop = (Self.canvas.height - layout.stackHeight) / 2
+        let panelLeft = Self.canvas.width - 64 - layout.panelWidth
+
+        ZStack(alignment: .topLeading) {
+            Color(red: 0.06, green: 0.08, blue: 0.11)
+
+            if layout.showsSummary {
+                summary(width: layout.summaryWidth)
+                    .frame(width: layout.summaryWidth, height: layout.panelHeight)
+                    .offset(x: 96, y: panelTop + layout.stackHeight - layout.panelHeight)
+            }
+
+            VStack(alignment: .leading, spacing: layout.stackSpacing) {
+                filters
+                    .frame(height: StreamListStyle.filterRowHeight)
+
+                if layout.showsHeader {
+                    header
+                        .frame(height: StreamListStyle.headerHeight)
+                }
+
+                VStack(spacing: style.metrics.cardSpacing) {
+                    ForEach(Array(Self.samples.enumerated()), id: \.offset) { index, stream in
+                        TvStreamCard(
+                            stream: stream,
+                            presentation: TvStreamCardPresentation(stream: stream, badgeSettings: badges),
+                            style: style,
+                            previewFocused: index == 0,
+                            externalFocus: $focus,
+                            action: {}
+                        )
+                    }
+                }
+                .padding(style.metrics.panelPadding)
+                .frame(width: layout.panelWidth, height: layout.panelHeight, alignment: .top)
+                .modifier(TvStreamGlass(shape: RoundedRectangle(cornerRadius: 32, style: .continuous), tint: Color.black.opacity(0.22)))
+                .clipShape(RoundedRectangle(cornerRadius: 32, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 32, style: .continuous)
+                        .stroke(Color.white.opacity(0.10), lineWidth: 1)
+                )
+            }
+            .frame(width: layout.panelWidth, alignment: .topLeading)
+            .offset(x: panelLeft, y: panelTop)
+        }
+        .frame(width: Self.canvas.width, height: Self.canvas.height, alignment: .topLeading)
+        .clipped()
+        .disabled(true)
+        .scaleEffect(scale, anchor: .topLeading)
+        .frame(width: Self.canvas.width * scale, height: Self.canvas.height * scale, alignment: .topLeading)
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(Color.white.opacity(0.18), lineWidth: 2)
+        )
+    }
+
+    private func summary(width: CGFloat) -> some View {
+        VStack(spacing: 30) {
+            Text("Frieren")
+                .font(.appFont(size: 58, weight: .bold))
+                .foregroundColor(.white)
+                .lineLimit(2)
+                .minimumScaleFactor(0.6)
+            VStack(spacing: 12) {
+                Text("Season 1 · Episode 5")
+                    .font(.system(size: 36, weight: .semibold))
+                    .foregroundColor(.white)
+                Text("Phantoms of the Dead")
+                    .font(.system(size: 30, weight: .regular))
+                    .foregroundColor(.white.opacity(0.7))
+            }
+            .multilineTextAlignment(.center)
+            .frame(width: min(560, width))
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 36) {
+            Text("Frieren")
+                .font(.appFont(size: 52, weight: .bold))
+                .foregroundColor(.white)
+            Rectangle()
+                .fill(Color.white.opacity(0.22))
+                .frame(width: 2, height: 72)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 0) {
+                    Text("Season 1 · Episode 5")
+                        .font(.system(size: 34, weight: .semibold))
+                        .foregroundColor(.white)
+                    Text("  ·  Phantoms of the Dead")
+                        .font(.system(size: 34, weight: .regular))
+                        .foregroundColor(.white.opacity(0.75))
+                }
+                .lineLimit(1)
+                Text("Adventure  •  Fantasy  •  2023")
+                    .font(.system(size: 24, weight: .medium))
+                    .foregroundColor(.white.opacity(0.6))
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+    }
+
+    private var filters: some View {
+        HStack(spacing: 18) {
+            ForEach(["All", "AIOStreams", "NimeToDex", "Torrentio", "Usenet Direct"], id: \.self) { name in
+                Text(name)
+                    .font(.system(size: 26, weight: .medium))
+                    .foregroundColor(name == "All" ? .black : .white)
+                    .padding(.horizontal, 26)
+                    .frame(height: 58)
+                    .modifier(TvDetailsGlassBackground(filled: name == "All", shape: Capsule()))
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8)
+    }
+}
+
 private struct TvStreamCardPresentationCacheKey: Equatable {
     let listKey: StreamPickerListCacheKey?
     let badgeSettingsRevision: UInt64
@@ -9514,6 +9690,8 @@ private struct TvStreamCard: View {
     private let showAddonLogo: Bool
     /// Settings → Playback → Stream List.
     private let style: StreamListStyle
+    /// The Stream List preview draws its first card as focused.
+    private let previewFocused: Bool
     let externalFocus: FocusState<String?>.Binding
     let action: () -> Void
     var onSelectPlayer: ((ExternalPlayer) -> Void)? = nil
@@ -9530,12 +9708,14 @@ private struct TvStreamCard: View {
         stream: NuvioStream,
         presentation: TvStreamCardPresentation,
         style: StreamListStyle = StreamListStyle(),
+        previewFocused: Bool = false,
         externalFocus: FocusState<String?>.Binding,
         action: @escaping () -> Void,
         onSelectPlayer: ((ExternalPlayer) -> Void)? = nil
     ) {
         self.stream = stream
         self.style = style
+        self.previewFocused = previewFocused
         self.importedBadges = presentation.importedBadges
         self.fileSizeLabel = presentation.fileSizeLabel
         self.badgePlacement = presentation.badgePlacement
@@ -9552,9 +9732,10 @@ private struct TvStreamCard: View {
     var body: some View {
         let showImportedBadges = !importedBadges.isEmpty || fileSizeLabel != nil
         let metrics = style.metrics
-        let badgeScale = CGFloat(style.textScale) / 100
+        let badgeScale = style.badgeScale
+        let looksFocused = isFocused || previewFocused
         // The focused card can show everything (Expand Focused Card).
-        let expanded = style.expandFocused && isFocused
+        let expanded = style.expandFocused && looksFocused
         let nameLines = expanded ? nil : style.nameLines
         let descriptionLines = expanded ? nil : style.descriptionLines
 
@@ -9565,7 +9746,7 @@ private struct TvStreamCard: View {
                         TvStreamImportedBadgeRow(
                             badges: importedBadges,
                             fileSizeLabel: fileSizeLabel,
-                            isScrolling: isFocused,
+                            isScrolling: looksFocused,
                             scale: badgeScale
                         )
                     }
@@ -9586,9 +9767,9 @@ private struct TvStreamCard: View {
 
                     if let description = stream.description, !description.isEmpty {
                         Text(description)
-                            .font(.system(size: style.font(26), weight: .regular))
+                            .font(.system(size: style.detailFont(26), weight: .regular))
                             .foregroundColor(.white.opacity(0.62))
-                            .lineSpacing(5)
+                            .lineSpacing(style.detailLineSpacing)
                             .lineLimit(descriptionLines)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -9597,7 +9778,7 @@ private struct TvStreamCard: View {
                         TvStreamImportedBadgeRow(
                             badges: importedBadges,
                             fileSizeLabel: fileSizeLabel,
-                            isScrolling: isFocused,
+                            isScrolling: looksFocused,
                             scale: badgeScale
                         )
                             .padding(.top, 4)
@@ -9629,13 +9810,13 @@ private struct TvStreamCard: View {
             // Lightweight fill instead of per-card Liquid Glass (panel keeps glass).
             .background(
                 RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .fill(Color.white.opacity(isFocused ? 0.14 : 0.06))
+                    .fill(Color.white.opacity(looksFocused ? 0.14 : 0.06))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 22, style: .continuous)
                     .stroke(
-                        isFocused ? AppFocusOutline.color : Color.white.opacity(0.10),
-                        lineWidth: isFocused ? AppFocusOutline.width : 1
+                        looksFocused ? AppFocusOutline.color : Color.white.opacity(0.10),
+                        lineWidth: looksFocused ? AppFocusOutline.width : 1
                     )
             )
         }
@@ -9643,7 +9824,7 @@ private struct TvStreamCard: View {
         .focused($isFocused)
         .modifier(ExternalFocusBinding(binding: externalFocus, id: stream.id))
         .focusEffectDisabledIfAvailable()
-        .scaleEffect(isFocused ? 1.025 : 1)
+        .scaleEffect(looksFocused ? 1.025 : 1)
         .animation(.easeOut(duration: 0.14), value: isFocused)
         .contextMenu {
             Section(L10n.string("details_play_with", fallback: "Play with")) {
