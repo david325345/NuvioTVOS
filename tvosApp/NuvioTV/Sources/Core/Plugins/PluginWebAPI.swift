@@ -9,6 +9,15 @@ enum PluginWebAPI {
     typealias Response = PluginHTTPServerCore.Response
 
     static func handle(_ request: Request) async -> Response {
+        // A provider's own configuration page ("Configure").
+        if request.path.hasPrefix("/plugin/") {
+            return await PluginRoutes.handleSetupPage(request)
+        }
+        // Only the setup page sends this header; a page elsewhere (a plugin's
+        // sandboxed page included) can't, without a CORS answer it never gets.
+        if request.method == "POST", request.headers["x-nuvio"] != "1" {
+            return .error("Forbidden", status: 403)
+        }
         let store = PluginStore.shared
         store.ensureLoaded()
         let body = request.json
@@ -21,6 +30,26 @@ enum PluginWebAPI {
 
         case ("POST", "/api/plugins-enabled"):
             store.setPluginsEnabled((body["enabled"] as? Bool) ?? true)
+            return .json(state())
+
+        case ("POST", "/api/auto-update"):
+            store.setAutoUpdates((body["enabled"] as? Bool) ?? true)
+            return .json(state())
+
+        case ("POST", "/api/scrapers/code"):
+            guard let id = body["id"] as? String, let code = body["code"] as? String else {
+                return .error("Missing provider or code")
+            }
+            do {
+                try store.uploadCode(code, scraperID: id)
+                return .json(state())
+            } catch {
+                return .error(error.localizedDescription)
+            }
+
+        case ("POST", "/api/scrapers/code/revert"):
+            guard let id = body["id"] as? String else { return .error("Missing provider") }
+            store.revertUploadedCode(id)
             return .json(state())
 
         case ("POST", "/api/repositories/add"):
@@ -168,6 +197,7 @@ enum PluginWebAPI {
         return [
             "ok": true,
             "pluginsEnabled": store.state.pluginsEnabled,
+            "autoUpdate": store.autoUpdates,
             "repositories": store.state.repositories.map { repository -> [String: Any] in
                 [
                     "url": repository.manifestURL,
@@ -191,7 +221,10 @@ enum PluginWebAPI {
                             "manifestEnabled": scraper.manifestEnabled,
                             "hasSettings": scraper.hasSettings,
                             "resources": scraper.resources ?? [PluginResources.stream],
-                            "logo": scraper.logo ?? ""
+                            "logo": scraper.logo ?? "",
+                            "configPage": scraper.configPage == true ? "plugin/\(PluginAddonRegistry.key(for: scraper.id))/" : "",
+                            "uploadedCode": scraper.uploadedCode == true,
+                            "keepAlive": scraper.keepAlive == true
                         ]
                     }
                 ]

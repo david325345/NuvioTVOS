@@ -119,11 +119,18 @@ struct PluginManifestScraper: Decodable {
     /// Apple TV extension: content ids the provider handles (`tt`, `kitsu:`…);
     /// empty means all.
     let idPrefixes: [String]
+    /// Apple TV extension: `true` keeps one JavaScript context for the
+    /// provider while Nuvio runs (see ``PluginRuntime``); nil when the
+    /// manifest doesn't say (see ``runsPersistently``).
+    let keepAlive: Bool?
+    /// Apple TV extension: the provider serves its own settings page through
+    /// `handleRequest`, linked as "Configure" on the setup page.
+    let configPage: Bool
 
     enum CodingKeys: String, CodingKey {
         case id, name, description, version, filename, supportedTypes, enabled, hasSettings, logo
         case contentLanguage, supportedPlatforms, disabledPlatforms, formats, supportedFormats
-        case resources, idPrefixes
+        case resources, idPrefixes, keepAlive, configPage
     }
 
     private struct NamedResource: Decodable {
@@ -172,6 +179,15 @@ struct PluginManifestScraper: Decodable {
             }
         }
         idPrefixes = prefixes
+        keepAlive = (try? container.decodeIfPresent(Bool.self, forKey: .keepAlive)) ?? nil
+        configPage = ((try? container.decodeIfPresent(Bool.self, forKey: .configPage)) ?? nil) ?? false
+    }
+
+    /// A plugin written for Apple TV (`tvos` in `supportedPlatforms`) keeps
+    /// its context unless it says `"keepAlive": false`; any other only with
+    /// `"keepAlive": true`, since Android gives every call a fresh runtime.
+    var runsPersistently: Bool {
+        keepAlive ?? supportedPlatforms.contains { $0.lowercased() == PluginTypes.platform }
     }
 
     /// Apple TV runs a scraper unless the manifest disables `tvos`, or limits
@@ -297,6 +313,13 @@ struct PluginScraperRecord: Codable, Identifiable, Equatable {
     var catalogsJSON: String?
     /// Apple TV extension: the provider's Nuvio `ratingSources` array, as JSON.
     var ratingSourcesJSON: String?
+    /// See ``PluginManifestScraper/runsPersistently``.
+    var keepAlive: Bool?
+    /// See ``PluginManifestScraper/configPage``.
+    var configPage: Bool?
+    /// Developer Mode: the code was uploaded from the setup page and is used
+    /// instead of the repository's until it is reverted.
+    var uploadedCode: Bool?
 
     func supports(type: String) -> Bool {
         supportedTypes.contains(PluginTypes.normalized(type))

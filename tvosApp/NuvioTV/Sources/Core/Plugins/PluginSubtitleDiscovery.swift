@@ -77,7 +77,8 @@ enum PluginSubtitleDiscovery {
                 settings: settings,
                 function: "getSubtitles",
                 arguments: [query.type, query.videoID, context(query: query, request: request)],
-                timeout: timeout
+                timeout: timeout,
+                keepAlive: scraper.keepAlive == true
             )
             return Outcome(subtitles: subtitles(from: result, providerName: scraper.name), error: nil)
         } catch is CancellationError {

@@ -92,7 +92,16 @@ enum PluginStreamDiscovery {
     }
 
     /// Runs one scraper's `getStreams` and returns its finished group.
-    static func fetchGroup(target: Target, type: String, videoID: String) async -> AddonStreamGroup {
+    ///
+    /// Apple TV extension: the plugin may call `context.emit(list)` while it
+    /// searches; each list is added to what `onPartial` shows (still loading)
+    /// until the returned list replaces them all.
+    static func fetchGroup(
+        target: Target,
+        type: String,
+        videoID: String,
+        onPartial: (@Sendable (AddonStreamGroup) async -> Void)? = nil
+    ) async -> AddonStreamGroup {
         func group(_ streams: [NuvioStream], error: String?) -> AddonStreamGroup {
             AddonStreamGroup(addonId: target.groupID, displayName: target.displayName, streams: streams, isLoading: false, error: error)
         }
@@ -113,27 +122,65 @@ enum PluginStreamDiscovery {
         // At most ten plugins run at once, as on Android TV.
         await PluginConcurrency.shared.acquire()
         defer { Task { await PluginConcurrency.shared.release() } }
+        let scraperID = target.scraper.id
+        let displayName = target.displayName
+        // Emitted lists, in order, shown as they come.
+        let (emitted, emitter) = AsyncStream<String>.makeStream()
+        let shownSoFar = PluginPartialStreams()
+        let partials = Task {
+            var shown: [NuvioStream] = []
+            for await json in emitted {
+                let list: Any = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) ?? [Any]()
+                let batch = streams(from: list, providerName: displayName, scraperID: scraperID)
+                guard !batch.isEmpty else { continue }
+                shown += await DebridStreamPresentation.present(streams: batch)
+                shownSoFar.set(shown)
+                await onPartial?(AddonStreamGroup(
+                    addonId: target.groupID,
+                    displayName: displayName,
+                    streams: shown,
+                    isLoading: true,
+                    error: nil
+                ))
+            }
+        }
+        defer {
+            emitter.finish()
+            partials.cancel()
+        }
         do {
             let result = try await PluginRuntime.call(
                 code: code,
-                scraperId: target.scraper.id,
+                scraperId: scraperID,
                 settings: settings,
                 function: "getStreams",
                 arguments: pluginRequest.arguments,
-                timeout: PluginRuntime.streamTimeout
+                timeout: PluginRuntime.streamTimeout,
+                keepAlive: target.scraper.keepAlive == true,
+                emitArgument: 4,
+                onEmit: onPartial == nil ? nil : { list in emitter.yield(list) }
             )
-            let items = (result as? [Any]) ?? []
-            let streams = items.compactMap { item -> NuvioStream? in
-                guard let object = item as? [String: Any] else { return nil }
-                return stream(from: object, providerName: target.displayName)
-            }
-            let presented = await DebridStreamPresentation.present(streams: streams)
+            emitter.finish()
+            partials.cancel()
+            let presented = await DebridStreamPresentation.present(
+                streams: streams(from: result, providerName: displayName, scraperID: scraperID)
+            )
             return group(presented, error: nil)
         } catch is CancellationError {
             return group([], error: nil)
         } catch {
             PluginLogStore.shared.append(target.scraper.id, level: .error, message: "getStreams failed: \(error.localizedDescription)")
-            return group([], error: error.localizedDescription)
+            // What the plugin emitted before it failed (or ran out of time) stays.
+            let kept = shownSoFar.get()
+            return kept.isEmpty ? group([], error: error.localizedDescription) : group(kept, error: nil)
+        }
+    }
+
+    /// The streams of a `getStreams` result (or an emitted list).
+    static func streams(from result: Any, providerName: String, scraperID: String? = nil) -> [NuvioStream] {
+        ((result as? [Any]) ?? []).compactMap { item -> NuvioStream? in
+            guard let object = item as? [String: Any] else { return nil }
+            return stream(from: object, providerName: providerName, scraperID: scraperID)
         }
     }
 
@@ -146,12 +193,22 @@ enum PluginStreamDiscovery {
     /// then size • language. Text containing "[object" (a plugin's stringified
     /// object) is ignored, also as on Android. Apple TV additionally reads the
     /// Stremio fields `description`, `behaviorHints`, `nzbUrl`,
-    /// `fileMustInclude`, `fileIdx` and `servers`.
-    static func stream(from object: [String: Any], providerName: String) -> NuvioStream? {
+    /// `fileMustInclude`, `fileIdx` and `servers`, and the Apple TV extension
+    /// `resolve`: instead of `url`, any JSON the plugin's `resolveStream()`
+    /// turns into the link when the stream is played (``PluginLoopbackServer``).
+    static func stream(from object: [String: Any], providerName: String, scraperID: String? = nil) -> NuvioStream? {
         var stremio: [String: Any] = [:]
         if let url = clean(object["url"]) {
             stremio["url"] = url
         } else if let nested = object["url"] as? [String: Any], let url = clean(nested["url"]) {
+            stremio["url"] = url
+        } else if let payload = object["resolve"], !(payload is NSNull), let scraperID {
+            let filename = ((object["behaviorHints"] as? [String: Any])?["filename"]).flatMap(PluginJSON.text)
+            guard let url = PluginLoopbackServer.shared.resolveURL(scraperID: scraperID, payload: payload, filename: filename) else {
+                PluginLogStore.shared.append(scraperID, level: .warn, message: "A stream's resolve value is too big or not JSON; skipped.")
+                return nil
+            }
+            PluginLoopbackServer.shared.ensureRunning()
             stremio["url"] = url
         }
         for key in ["externalUrl", "infoHash", "nzbUrl", "fileMustInclude", "servers", "sources"] {
@@ -217,6 +274,24 @@ enum PluginStreamDiscovery {
         guard let value, let text = PluginJSON.text(value) else { return nil }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty || trimmed.contains("[object") ? nil : trimmed
+    }
+}
+
+/// The streams a plugin emitted so far (``PluginStreamDiscovery/fetchGroup``).
+final class PluginPartialStreams: @unchecked Sendable {
+    private let lock = NSLock()
+    private var streams: [NuvioStream] = []
+
+    func set(_ value: [NuvioStream]) {
+        lock.lock()
+        streams = value
+        lock.unlock()
+    }
+
+    func get() -> [NuvioStream] {
+        lock.lock()
+        defer { lock.unlock() }
+        return streams
     }
 }
 

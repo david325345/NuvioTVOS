@@ -56,6 +56,10 @@ enum PluginTester {
         let sections: [Section]
         let duration: TimeInterval
         let log: [PluginLogEntry]
+        /// Lists the provider emitted before its final answer, and when the
+        /// first one came (progressive results).
+        var partialUpdates = 0
+        var firstPartialAfter: TimeInterval?
 
         var failed: Bool {
             (checkedStreams && error != nil) || (checkedSubtitles && subtitleError != nil)
@@ -66,6 +70,9 @@ enum PluginTester {
             var parts: [String] = []
             if checkedStreams {
                 parts.append(error.map { "✕ \($0)" } ?? "\(streams.count) stream\(streams.count == 1 ? "" : "s")")
+                if partialUpdates > 0, let first = firstPartialAfter {
+                    parts.append(String(format: "first results after %.1f s (%ld update%@)", first, partialUpdates, partialUpdates == 1 ? "" : "s"))
+                }
             }
             if checkedSubtitles {
                 parts.append(subtitleError.map { "✕ subtitles: \($0)" }
@@ -85,7 +92,8 @@ enum PluginTester {
         let checkStreams = scraper.provides(PluginResources.stream)
         let checkSubtitles = scraper.provides(PluginResources.subtitles)
 
-        async let streamGroup = streams(scraper, sample: sample, when: checkStreams)
+        let partials = PartialCounter(started: started)
+        async let streamGroup = streams(scraper, sample: sample, when: checkStreams, partials: partials)
         async let subtitleOutcome = subtitles(scraper, sample: sample, when: checkSubtitles)
         async let addonSections = addonSections(scraper, sample: sample)
         let group = await streamGroup
@@ -99,6 +107,7 @@ enum PluginTester {
         } else {
             newLines = entries
         }
+        let progress = await partials.snapshot()
         return Report(
             sample: sample,
             streams: group?.streams ?? [],
@@ -109,14 +118,45 @@ enum PluginTester {
             checkedSubtitles: checkSubtitles,
             sections: sections,
             duration: Date().timeIntervalSince(started),
-            log: newLines
+            log: newLines,
+            partialUpdates: progress.count,
+            firstPartialAfter: progress.first
         )
     }
 
-    private static func streams(_ scraper: PluginScraperRecord, sample: Sample, when enabled: Bool) async -> AddonStreamGroup? {
+    private actor PartialCounter {
+        let started: Date
+        var count = 0
+        var first: TimeInterval?
+
+        init(started: Date) {
+            self.started = started
+        }
+
+        func record() {
+            count += 1
+            if first == nil { first = Date().timeIntervalSince(started) }
+        }
+
+        func snapshot() -> (count: Int, first: TimeInterval?) {
+            (count, first)
+        }
+    }
+
+    private static func streams(
+        _ scraper: PluginScraperRecord,
+        sample: Sample,
+        when enabled: Bool,
+        partials: PartialCounter
+    ) async -> AddonStreamGroup? {
         guard enabled else { return nil }
         let target = PluginStreamDiscovery.Target(groupID: "plugin:\(scraper.id)", displayName: scraper.name, scraper: scraper)
-        return await PluginStreamDiscovery.fetchGroup(target: target, type: sample.type, videoID: sample.videoID)
+        return await PluginStreamDiscovery.fetchGroup(
+            target: target,
+            type: sample.type,
+            videoID: sample.videoID,
+            onPartial: { _ in await partials.record() }
+        )
     }
 
     private static func subtitles(_ scraper: PluginScraperRecord, sample: Sample, when enabled: Bool) async -> PluginSubtitleDiscovery.Outcome? {

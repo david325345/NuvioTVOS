@@ -6,7 +6,7 @@ import Foundation
 /// TextDecoder, atob / btoa, crypto (getRandomValues, randomUUID, subtle
 /// digest, HMAC, AES and PBKDF2), localStorage, and what the Nuvio Android apps
 /// add: cheerio, CryptoJS and require(). Natives come from `__nuvioNative`,
-/// which `PluginExecution` installs first. Tested as plain JavaScript as well
+/// which `PluginInstance` installs first. Tested as plain JavaScript as well
 /// (scripts/test-plugin-polyfills.js), so keep it free of Swift interpolation.
 enum PluginPolyfills {
     static let source = #"""
@@ -1095,14 +1095,62 @@ enum PluginPolyfills {
     };
   }
 
+  // ---- Apple TV extras: NUVIO.settings, NUVIO.files, NUVIO.server --------
+  G.NUVIO = {
+    platform: 'tvos',
+    settings: {
+      /** The provider's saved settings (a copy). */
+      get: function () { return JSON.parse(JSON.stringify(G.SCRAPER_SETTINGS || {})); },
+      /** Saves settings (e.g. from a configuration page); true when saved. */
+      save: function (values) {
+        var object = values && typeof values === 'object' ? values : {};
+        var ok = N.settingsSave(JSON.stringify(object));
+        if (ok) G.SCRAPER_SETTINGS = JSON.parse(JSON.stringify(object));
+        return !!ok;
+      }
+    },
+    files: {
+      /** Text of a stored file, or null. */
+      read: function (name) {
+        var value = N.fileRead(String(name));
+        return value === undefined ? null : value;
+      },
+      /** Stores text under a name; throws QuotaExceededError when full. */
+      write: function (name, text) {
+        if (!N.fileWrite(String(name), String(text))) {
+          var error = new Error('The plugin file storage is full.');
+          error.name = 'QuotaExceededError';
+          throw error;
+        }
+      },
+      remove: function (name) { N.fileRemove(String(name)); },
+      list: function () { return N.fileList(); },
+      usage: function () { return N.fileUsage(); }
+    },
+    server: {
+      /** The address of this provider's handleRequest on this Apple TV
+       *  (http://127.0.0.1:…/plugin/<provider>/<path>), for the player. */
+      url: function (path) { return N.routeURL(String(path === undefined || path === null ? '' : path)); }
+    }
+  };
+
   // ---- invocation ---------------------------------------------------------
-  G.__nuvioInvoke = function (name, args) {
+  // `callId` tells concurrent calls in one (kept-alive) context apart.
+  // `emitIndex` is the argument (an object) that gets `emit(list)` for
+  // progressive results — the context argument of getStreams.
+  G.__nuvioInvoke = function (name, args, callId, emitIndex) {
     var exported = G.module && G.module.exports;
     var target = exported && typeof exported[name] === 'function' ? exported[name]
       : (typeof G[name] === 'function' ? G[name] : null);
     if (!target) {
-      N.done(null, '__missing__');
+      N.done(null, '__missing__', callId);
       return;
+    }
+    args = args || [];
+    if (typeof emitIndex === 'number' && emitIndex >= 0 && args[emitIndex] && typeof args[emitIndex] === 'object') {
+      args[emitIndex].emit = function (list) {
+        try { N.emit(callId, JSON.stringify(list || [])); } catch (e) { N.log('warn', 'emit failed: ' + errorText(e)); }
+      };
     }
     var settled = false;
     function succeed(value) {
@@ -1110,18 +1158,18 @@ enum PluginPolyfills {
       settled = true;
       var json;
       try { json = JSON.stringify(value === undefined ? null : value); } catch (e) {
-        N.done(null, 'The result could not be serialized: ' + errorText(e));
+        N.done(null, 'The result could not be serialized: ' + errorText(e), callId);
         return;
       }
-      N.done(json === undefined ? 'null' : json, null);
+      N.done(json === undefined ? 'null' : json, null, callId);
     }
     function fail(error) {
       if (settled) return;
       settled = true;
-      N.done(null, errorText(error));
+      N.done(null, errorText(error), callId);
     }
     try {
-      Promise.resolve(target.apply(exported || G, args || [])).then(succeed, fail);
+      Promise.resolve(target.apply(exported || G, args)).then(succeed, fail);
     } catch (e) {
       fail(e);
     }

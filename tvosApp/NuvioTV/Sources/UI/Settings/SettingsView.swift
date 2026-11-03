@@ -13200,6 +13200,19 @@ private struct PluginsSettingsSection: View {
                     accentColor: accentColor
                 )
 
+                SettingsToggleRow(
+                    title: L10n.string("tvos_settings_plugins_auto_update", fallback: "Update Automatically"),
+                    subtitle: L10n.string(
+                        "tvos_settings_plugins_auto_update_subtitle",
+                        fallback: "Download new versions of the repositories at most once a day, when Nuvio starts"
+                    ),
+                    isOn: Binding(
+                        get: { store.autoUpdates },
+                        set: { store.setAutoUpdates($0) }
+                    ),
+                    accentColor: accentColor
+                )
+
                 SettingsActionRow(
                     title: L10n.string("tvos_settings_plugins_web_setup", fallback: "Set Up from a Computer"),
                     subtitle: L10n.string(
@@ -13386,6 +13399,9 @@ private struct PluginScraperSettingsRow: View {
         if !types.isEmpty { parts.append(types.joined(separator: ", ")) }
         if !scraper.contentLanguage.isEmpty { parts.append(scraper.contentLanguage.joined(separator: ", ").uppercased()) }
         if !scraper.description.isEmpty { parts.append(scraper.description) }
+        if scraper.uploadedCode == true {
+            parts.append(L10n.string("tvos_settings_plugin_uploaded_code", fallback: "Uploaded code"))
+        }
         return parts.joined(separator: " · ")
     }
 
@@ -13633,7 +13649,7 @@ private struct PluginLogSheet: View {
             title: L10n.format("tvos_settings_plugin_logs_title", fallback: "%@ Logs", scraper.name),
             subtitle: L10n.string(
                 "tvos_settings_plugin_logs_subtitle",
-                fallback: "The newest lines the provider wrote with console.log, on this Apple TV since the app started"
+                fallback: "The newest lines the provider wrote with console.log, its requests (blue, keys hidden) and how long each call took, on this Apple TV since the app started"
             )
         ) {
             VStack(alignment: .leading, spacing: 12) {
@@ -13693,6 +13709,7 @@ private struct PluginLogLine: View {
         switch entry.level {
         case .error: return Color(red: 1, green: 0.55, blue: 0.5)
         case .warn: return Color(red: 1, green: 0.82, blue: 0.45)
+        case .net: return Color(red: 0.55, green: 0.78, blue: 1).opacity(0.85)
         default: return .white.opacity(0.85)
         }
     }

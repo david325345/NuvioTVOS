@@ -377,7 +377,14 @@ final class StreamsRepository: ObservableObject {
             }
             for target in pluginTargets {
                 group.addTask {
-                    let result = await PluginStreamDiscovery.fetchGroup(target: target, type: type, videoID: videoId)
+                    let result = await PluginStreamDiscovery.fetchGroup(
+                        target: target,
+                        type: type,
+                        videoID: videoId,
+                        onPartial: { [weak self] partial in
+                            await self?.applyPartial(partial, requestKey: requestKey)
+                        }
+                    )
                     return GroupUpdate(addonId: target.groupID, group: result)
                 }
             }
@@ -413,6 +420,18 @@ final class StreamsRepository: ObservableObject {
         print(
             "[StreamsRepo] done key=\(requestKey) groups=\(finalGroups.count) streams=\(finalGroups.flatMap(\.streams).count) empty=\(String(describing: state.emptyStateReason)) subtitles=\(externalSubtitles.count)"
         )
+    }
+
+    /// Streams a plugin emitted while it still searches; ignored once its
+    /// group has finished (the final list wins).
+    private func applyPartial(_ partial: AddonStreamGroup, requestKey: String) {
+        guard activeRequestKey == requestKey,
+              state.requestKey == requestKey,
+              let index = state.groups.firstIndex(where: { $0.addonId == partial.addonId }),
+              state.groups[index].isLoading else { return }
+        var groups = state.groups
+        groups[index] = partial
+        publish(groups: groups, requestKey: requestKey, forceLoading: true)
     }
 
     private func apply(update: GroupUpdate, requestKey: String, forceLoading: Bool) {

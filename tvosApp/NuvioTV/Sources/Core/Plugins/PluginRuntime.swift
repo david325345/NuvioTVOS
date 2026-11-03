@@ -23,15 +23,17 @@ enum PluginRuntimeError: LocalizedError, Equatable {
     }
 }
 
-/// Runs plugin JavaScript in JavaScriptCore, one fresh context per call, the
-/// way the Android app runs each scraper in its own QuickJS runtime. A call
-/// evaluates the polyfills, sets `SCRAPER_ID` / `SCRAPER_SETTINGS`, loads the
-/// plugin inside the same `module.exports` wrapper Android uses, then calls an
-/// exported function and waits for its (possibly async) result as JSON.
+/// Runs plugin JavaScript in JavaScriptCore. A context evaluates the
+/// polyfills, sets `SCRAPER_ID` / `SCRAPER_SETTINGS`, loads the plugin inside
+/// the same `module.exports` wrapper Android uses, and then calls exported
+/// functions and waits for their (possibly async) results as JSON.
 ///
-/// Any exported function can be called this way — `getStreams` today, and
-/// `onSettings`, `onVerify` or later resources (catalogs, metadata,
-/// subtitles) without changes here.
+/// By default every call gets a fresh context, as on Android (each scraper
+/// in its own QuickJS runtime). A provider written for Apple TV (its manifest
+/// lists `tvos` in `supportedPlatforms`, or says `"keepAlive": true`) keeps
+/// one context while Nuvio runs instead: it is loaded once, module-level
+/// variables and timers survive between calls, and a big plugin doesn't pay
+/// for loading its code on every search. See ``PluginInstancePool``.
 enum PluginRuntime {
     /// Matches Android's per-call plugin timeout.
     static let defaultTimeout: TimeInterval = 60
@@ -59,31 +61,77 @@ enum PluginRuntime {
 
     /// Calls `function` in the plugin and returns its JSON result
     /// (`JSONSerialization` objects; `NSNull` for null / undefined).
+    ///
+    /// - Parameters:
+    ///   - keepAlive: reuse the provider's long-lived context (see the type).
+    ///   - emitArgument: index of an object argument that gets `emit(list)`;
+    ///     every `emit` reaches `onEmit` with the list as JSON text
+    ///     (progressive results).
     static func call(
         code: String,
         scraperId: String,
         settings: [String: Any] = [:],
         function: String,
         arguments: [Any] = [],
-        timeout: TimeInterval = defaultTimeout
+        timeout: TimeInterval = defaultTimeout,
+        keepAlive: Bool = false,
+        emitArgument: Int? = nil,
+        onEmit: (@Sendable (String) -> Void)? = nil
     ) async throws -> Any {
-        let execution = PluginExecution(
-            scraperId: scraperId,
-            session: session,
-            storageScope: ProfileSettings.activeProfileScope,
-            tmdbApiKey: TmdbDetailsService.currentApiKey ?? ""
-        )
-        return try await withTaskCancellationHandler {
-            try await execution.run(
+        let scope = ProfileSettings.activeProfileScope
+        let tmdbKey = TmdbDetailsService.currentApiKey ?? ""
+        let currentSession = session
+        let make = {
+            PluginInstance(
+                scraperId: scraperId,
                 code: code,
                 settings: settings,
+                session: currentSession,
+                storageScope: scope,
+                tmdbApiKey: tmdbKey,
+                fingerprint: fingerprint(code: code, settings: settings, scope: scope, tmdbKey: tmdbKey, session: currentSession)
+            )
+        }
+        let instance = keepAlive
+            ? PluginInstancePool.shared.instance(scraperId: scraperId, fingerprint: fingerprint(code: code, settings: settings, scope: scope, tmdbKey: tmdbKey, session: currentSession), make: make)
+            : make()
+        let started = Date()
+        defer {
+            if !keepAlive { instance.retire() }
+        }
+        do {
+            let value = try await instance.invoke(
                 function: function,
                 arguments: arguments,
-                timeout: timeout
+                timeout: timeout,
+                emitArgument: emitArgument,
+                onEmit: onEmit
             )
-        } onCancel: {
-            execution.cancel()
+            logDuration(scraperId: scraperId, function: function, since: started, failed: false)
+            return value
+        } catch let error as PluginRuntimeError {
+            if case .timedOut = error {
+                // A context stuck in a loop would block every later call.
+                PluginInstancePool.shared.retire(instance)
+            }
+            logDuration(scraperId: scraperId, function: function, since: started, failed: true)
+            throw error
         }
+    }
+
+    private static func logDuration(scraperId: String, function: String, since started: Date, failed: Bool) {
+        let seconds = Date().timeIntervalSince(started)
+        let text = String(format: "⏱ %@ %@ in %.1f s", function, failed ? "failed" : "answered", seconds)
+        PluginLogStore.shared.append(scraperId, level: .net, message: text)
+    }
+
+    static func fingerprint(code: String, settings: [String: Any], scope: String, tmdbKey: String, session: URLSession) -> String {
+        var hasher = SHA256()
+        hasher.update(data: Data(code.utf8))
+        let settingsData = (try? JSONSerialization.data(withJSONObject: settings, options: [.sortedKeys])) ?? Data()
+        hasher.update(data: settingsData)
+        hasher.update(data: Data("\u{0}\(scope)\u{0}\(tmdbKey)\u{0}\(ObjectIdentifier(session).hashValue)".utf8))
+        return hasher.finalize().prefix(16).map { String(format: "%02x", $0) }.joined()
     }
 
     /// JSON text for a value JavaScript can read as a literal (strings and
@@ -97,90 +145,276 @@ enum PluginRuntime {
     }
 }
 
-/// One plugin call: its JSContext, timers and requests. All JavaScript runs on
-/// `queue`; the result is delivered once, by the script, the timeout or a
-/// cancel, whichever comes first. The timeout fires from another queue, so a
-/// script stuck in a loop still returns control to the caller.
-final class PluginExecution: @unchecked Sendable {
-    private let scraperId: String
-    private let session: URLSession
-    private let queue: DispatchQueue
+/// Kept-alive plugin contexts, one per provider: reused while the code,
+/// settings, profile and TMDB key stay the same, dropped after 10 idle
+/// minutes, beyond 12 providers (least recently used first) and on a memory
+/// warning.
+final class PluginInstancePool: @unchecked Sendable {
+    static let shared = PluginInstancePool()
+    static let idleLifetime: TimeInterval = 10 * 60
+    static let maxInstances = 12
 
     private let lock = NSLock()
-    private var continuation: CheckedContinuation<Any, Error>?
-    private var finished = false
+    private var instances: [String: PluginInstance] = [:]
+    private var sweepTimer: DispatchSourceTimer?
+    private var memoryObserver: NSObjectProtocol?
+
+    func instance(scraperId: String, fingerprint: String, make: () -> PluginInstance) -> PluginInstance {
+        lock.lock()
+        defer { lock.unlock() }
+        if let existing = instances[scraperId], existing.fingerprint == fingerprint, !existing.isRetired {
+            return existing
+        }
+        instances[scraperId]?.retire()
+        let created = make()
+        instances[scraperId] = created
+        if instances.count > Self.maxInstances {
+            let idle = instances.values.filter { !$0.isBusy && $0 !== created }.sorted { $0.lastUsed < $1.lastUsed }
+            for old in idle.prefix(instances.count - Self.maxInstances) {
+                instances[old.scraperId] = nil
+                old.retire()
+            }
+        }
+        startHousekeepingIfNeeded()
+        return created
+    }
+
+    func retire(_ instance: PluginInstance) {
+        lock.lock()
+        if instances[instance.scraperId] === instance { instances[instance.scraperId] = nil }
+        lock.unlock()
+        instance.retire()
+    }
+
+    /// A provider was removed or turned off.
+    func retire(scraperId: String) {
+        lock.lock()
+        let instance = instances.removeValue(forKey: scraperId)
+        lock.unlock()
+        instance?.retire()
+    }
+
+    func retireAll(idleOnly: Bool) {
+        lock.lock()
+        let victims = instances.values.filter { !idleOnly || !$0.isBusy }
+        for victim in victims { instances[victim.scraperId] = nil }
+        lock.unlock()
+        victims.forEach { $0.retire() }
+    }
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return instances.count
+    }
+
+    private func sweep() {
+        let limit = Date().addingTimeInterval(-Self.idleLifetime)
+        lock.lock()
+        let victims = instances.values.filter { !$0.isBusy && $0.lastUsed < limit }
+        for victim in victims { instances[victim.scraperId] = nil }
+        lock.unlock()
+        victims.forEach { $0.retire() }
+    }
+
+    /// Lock held.
+    private func startHousekeepingIfNeeded() {
+        guard sweepTimer == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+        timer.schedule(deadline: .now() + 60, repeating: 60)
+        timer.setEventHandler { [weak self] in self?.sweep() }
+        timer.resume()
+        sweepTimer = timer
+        memoryObserver = NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("UIApplicationDidReceiveMemoryWarningNotification"),
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            self?.retireAll(idleOnly: true)
+        }
+    }
+}
+
+/// One plugin context with its timers, requests and storage. All JavaScript
+/// runs on `queue`. Calls are told apart by an id, so a kept-alive context
+/// can serve several at once; each ends once — by the script, its timeout or
+/// a cancel. The timeout fires from another queue, so a script stuck in a
+/// loop still returns control to the caller.
+final class PluginInstance: @unchecked Sendable {
+    let scraperId: String
+    let fingerprint: String
+    private let code: String
+    private let settings: [String: Any]
+    private let session: URLSession
+    private let storageScope: String
+    private let tmdbApiKey: String
+    private let queue: DispatchQueue
+
+    private final class Call {
+        let id: Int
+        let function: String
+        let onEmit: (@Sendable (String) -> Void)?
+        var continuation: CheckedContinuation<Any, Error>?
+        var earlyResult: Result<Any, Error>?
+        var timeout: DispatchWorkItem?
+
+        init(id: Int, function: String, onEmit: (@Sendable (String) -> Void)?) {
+            self.id = id
+            self.function = function
+            self.onEmit = onEmit
+        }
+    }
+
+    private let lock = NSLock()
+    private var calls: [Int: Call] = [:]
+    private var nextCallID = 1
+    private var retired = false
+    private var tornDown = false
+    private var lastUsedDate = Date()
 
     // Confined to `queue`.
+    private enum LoadState {
+        case notLoaded
+        case loaded
+        case failed(String)
+    }
+    private var loadState = LoadState.notLoaded
     private var context: JSContext?
     private var timers: [Int: DispatchWorkItem] = [:]
     private var tasks: [Int: URLSessionDataTask] = [:]
     private var pendingException: String?
-    private var functionName = ""
-    private let storageScope: String
-    private let tmdbApiKey: String
     private let dom = PluginDOMStore()
     private var storage: [String: String]?
     private var storageBytes = 0
     private var storageDirty = false
+    private lazy var files = PluginFileStore(scraperID: scraperId, scope: storageScope)
 
-    init(scraperId: String, session: URLSession, storageScope: String, tmdbApiKey: String = "") {
+    init(
+        scraperId: String,
+        code: String,
+        settings: [String: Any],
+        session: URLSession,
+        storageScope: String,
+        tmdbApiKey: String = "",
+        fingerprint: String = ""
+    ) {
         self.scraperId = scraperId
+        self.code = code
+        self.settings = settings
         self.session = session
         self.storageScope = storageScope
         self.tmdbApiKey = tmdbApiKey
-        self.queue = DispatchQueue(label: "nuvio.plugin.execution", qos: .userInitiated)
+        self.fingerprint = fingerprint
+        self.queue = DispatchQueue(label: "nuvio.plugin.instance", qos: .userInitiated)
     }
 
-    private var isFinished: Bool {
+    var isRetired: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return finished
+        return retired
     }
 
-    func run(
-        code: String,
-        settings: [String: Any],
+    var isBusy: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !calls.isEmpty
+    }
+
+    var lastUsed: Date {
+        lock.lock()
+        defer { lock.unlock() }
+        return lastUsedDate
+    }
+
+    /// No new calls; the context goes away once the running ones end.
+    func retire() {
+        lock.lock()
+        retired = true
+        let idle = calls.isEmpty
+        lock.unlock()
+        if idle { queue.async { self.teardown() } }
+    }
+
+    func invoke(
         function: String,
         arguments: [Any],
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        emitArgument: Int? = nil,
+        onEmit: (@Sendable (String) -> Void)? = nil
     ) async throws -> Any {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Any, Error>) in
-            lock.lock()
-            if finished {
+        lock.lock()
+        let id = nextCallID
+        nextCallID += 1
+        let call = Call(id: id, function: function, onEmit: onEmit)
+        calls[id] = call
+        lastUsedDate = Date()
+        lock.unlock()
+
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Any, Error>) in
+                lock.lock()
+                if let early = call.earlyResult {
+                    lock.unlock()
+                    continuation.resume(with: early)
+                    return
+                }
+                call.continuation = continuation
+                let item = DispatchWorkItem { [weak self] in
+                    self?.finish(id, .failure(PluginRuntimeError.timedOut(timeout)))
+                }
+                call.timeout = item
                 lock.unlock()
-                continuation.resume(throwing: CancellationError())
-                return
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout, execute: item)
+                queue.async {
+                    self.start(id, function: function, arguments: arguments, emitArgument: emitArgument)
+                }
             }
-            self.continuation = continuation
-            lock.unlock()
-
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) { [weak self] in
-                self?.finish(.failure(PluginRuntimeError.timedOut(timeout)))
-            }
-            queue.async {
-                self.start(code: code, settings: settings, function: function, arguments: arguments)
-            }
+        } onCancel: {
+            self.finish(id, .failure(CancellationError()))
         }
-    }
-
-    func cancel() {
-        finish(.failure(CancellationError()))
     }
 
     // MARK: - Lifecycle
 
-    private func start(code: String, settings: [String: Any], function: String, arguments: [Any]) {
-        guard !isFinished else { return }
+    private func isPending(_ id: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return calls[id] != nil
+    }
+
+    private func start(_ id: Int, function: String, arguments: [Any], emitArgument: Int?) {
+        guard isPending(id) else { return }
+        if case .notLoaded = loadState { load() }
+        if case .failed(let message) = loadState {
+            finish(id, .failure(PluginRuntimeError.script(message)))
+            return
+        }
+        guard let context else {
+            finish(id, .failure(CancellationError()))
+            return
+        }
+        let nameLiteral = PluginRuntime.jsonLiteral(function) ?? "\"\""
+        let argumentsLiteral = PluginRuntime.jsonLiteral(arguments) ?? "[]"
+        let emitLiteral = emitArgument.map(String.init) ?? "-1"
+        // An error another call's callback left behind isn't this call's.
+        pendingException = nil
+        context.evaluateScript("__nuvioInvoke(\(nameLiteral), \(argumentsLiteral), \(id), \(emitLiteral));")
+        if let message = takeException() {
+            finish(id, .failure(PluginRuntimeError.script(message)))
+        }
+    }
+
+    /// Creates the context and loads the plugin. On `queue`.
+    private func load() {
         guard let context = JSContext() else {
-            finish(.failure(PluginRuntimeError.script("JavaScript could not start.")))
+            loadState = .failed("JavaScript could not start.")
             return
         }
         self.context = context
-        functionName = function
         context.name = "Nuvio plugin"
         context.exceptionHandler = { [weak self] _, exception in
             guard let self else { return }
-            let message = PluginExecution.describe(exception)
+            let message = PluginInstance.describe(exception)
             self.pendingException = message
             PluginLogStore.shared.append(self.scraperId, level: .error, message: message)
         }
@@ -188,7 +422,7 @@ final class PluginExecution: @unchecked Sendable {
 
         context.evaluateScript(PluginPolyfills.source, withSourceURL: URL(string: "nuvio://polyfills.js"))
         if let message = takeException() {
-            finish(.failure(PluginRuntimeError.script("The plugin environment failed to load: \(message)")))
+            loadState = .failed("The plugin environment failed to load: \(message)")
             return
         }
 
@@ -205,38 +439,57 @@ final class PluginExecution: @unchecked Sendable {
         let wrapped = "var module = { exports: {} };\nvar exports = module.exports;\n(function() {\n\(code)\n})();"
         context.evaluateScript(wrapped, withSourceURL: URL(string: "plugin://scraper.js"))
         if let message = takeException() {
-            finish(.failure(PluginRuntimeError.script(message)))
+            loadState = .failed(message)
             return
         }
-
-        let nameLiteral = PluginRuntime.jsonLiteral(function) ?? "\"\""
-        let argumentsLiteral = PluginRuntime.jsonLiteral(arguments) ?? "[]"
-        context.evaluateScript("__nuvioInvoke(\(nameLiteral), \(argumentsLiteral));")
-        if let message = takeException() {
-            finish(.failure(PluginRuntimeError.script(message)))
-        }
+        loadState = .loaded
     }
 
-    private func finish(_ result: Result<Any, Error>) {
+    private func finish(_ id: Int, _ result: Result<Any, Error>) {
         lock.lock()
-        guard !finished else {
+        guard let call = calls[id] else {
             lock.unlock()
             return
         }
-        finished = true
-        let continuation = self.continuation
-        self.continuation = nil
+        guard let continuation = call.continuation else {
+            // Cancelled before the call started waiting.
+            if call.earlyResult == nil { call.earlyResult = result }
+            calls[id] = nil
+            let idle = calls.isEmpty && retired
+            lock.unlock()
+            if idle { queue.async { self.teardown() } }
+            return
+        }
+        calls[id] = nil
+        call.continuation = nil
+        call.timeout?.cancel()
+        lastUsedDate = Date()
+        let idle = calls.isEmpty && retired
         lock.unlock()
 
-        continuation?.resume(with: result)
-        queue.async { self.teardown() }
+        continuation.resume(with: result)
+        queue.async {
+            self.saveStorageIfNeeded()
+            if idle { self.teardown() }
+        }
     }
 
-    private func teardown() {
+    private func saveStorageIfNeeded() {
         if storageDirty, let storage {
             PluginStorageFile.save(storage, scraperID: scraperId, scope: storageScope)
             storageDirty = false
         }
+    }
+
+    private func teardown() {
+        lock.lock()
+        guard !tornDown, calls.isEmpty, retired else {
+            lock.unlock()
+            return
+        }
+        tornDown = true
+        lock.unlock()
+        saveStorageIfNeeded()
         timers.values.forEach { $0.cancel() }
         timers.removeAll()
         tasks.values.forEach { $0.cancel() }
@@ -287,12 +540,12 @@ final class PluginExecution: @unchecked Sendable {
         }
         let digest: @convention(block) (JSValue, JSValue) -> String = { algorithm, base64 in
             let data = Data(base64Encoded: base64.toString() ?? "") ?? Data()
-            return PluginExecution.digest(algorithm.toString() ?? "", data)?.base64EncodedString() ?? ""
+            return PluginInstance.digest(algorithm.toString() ?? "", data)?.base64EncodedString() ?? ""
         }
         let hmac: @convention(block) (JSValue, JSValue, JSValue) -> String = { algorithm, key, base64 in
             let keyData = Data(base64Encoded: key.toString() ?? "") ?? Data()
             let data = Data(base64Encoded: base64.toString() ?? "") ?? Data()
-            return PluginExecution.hmac(algorithm.toString() ?? "", key: keyData, data: data)?.base64EncodedString() ?? ""
+            return PluginInstance.hmac(algorithm.toString() ?? "", key: keyData, data: data)?.base64EncodedString() ?? ""
         }
         let randomBytes: @convention(block) (JSValue) -> String = { count in
             let length = min(max(Int(count.toInt32()), 0), 65_536)
@@ -324,36 +577,89 @@ final class PluginExecution: @unchecked Sendable {
         let storageKeys: @convention(block) () -> [String] = { [weak self] in
             self?.loadedStorage().keys.sorted() ?? []
         }
-        let done: @convention(block) (JSValue, JSValue) -> Void = { [weak self] json, error in
+        let settingsSave: @convention(block) (JSValue) -> Bool = { [weak self] json in
+            guard let self,
+                  let data = (json.toString() ?? "").data(using: .utf8),
+                  let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return false }
+            return PluginSettingsVault.save(object, scraperID: self.scraperId, profileScope: self.storageScope)
+        }
+        let fileRead: @convention(block) (JSValue) -> JSValue = { [weak self] name in
+            let context = JSContext.current()
+            guard let self, let text = self.files.read(name.toString() ?? "") else { return JSValue(nullIn: context) }
+            return JSValue(object: text, in: context)
+        }
+        let fileWrite: @convention(block) (JSValue, JSValue) -> Bool = { [weak self] name, text in
+            self?.files.write(name.toString() ?? "", text.toString() ?? "") ?? false
+        }
+        let fileRemove: @convention(block) (JSValue) -> Void = { [weak self] name in
+            self?.files.remove(name.toString() ?? "")
+        }
+        let fileList: @convention(block) () -> [String] = { [weak self] in
+            self?.files.names() ?? []
+        }
+        let fileUsage: @convention(block) () -> Int = { [weak self] in
+            self?.files.usage() ?? 0
+        }
+        let routeURL: @convention(block) (JSValue) -> String = { [weak self] path in
+            guard let self else { return "" }
+            PluginLoopbackServer.shared.ensureRunning()
+            return PluginLoopbackServer.shared.routeURL(scraperID: self.scraperId, path: path.toString() ?? "")
+        }
+        let emit: @convention(block) (JSValue, JSValue) -> Void = { [weak self] callID, json in
             guard let self else { return }
+            let id = Int(callID.toInt32())
+            self.lock.lock()
+            let handler = self.calls[id]?.onEmit
+            self.lock.unlock()
+            handler?(json.toString() ?? "[]")
+        }
+        let done: @convention(block) (JSValue, JSValue, JSValue) -> Void = { [weak self] json, error, callID in
+            guard let self else { return }
+            let id = Int(callID.toInt32())
             if !error.isNull, !error.isUndefined {
                 let message = error.toString() ?? "The plugin failed."
                 if message == "__missing__" {
-                    self.finish(.failure(PluginRuntimeError.missingFunction(self.functionName)))
+                    self.lock.lock()
+                    let function = self.calls[id]?.function ?? ""
+                    self.lock.unlock()
+                    self.finish(id, .failure(PluginRuntimeError.missingFunction(function)))
                 } else {
-                    self.finish(.failure(PluginRuntimeError.script(message)))
+                    self.finish(id, .failure(PluginRuntimeError.script(message)))
                 }
                 return
             }
             let text = (json.isNull || json.isUndefined) ? "null" : (json.toString() ?? "null")
             let value = (try? JSONSerialization.jsonObject(with: Data(text.utf8), options: [.fragmentsAllowed])) ?? NSNull()
-            self.finish(.success(value))
+            self.finish(id, .success(value))
         }
 
-        native.setObject(unsafeBitCast(log, to: AnyObject.self), forKeyedSubscript: "log" as NSString)
-        native.setObject(unsafeBitCast(setTimer, to: AnyObject.self), forKeyedSubscript: "setTimer" as NSString)
-        native.setObject(unsafeBitCast(clearTimer, to: AnyObject.self), forKeyedSubscript: "clearTimer" as NSString)
-        native.setObject(unsafeBitCast(fetch, to: AnyObject.self), forKeyedSubscript: "fetch" as NSString)
-        native.setObject(unsafeBitCast(abortFetch, to: AnyObject.self), forKeyedSubscript: "abortFetch" as NSString)
-        native.setObject(unsafeBitCast(digest, to: AnyObject.self), forKeyedSubscript: "digest" as NSString)
-        native.setObject(unsafeBitCast(hmac, to: AnyObject.self), forKeyedSubscript: "hmac" as NSString)
-        native.setObject(unsafeBitCast(randomBytes, to: AnyObject.self), forKeyedSubscript: "randomBytes" as NSString)
-        native.setObject(unsafeBitCast(storageGet, to: AnyObject.self), forKeyedSubscript: "storageGet" as NSString)
-        native.setObject(unsafeBitCast(storageSet, to: AnyObject.self), forKeyedSubscript: "storageSet" as NSString)
-        native.setObject(unsafeBitCast(storageRemove, to: AnyObject.self), forKeyedSubscript: "storageRemove" as NSString)
-        native.setObject(unsafeBitCast(storageClear, to: AnyObject.self), forKeyedSubscript: "storageClear" as NSString)
-        native.setObject(unsafeBitCast(storageKeys, to: AnyObject.self), forKeyedSubscript: "storageKeys" as NSString)
-        native.setObject(unsafeBitCast(done, to: AnyObject.self), forKeyedSubscript: "done" as NSString)
+        let natives: [(String, AnyObject)] = [
+            ("log", unsafeBitCast(log, to: AnyObject.self)),
+            ("setTimer", unsafeBitCast(setTimer, to: AnyObject.self)),
+            ("clearTimer", unsafeBitCast(clearTimer, to: AnyObject.self)),
+            ("fetch", unsafeBitCast(fetch, to: AnyObject.self)),
+            ("abortFetch", unsafeBitCast(abortFetch, to: AnyObject.self)),
+            ("digest", unsafeBitCast(digest, to: AnyObject.self)),
+            ("hmac", unsafeBitCast(hmac, to: AnyObject.self)),
+            ("randomBytes", unsafeBitCast(randomBytes, to: AnyObject.self)),
+            ("storageGet", unsafeBitCast(storageGet, to: AnyObject.self)),
+            ("storageSet", unsafeBitCast(storageSet, to: AnyObject.self)),
+            ("storageRemove", unsafeBitCast(storageRemove, to: AnyObject.self)),
+            ("storageClear", unsafeBitCast(storageClear, to: AnyObject.self)),
+            ("storageKeys", unsafeBitCast(storageKeys, to: AnyObject.self)),
+            ("settingsSave", unsafeBitCast(settingsSave, to: AnyObject.self)),
+            ("fileRead", unsafeBitCast(fileRead, to: AnyObject.self)),
+            ("fileWrite", unsafeBitCast(fileWrite, to: AnyObject.self)),
+            ("fileRemove", unsafeBitCast(fileRemove, to: AnyObject.self)),
+            ("fileList", unsafeBitCast(fileList, to: AnyObject.self)),
+            ("fileUsage", unsafeBitCast(fileUsage, to: AnyObject.self)),
+            ("routeURL", unsafeBitCast(routeURL, to: AnyObject.self)),
+            ("emit", unsafeBitCast(emit, to: AnyObject.self)),
+            ("done", unsafeBitCast(done, to: AnyObject.self))
+        ]
+        for (name, block) in natives {
+            native.setObject(block, forKeyedSubscript: name as NSString)
+        }
         PluginCompatNatives.install(on: native, dom: dom)
         context.setObject(native, forKeyedSubscript: "__nuvioNative" as NSString)
     }
@@ -384,7 +690,7 @@ final class PluginExecution: @unchecked Sendable {
     private func setTimer(_ id: Int, milliseconds: Double) {
         timers[id]?.cancel()
         let item = DispatchWorkItem { [weak self] in
-            guard let self, !self.isFinished, let context = self.context else { return }
+            guard let self, let context = self.context else { return }
             self.timers[id] = nil
             context.objectForKeyedSubscript("__nuvioTimerFired")?.call(withArguments: [id])
         }
@@ -416,12 +722,23 @@ final class PluginExecution: @unchecked Sendable {
             request.httpBody = Data(base64Encoded: base64)
         }
 
+        let method = request.httpMethod ?? "GET"
+        let started = Date()
         let task = session.dataTask(with: request) { [weak self] data, response, error in
             guard let self else { return }
+            PluginNetworkLog.record(
+                scraperId: self.scraperId,
+                method: method,
+                url: url,
+                response: response,
+                bytes: data?.count ?? 0,
+                error: error,
+                since: started
+            )
             self.queue.async {
-                // Gone when the script aborted it or the call already ended.
+                // Gone when the script aborted it or the context was released.
                 guard self.tasks.removeValue(forKey: id) != nil else { return }
-                self.deliverFetch(id, PluginExecution.fetchPayload(data: data, response: response, error: error, requestedURL: url))
+                self.deliverFetch(id, PluginInstance.fetchPayload(data: data, response: response, error: error, requestedURL: url))
             }
         }
         if (options["redirect"] as? String)?.lowercased() == "manual" {
@@ -432,7 +749,7 @@ final class PluginExecution: @unchecked Sendable {
     }
 
     private func deliverFetch(_ id: Int, _ payload: [String: Any]) {
-        guard !isFinished, let context else { return }
+        guard let context else { return }
         let json = PluginRuntime.jsonLiteral(payload) ?? "{\"error\":\"The response could not be read.\"}"
         context.objectForKeyedSubscript("__nuvioFetchDone")?.call(withArguments: [id, json])
     }
@@ -491,6 +808,72 @@ final class PluginExecution: @unchecked Sendable {
     }
 }
 
+/// Network lines in a provider's log: method, URL with secrets masked,
+/// status, time and size.
+enum PluginNetworkLog {
+    private static let secretNames: Set<String> = [
+        "apikey", "api_key", "key", "token", "access_token", "refresh_token", "auth", "authorization",
+        "password", "pass", "passwd", "pwd", "secret", "client_secret", "sig", "signature",
+        "session", "sessionid", "sid", "wst", "cookie", "hash", "passkey", "uid"
+    ]
+
+    static func record(
+        scraperId: String,
+        method: String,
+        url: URL,
+        response: URLResponse?,
+        bytes: Int,
+        error: Error?,
+        since started: Date
+    ) {
+        let milliseconds = Int(Date().timeIntervalSince(started) * 1_000)
+        var text = "\(method) \(redact(url)) → "
+        if let error {
+            text += "✕ \((error as NSError).localizedDescription) · \(milliseconds) ms"
+        } else {
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            text += "\(status) · \(milliseconds) ms · \(formatBytes(bytes))"
+        }
+        PluginLogStore.shared.append(scraperId, level: .net, message: text)
+    }
+
+    /// The URL without credentials: user info is dropped, secret-looking
+    /// query values and long key-like path segments become `••••`.
+    static func redact(_ url: URL) -> String {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return "<url>" }
+        components.user = nil
+        components.password = nil
+        if let items = components.queryItems, !items.isEmpty {
+            components.queryItems = items.map { item in
+                let name = item.name.lowercased()
+                let secret = secretNames.contains(name) || name.hasSuffix("key") || name.hasSuffix("token")
+                return secret && !(item.value ?? "").isEmpty ? URLQueryItem(name: item.name, value: "••••") : item
+            }
+        }
+        // The path setter takes percent-encoded text only: "••••" encoded.
+        let mask = String(repeating: "%E2%80%A2", count: 4)
+        let segments = components.percentEncodedPath.split(separator: "/", omittingEmptySubsequences: false).map { segment -> String in
+            let text = String(segment)
+            if let equals = text.firstIndex(of: "="), text.distance(from: equals, to: text.endIndex) > 12 {
+                return String(text[...equals]) + mask
+            }
+            if text.count >= 24, text.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }) {
+                return mask
+            }
+            return text
+        }
+        components.percentEncodedPath = segments.joined(separator: "/")
+        let string = (components.string ?? "<url>").replacingOccurrences(of: "%E2%80%A2", with: "•")
+        return string.count > 300 ? String(string.prefix(300)) + "…" : string
+    }
+
+    static func formatBytes(_ bytes: Int) -> String {
+        if bytes < 1_024 { return "\(bytes) B" }
+        if bytes < 1_048_576 { return String(format: "%.0f KB", Double(bytes) / 1_024) }
+        return String(format: "%.1f MB", Double(bytes) / 1_048_576)
+    }
+}
+
 /// `redirect: 'manual'`: hand the 3xx response (and its Location) to the script.
 final class PluginNoRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     static let shared = PluginNoRedirectDelegate()
@@ -511,7 +894,7 @@ final class PluginNoRedirectDelegate: NSObject, URLSessionTaskDelegate, @uncheck
 /// A plugin's `localStorage`, per scraper and profile, kept in a file on this
 /// Apple TV (an Apple TV extension; the system may purge it like any cache).
 enum PluginStorageFile {
-    static let maxBytes = 2 * 1024 * 1024
+    static let maxBytes = 5 * 1024 * 1024
     private static let directory = "NuvioPlugins"
 
     static func load(scraperID: String, scope: String) -> [String: String] {
@@ -543,6 +926,8 @@ enum PluginStorageFile {
 
 enum PluginLogLevel: String, Sendable {
     case log, info, debug, warn, error
+    /// Requests and call times (``PluginNetworkLog``).
+    case net
 }
 
 struct PluginLogEntry: Identifiable, Sendable {

@@ -351,7 +351,8 @@ enum PluginAddonService {
                 settings: settings,
                 function: function,
                 arguments: arguments,
-                timeout: timeout
+                timeout: timeout,
+                keepAlive: scraper.keepAlive == true
             )
             switch route.resource {
             case PluginResources.catalog:

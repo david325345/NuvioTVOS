@@ -119,15 +119,19 @@ final class PluginWebServer: ObservableObject {
     }
 }
 
-/// The HTTP side: an `NWListener` on the local IPv4 address with tiny,
-/// request-per-connection HTTP/1.1 handling. Requests outside `/<token>/` get
-/// a 404 without reaching the handler.
+/// The HTTP side: an `NWListener` on the local IPv4 address (or loopback)
+/// with tiny, request-per-connection HTTP/1.1 handling. Requests outside
+/// `/<token>/` get a 404 without reaching the handler.
 final class PluginHTTPServerCore: @unchecked Sendable {
     struct Request: Sendable {
         let method: String
         let path: String
         let query: [String: String]
         let body: Data
+        /// Header names lowercased.
+        var headers: [String: String] = [:]
+        /// `/<token>`: what the server cut off `path`, for absolute links.
+        var basePath: String = ""
 
         var json: [String: Any] {
             (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] ?? [:]
@@ -156,10 +160,11 @@ final class PluginHTTPServerCore: @unchecked Sendable {
         case stopped
     }
 
-    static let maxRequestBytes = 1 << 20
+    /// Room for provider code uploaded from the setup page.
+    static let maxRequestBytes = 8 << 20
 
     private let token: String
-    private let idleTimeout: TimeInterval
+    private let idleTimeout: TimeInterval?
     private let handler: @Sendable (Request) async -> Response
     private let queue = DispatchQueue(label: "nuvio.plugins.web", qos: .userInitiated)
     private var listener: NWListener?
@@ -169,21 +174,24 @@ final class PluginHTTPServerCore: @unchecked Sendable {
     private var onActivity: (@Sendable () -> Void)?
     private var stopped = false
 
-    init(token: String, idleTimeout: TimeInterval, handler: @escaping @Sendable (Request) async -> Response) {
+    init(token: String, idleTimeout: TimeInterval?, handler: @escaping @Sendable (Request) async -> Response) {
         self.token = token
         self.idleTimeout = idleTimeout
         self.handler = handler
     }
 
+    /// - Parameter host: the address to listen on; the local network
+    ///   address when nil.
     func start(
         preferredPort: UInt16?,
+        host fixedHost: String? = nil,
         onState: @escaping @Sendable (State) -> Void,
         onActivity: @escaping @Sendable () -> Void
     ) {
         queue.async {
             self.onState = onState
             self.onActivity = onActivity
-            guard let host = Self.localIPv4Address() else {
+            guard let host = fixedHost ?? Self.localIPv4Address() else {
                 self.finish(.failed("The Apple TV has no local network address. Is it connected to Wi-Fi or Ethernet?"))
                 return
             }
@@ -269,6 +277,7 @@ final class PluginHTTPServerCore: @unchecked Sendable {
 
     private func resetIdleTimer() {
         idleTimer?.cancel()
+        guard let idleTimeout else { return }
         let timer = DispatchWorkItem { [weak self] in self?.finish(.stopped) }
         idleTimer = timer
         queue.asyncAfter(deadline: .now() + idleTimeout, execute: timer)
@@ -279,7 +288,7 @@ final class PluginHTTPServerCore: @unchecked Sendable {
     }
 
     private func receive(_ connection: NWConnection, id: UUID, buffered: Data) {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [weak self] data, _, complete, error in
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 1 << 20) { [weak self] data, _, complete, error in
             guard let self, self.connections[id] != nil else { return }
             var request = buffered
             if let data { request.append(data) }
@@ -316,25 +325,36 @@ final class PluginHTTPServerCore: @unchecked Sendable {
             method: request.method,
             path: String(request.path.dropFirst(prefix.count)),
             query: request.query,
-            body: request.body
+            body: request.body,
+            headers: request.headers,
+            basePath: prefix
         )
         let handler = self.handler
+        let isHead = request.method == "HEAD"
         Task {
             let response = await handler(inner)
-            self.queue.async { self.send(response, on: connection, id: id) }
+            self.queue.async { self.send(response, on: connection, id: id, withBody: !isHead) }
         }
     }
 
-    private func send(_ response: Response, on connection: NWConnection, id: UUID) {
+    private func send(_ response: Response, on connection: NWConnection, id: UUID, withBody: Bool = true) {
         guard connections[id] != nil else { return }
         var head = "HTTP/1.1 \(response.status) \(Self.reason(response.status))\r\n"
         head += "Content-Type: \(response.contentType)\r\n"
         head += "Content-Length: \(response.body.count)\r\n"
-        head += "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\n"
-        for (name, value) in response.headers { head += "\(name): \(value)\r\n" }
+        let custom = Set(response.headers.keys.map { $0.lowercased() })
+        if !custom.contains("cache-control") { head += "Cache-Control: no-store\r\n" }
+        head += "X-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\n"
+        for (name, value) in response.headers {
+            // No header injection through a plugin's values.
+            let cleanName = name.filter { $0.isLetter || $0.isNumber || $0 == "-" }
+            let cleanValue = value.replacingOccurrences(of: "\r", with: " ").replacingOccurrences(of: "\n", with: " ")
+            guard !cleanName.isEmpty else { continue }
+            head += "\(cleanName): \(cleanValue)\r\n"
+        }
         head += "Connection: close\r\n\r\n"
         var data = Data(head.utf8)
-        data.append(response.body)
+        if withBody { data.append(response.body) }
         connection.send(content: data, completion: .contentProcessed { [weak self] _ in
             self?.queue.async { self?.close(id) }
         })
@@ -357,11 +377,13 @@ final class PluginHTTPServerCore: @unchecked Sendable {
         let parts = lines.first?.split(separator: " ", omittingEmptySubsequences: false) ?? []
         guard parts.count == 3, parts[2].hasPrefix("HTTP/1.") else { return .invalid }
         var contentLength = 0
+        var headers: [String: String] = [:]
         for line in lines.dropFirst() {
             let pair = line.split(separator: ":", maxSplits: 1)
             guard pair.count == 2 else { continue }
             let name = pair[0].trimmingCharacters(in: .whitespaces).lowercased()
             let value = pair[1].trimmingCharacters(in: .whitespaces)
+            if headers.count < 64 { headers[name] = value }
             if name == "content-length" {
                 guard let length = Int(value), length >= 0, length <= maxRequestBytes else { return .invalid }
                 contentLength = length
@@ -380,18 +402,32 @@ final class PluginHTTPServerCore: @unchecked Sendable {
             method: String(parts[0]).uppercased(),
             path: components?.percentEncodedPath ?? target,
             query: query,
-            body: body
+            body: body,
+            headers: headers
         ))
     }
 
     private static func reason(_ status: Int) -> String {
         switch status {
         case 200: return "OK"
+        case 201: return "Created"
+        case 204: return "No Content"
+        case 206: return "Partial Content"
         case 301: return "Moved Permanently"
+        case 302: return "Found"
+        case 303: return "See Other"
+        case 304: return "Not Modified"
+        case 307: return "Temporary Redirect"
         case 400: return "Bad Request"
+        case 401: return "Unauthorized"
+        case 403: return "Forbidden"
         case 404: return "Not Found"
         case 405: return "Method Not Allowed"
-        default: return "Error"
+        case 413: return "Payload Too Large"
+        case 500: return "Internal Server Error"
+        case 502: return "Bad Gateway"
+        case 504: return "Gateway Timeout"
+        default: return status < 400 ? "OK" : "Error"
         }
     }
 

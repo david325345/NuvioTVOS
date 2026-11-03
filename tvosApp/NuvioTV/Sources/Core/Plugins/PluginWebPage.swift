@@ -47,7 +47,10 @@ button:disabled { opacity: .5; cursor: default; }
 .field { margin-bottom: 12px; }
 .field label { display: block; font-weight: 600; margin-bottom: 4px; }
 .log { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; }
-.log .error { color: var(--danger); } .log .warn { color: #c98a1a; }
+.log .error { color: var(--danger); } .log .warn { color: #c98a1a; } .log .net { color: #3f7fc4; }
+a.button { display: inline-block; padding: 8px 13px; border-radius: 9px; border: 1px solid var(--line); background: var(--card); color: var(--text); text-decoration: none; }
+.switches { display: flex; flex-direction: column; gap: 6px; }
+.devrow { margin-top: 8px; }
 .stream { padding: 8px 0; border-bottom: 1px solid var(--line); }
 .stream:last-child { border-bottom: 0; }
 .stream b { white-space: pre-wrap; }
@@ -74,7 +77,10 @@ h3.section { margin: 14px 0 4px; font-size: 14px; color: var(--muted); }
       <button class="primary" id="addRepo">Add</button>
     </div>
     <p class="muted" id="addStatus"></p>
-    <label class="switch"><input type="checkbox" id="pluginsEnabled"> Use plugins (streams and subtitles next to your add-ons)</label>
+    <div class="switches">
+      <label class="switch"><input type="checkbox" id="pluginsEnabled"> Use plugins (streams and subtitles next to your add-ons)</label>
+      <label class="switch"><input type="checkbox" id="autoUpdate"> Update repositories automatically (at most once a day, when Nuvio starts)</label>
+    </div>
   </section>
 
   <div id="repos"></div>
@@ -89,7 +95,7 @@ h3.section { margin: 14px 0 4px; font-size: 14px; color: var(--muted); }
   var logTimers = {};
 
   function api(path, body) {
-    var options = body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+    var options = body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Nuvio': '1' }, body: JSON.stringify(body) };
     return fetch('api/' + path, options).then(function (res) {
       return res.json().catch(function () { return { ok: false, error: 'HTTP ' + res.status }; });
     }, function () {
@@ -124,6 +130,7 @@ h3.section { margin: 14px 0 4px; font-size: 14px; color: var(--muted); }
 
   function render() {
     document.getElementById('pluginsEnabled').checked = !!state.pluginsEnabled;
+    document.getElementById('autoUpdate').checked = state.autoUpdate !== false;
     var container = document.getElementById('repos');
     container.textContent = '';
     var empty = document.getElementById('empty');
@@ -155,17 +162,37 @@ h3.section { margin: 14px 0 4px; font-size: 14px; color: var(--muted); }
         el('input', { type: 'checkbox', onchange: function (e) {
           api('repositories/developer', { url: repo.url, enabled: e.target.checked }).then(function (r) { apply(r, status); });
         } }),
-        document.createTextNode('Developer mode: download the code again before every search')
+        document.createTextNode('Developer mode: download the code again before every search, or upload it from this computer')
       ]),
       status
     ]);
     card.querySelector('input[type=checkbox]').checked = !!repo.developer;
-    repo.scrapers.forEach(function (scraper) { card.appendChild(renderScraper(scraper)); });
+    repo.scrapers.forEach(function (scraper) { card.appendChild(renderScraper(scraper, repo)); });
     return card;
   }
 
-  function renderScraper(scraper) {
+  function uploadCode(scraper, status) {
+    var picker = el('input', { type: 'file', accept: '.js,.mjs,.cjs,text/javascript' });
+    picker.onchange = function () {
+      var file = picker.files && picker.files[0];
+      if (!file) return;
+      if (file.size > 7 * 1024 * 1024) { status.textContent = '✕ The file is larger than 7 MB.'; status.className = 'muted error'; return; }
+      var reader = new FileReader();
+      reader.onload = function () {
+        status.textContent = 'Uploading ' + file.name + '…'; status.className = 'muted';
+        api('scrapers/code', { id: scraper.id, code: String(reader.result || '') }).then(function (r) {
+          if (r.ok) { open[scraper.id] = null; apply(r); }
+          else { status.textContent = '✕ ' + (r.error || 'Failed'); status.className = 'muted error'; }
+        });
+      };
+      reader.readAsText(file);
+    };
+    picker.click();
+  }
+
+  function renderScraper(scraper, repo) {
     var panel = el('div', { class: 'panel hidden' });
+    var status = el('p', { class: 'muted' });
     var types = (scraper.types || []).map(function (t) { return t === 'tv' ? 'Series' : t.charAt(0).toUpperCase() + t.slice(1); }).join(', ');
     var resources = scraper.resources || ['stream'];
     var names = { stream: 'Streams', subtitles: 'Subtitles', catalog: 'Catalogs', meta: 'Metadata', ratings: 'Ratings' };
@@ -180,13 +207,22 @@ h3.section { margin: 14px 0 4px; font-size: 14px; color: var(--muted); }
       el('div', { class: 'row' }, [
         el('label', { class: 'switch grow' }, [toggle, el('span', {}, [
           el('b', { text: scraper.name }), el('span', { class: 'badge', text: 'v' + scraper.version }),
-          scraper.manifestEnabled ? null : el('span', { class: 'badge', text: 'disabled by its repository' })
+          scraper.manifestEnabled ? null : el('span', { class: 'badge', text: 'disabled by its repository' }),
+          scraper.uploadedCode ? el('span', { class: 'badge', text: 'uploaded code' }) : null
         ])]),
+        scraper.configPage ? el('a', { class: 'button', href: scraper.configPage, target: '_blank', rel: 'noopener', text: 'Configure' }) : null,
         button('Settings', function () { show('settings', scraper, panel); }),
         button('Test', function () { show('test', scraper, panel); }),
         button('Logs', function () { show('logs', scraper, panel); })
       ]),
       info ? el('div', { class: 'muted', text: info }) : null,
+      repo && repo.developer ? el('div', { class: 'row devrow' }, [
+        button('Upload code…', function () { uploadCode(scraper, status); }),
+        scraper.uploadedCode ? button('Use the repository’s code', function () {
+          api('scrapers/code/revert', { id: scraper.id }).then(function (r) { apply(r, status); });
+        }) : null
+      ]) : null,
+      status,
       panel
     ]);
     if (open[scraper.id]) show(open[scraper.id], scraper, panel, true);
@@ -343,7 +379,7 @@ h3.section { margin: 14px 0 4px; font-size: 14px; color: var(--muted); }
   function renderLogs(scraper, panel) {
     var box = el('div');
     var clear = button('Clear', function () { api('scrapers/logs/clear', { id: scraper.id }).then(refresh); });
-    panel.appendChild(el('div', { class: 'row' }, [el('span', { class: 'muted grow', text: 'Newest last. Updates every 2 seconds while open.' }), clear]));
+    panel.appendChild(el('div', { class: 'row' }, [el('span', { class: 'muted grow', text: 'Newest last, requests in blue (keys hidden). Updates every 2 seconds while open.' }), clear]));
     panel.appendChild(box);
     function refresh() {
       api('scrapers/logs?id=' + encodeURIComponent(scraper.id)).then(function (r) {
@@ -373,6 +409,7 @@ h3.section { margin: 14px 0 4px; font-size: 14px; color: var(--muted); }
   };
   document.getElementById('repoUrl').addEventListener('keydown', function (e) { if (e.key === 'Enter') document.getElementById('addRepo').click(); });
   document.getElementById('pluginsEnabled').onchange = function (e) { api('plugins-enabled', { enabled: e.target.checked }).then(function (r) { apply(r); }); };
+  document.getElementById('autoUpdate').onchange = function (e) { api('auto-update', { enabled: e.target.checked }).then(function (r) { apply(r); }); };
 
   load();
 })();

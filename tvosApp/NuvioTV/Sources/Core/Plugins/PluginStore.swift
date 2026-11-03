@@ -32,11 +32,19 @@ final class PluginStore: ObservableObject {
     }
     /// Manifest URLs being downloaded right now.
     @Published private(set) var refreshing: Set<String> = []
+    /// "Update Automatically": repositories are downloaded again at most once
+    /// a day, when Nuvio starts or comes back to the foreground.
+    @Published private(set) var autoUpdates: Bool
+
+    nonisolated static let autoUpdateKey = "plugins.autoUpdate"
+    nonisolated static let autoUpdateInterval: TimeInterval = 24 * 3600
 
     private var loadedScope: String?
     nonisolated private static let directory = "NuvioPlugins"
 
-    private init() {}
+    private init() {
+        autoUpdates = UserDefaults.standard.object(forKey: Self.autoUpdateKey) as? Bool ?? true
+    }
 
     // MARK: - Reading
 
@@ -79,9 +87,14 @@ final class PluginStore: ObservableObject {
     }
 
     /// The scraper's JavaScript; downloads it again when the system purged the
-    /// cached copy, or every time for a repository in developer mode.
+    /// cached copy, or every time for a repository in developer mode. Code
+    /// uploaded from the setup page (Developer Mode) wins over both.
     func code(for scraper: PluginScraperRecord) async -> String? {
         let scope = ProfileSettings.activeProfileScope
+        if scraper.uploadedCode == true || state.scrapers.first(where: { $0.id == scraper.id })?.uploadedCode == true,
+           let uploaded = Self.readCodeFile(key: Self.uploadKey(scope: scope, scraperID: scraper.id)) {
+            return uploaded
+        }
         let reload = state.repositories.first { $0.manifestURL == scraper.repositoryURL }?.alwaysReload == true
         if reload, let url = Self.codeURL(repositoryURL: scraper.repositoryURL, filename: scraper.filename),
            let fresh = try? await Self.downloadText(url) {
@@ -101,6 +114,7 @@ final class PluginStore: ObservableObject {
         ensureLoaded()
         state.pluginsEnabled = enabled
         persist()
+        if !enabled { PluginInstancePool.shared.retireAll(idleOnly: false) }
     }
 
     func setScraperEnabled(_ id: String, enabled: Bool) {
@@ -108,6 +122,7 @@ final class PluginStore: ObservableObject {
         guard let index = state.scrapers.firstIndex(where: { $0.id == id }) else { return }
         state.scrapers[index].enabled = enabled
         persist()
+        if !enabled { PluginInstancePool.shared.retire(scraperId: id) }
     }
 
     /// Adds a repository by its manifest URL (a GitHub page link to the file
@@ -186,6 +201,9 @@ final class PluginStore: ObservableObject {
             Self.removeCode(scope: scope, scraperID: scraper.id)
             PluginSettingsVault.remove(scraperID: scraper.id)
             PluginStorageFile.remove(scraperID: scraper.id, scope: scope)
+            PluginFileStore.removeAll(scraperID: scraper.id, scope: scope)
+            LargePayloadStore.remove(key: Self.uploadKey(scope: scope, scraperID: scraper.id), directory: Self.directory)
+            PluginInstancePool.shared.retire(scraperId: scraper.id)
             PluginLogStore.shared.clear(scraper.id)
         }
         state.repositories.removeAll { $0.manifestURL == manifestURL }
@@ -198,7 +216,80 @@ final class PluginStore: ObservableObject {
         ensureLoaded()
         guard let index = state.repositories.firstIndex(where: { $0.manifestURL == manifestURL }) else { return }
         state.repositories[index].alwaysReload = enabled ? true : nil
+        if !enabled {
+            // Uploaded code belongs to Developer Mode.
+            for scraper in state.scrapers where scraper.repositoryURL == manifestURL && scraper.uploadedCode == true {
+                revertUploadedCode(scraper.id)
+            }
+        }
         persist()
+    }
+
+    /// Developer Mode: runs `code` instead of the repository's file, until
+    /// reverted, Developer Mode is turned off or the repository is removed.
+    func uploadCode(_ code: String, scraperID: String) throws {
+        ensureLoaded()
+        guard let index = state.scrapers.firstIndex(where: { $0.id == scraperID }) else {
+            throw PluginStoreError.download("The provider was not found.")
+        }
+        let repositoryURL = state.scrapers[index].repositoryURL
+        guard state.repositories.first(where: { $0.manifestURL == repositoryURL })?.alwaysReload == true else {
+            throw PluginStoreError.download("Turn on Developer Mode for the repository first.")
+        }
+        guard !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw PluginStoreError.download("The file is empty.")
+        }
+        let scope = ProfileSettings.activeProfileScope
+        guard LargePayloadStore.write(Data(code.utf8), key: Self.uploadKey(scope: scope, scraperID: scraperID), directory: Self.directory) else {
+            throw PluginStoreError.download("The code could not be saved on this Apple TV.")
+        }
+        state.scrapers[index].uploadedCode = true
+        persist()
+        PluginInstancePool.shared.retire(scraperId: scraperID)
+        PluginLogStore.shared.append(scraperID, level: .info, message: "Code uploaded from the setup page (\(code.utf8.count / 1_024) KB).")
+    }
+
+    /// Back to the repository's code.
+    func revertUploadedCode(_ scraperID: String) {
+        ensureLoaded()
+        LargePayloadStore.remove(key: Self.uploadKey(scope: ProfileSettings.activeProfileScope, scraperID: scraperID), directory: Self.directory)
+        guard let index = state.scrapers.firstIndex(where: { $0.id == scraperID }),
+              state.scrapers[index].uploadedCode != nil else { return }
+        state.scrapers[index].uploadedCode = nil
+        persist()
+        PluginInstancePool.shared.retire(scraperId: scraperID)
+    }
+
+    // MARK: - Automatic updates
+
+    func setAutoUpdates(_ enabled: Bool) {
+        autoUpdates = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.autoUpdateKey)
+    }
+
+    /// Nuvio started or came back to the foreground: updates the repositories
+    /// when that is on and the last update is a day old, and starts the
+    /// on-device server that plugin streams resolved on play go through.
+    func appBecameActive() async {
+        ensureLoaded()
+        if state.scrapers.contains(where: { $0.enabled }) {
+            PluginLoopbackServer.shared.ensureRunning()
+        }
+        await updateRepositoriesIfDue()
+    }
+
+    func updateRepositoriesIfDue(now: Date = Date()) async {
+        ensureLoaded()
+        guard autoUpdates, state.pluginsEnabled, !state.repositories.isEmpty else { return }
+        let key = "\(Self.autoUpdateKey).last.\(ProfileSettings.activeProfileScope)"
+        if let last = UserDefaults.standard.object(forKey: key) as? Date,
+           now.timeIntervalSince(last) < Self.autoUpdateInterval, last <= now {
+            return
+        }
+        UserDefaults.standard.set(now, forKey: key)
+        for repository in state.repositories {
+            await refreshRepository(repository.manifestURL)
+        }
     }
 
     func moveRepository(_ manifestURL: String, up: Bool) {
@@ -326,7 +417,10 @@ final class PluginStore: ObservableObject {
                     resources: info.resources,
                     idPrefixes: info.idPrefixes.isEmpty ? nil : info.idPrefixes,
                     catalogsJSON: PluginManifest.jsonArrayText(rawScrapers[info.id]?["catalogs"]),
-                    ratingSourcesJSON: PluginManifest.jsonArrayText(rawScrapers[info.id]?["ratingSources"])
+                    ratingSourcesJSON: PluginManifest.jsonArrayText(rawScrapers[info.id]?["ratingSources"]),
+                    keepAlive: info.runsPersistently ? true : nil,
+                    configPage: info.configPage ? true : nil,
+                    uploadedCode: old?.uploadedCode
                 ))
             } catch {
                 failures.append(info.name)
@@ -445,6 +539,11 @@ final class PluginStore: ObservableObject {
             throw PluginStoreError.download("Empty file")
         }
         return text
+    }
+
+    private static func uploadKey(scope: String, scraperID: String) -> String {
+        let digest = SHA256.hash(data: Data(scraperID.utf8)).prefix(12).map { String(format: "%02x", $0) }.joined()
+        return "\(scope).upload.\(digest)"
     }
 
     private static func codeKey(scope: String, scraperID: String) -> String {
