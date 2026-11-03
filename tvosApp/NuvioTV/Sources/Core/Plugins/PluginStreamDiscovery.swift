@@ -148,6 +148,12 @@ enum PluginStreamDiscovery {
             emitter.finish()
             partials.cancel()
         }
+        var forward: (@Sendable (String) -> Void)?
+        if onPartial != nil {
+            forward = { list in
+                _ = emitter.yield(list)
+            }
+        }
         do {
             let result = try await PluginRuntime.call(
                 code: code,
@@ -158,7 +164,7 @@ enum PluginStreamDiscovery {
                 timeout: PluginRuntime.streamTimeout,
                 keepAlive: target.scraper.keepAlive == true,
                 emitArgument: 4,
-                onEmit: onPartial == nil ? nil : { list in emitter.yield(list) }
+                onEmit: forward
             )
             emitter.finish()
             partials.cancel()

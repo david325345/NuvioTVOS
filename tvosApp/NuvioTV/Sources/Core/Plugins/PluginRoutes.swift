@@ -393,8 +393,12 @@ enum PluginRoutes {
     /// nothing is left.
     static func safeFileName(_ name: String?) -> String? {
         guard let name else { return nil }
-        let cleaned = String(name.map { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "." || $0 == "-" || $0 == "_") ? $0 : "_" })
-            .trimmingCharacters(in: CharacterSet(charactersIn: "._"))
+        let mapped = name.map { (character: Character) -> Character in
+            let allowed = character.isASCII
+                && (character.isLetter || character.isNumber || character == "." || character == "-" || character == "_")
+            return allowed ? character : "_"
+        }
+        let cleaned = String(mapped).trimmingCharacters(in: CharacterSet(charactersIn: "._"))
         return cleaned.isEmpty ? nil : String(cleaned.suffix(80))
     }
 }
