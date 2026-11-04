@@ -753,6 +753,21 @@ enum TmdbDetailsService {
         )
     }
 
+    /// The backdrop and title logo of a TMDB title, by id and nothing else
+    /// (no titles or descriptions). Used for AniList films that TheTVDB has
+    /// no pictures of. nil without TMDB, its key, or TMDB artwork turned on.
+    static func artwork(tmdbId: Int, mediaType: String) async -> (background: String?, logo: String?)? {
+        if requestContext == nil {
+            return await withRequestContext { await artwork(tmdbId: tmdbId, mediaType: mediaType) }
+        }
+        guard isEnabled, apiKey != nil, useArtwork, tmdbId > 0,
+              let details = await fetchLocalizedDetails(tmdbId: tmdbId, mediaType: mediaType) else { return nil }
+        let background = imageURL(details.backdropPath, size: "w1280")
+        let logo = imageURL(preferredLogoPath(from: details.images?.logos), size: "w500")
+        guard background != nil || logo != nil else { return nil }
+        return (background, logo)
+    }
+
     /// Applies the lightweight TMDB title/description/artwork enrichment to
     /// catalog cards while preserving their source order. The details screen
     /// remains the only place that requests credits and episode data.

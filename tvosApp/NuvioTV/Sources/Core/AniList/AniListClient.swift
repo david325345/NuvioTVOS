@@ -6,13 +6,20 @@ import Foundation
 /// AniList allows 90 requests a minute per address and lately only 30, so every answer is
 /// kept on disk for a while (`ttl`), the same request asked twice at once is sent once, and
 /// requests wait for a free slot. When AniList says to slow down, or the request fails, the
-/// last answer on disk is used even if it is old.
+/// last answer on disk is used even if it is old. Answers saved by another build of the app
+/// are dropped when this one first asks.
 actor AniListClient {
-    static let shared = AniListClient()
+    static let shared = AniListClient(dropsAnswersFromOtherBuilds: true)
 
     enum ClientError: Error {
         case rateLimited
         case badResponse(Int)
+    }
+
+    /// An answer, and whether it was saved earlier rather than given by AniList just now.
+    struct Answer {
+        let data: Data
+        let isSaved: Bool
     }
 
     private static let endpoint = URL(string: "https://graphql.anilist.co")!
@@ -33,9 +40,9 @@ actor AniListClient {
     private(set) var status = Status()
     private var sentAt: [Date] = []
     private var blockedUntil: Date?
-    private var inFlight: [String: Task<Data, Error>] = [:]
+    private var inFlight: [String: Task<Answer, Error>] = [:]
 
-    init(session: URLSession? = nil, cache: AniListDiskCache = AniListDiskCache()) {
+    init(session: URLSession? = nil, cache: AniListDiskCache = AniListDiskCache(), dropsAnswersFromOtherBuilds: Bool = false) {
         if let session {
             self.session = session
         } else {
@@ -46,19 +53,28 @@ actor AniListClient {
             self.session = URLSession(configuration: config)
         }
         self.cache = cache
+        if dropsAnswersFromOtherBuilds {
+            cache.removeAllIfWritten(byAnotherBuildThan: AniListDiskCache.currentBuild)
+        }
     }
 
     /// The JSON answer to a GraphQL query, from disk when it is younger than `ttl`.
-    func query(_ query: String, variables: [String: Any?] = [:], ttl: TimeInterval) async throws -> Data {
+    func query(_ query: String, variables: [String: Any?] = [:], ttl: TimeInterval, notesStatus: Bool = true) async throws -> Data {
+        try await answer(query, variables: variables, ttl: ttl, notesStatus: notesStatus).data
+    }
+
+    /// `query`, telling whether the answer was saved earlier. `notesStatus: false` leaves the
+    /// status in Settings alone (Test Connection).
+    func answer(_ query: String, variables: [String: Any?] = [:], ttl: TimeInterval, notesStatus: Bool = true) async throws -> Answer {
         let body = try Self.body(query: query, variables: variables)
         let key = Self.cacheKey(for: body)
         if let fresh = cache.read(key: key, maxAge: ttl) {
-            return fresh
+            return Answer(data: fresh, isSaved: true)
         }
         if let running = inFlight[key] {
             return try await running.value
         }
-        let task = Task { try await self.send(body: body, key: key) }
+        let task = Task { try await self.send(body: body, key: key, notesStatus: notesStatus) }
         inFlight[key] = task
         defer { inFlight[key] = nil }
         return try await task.value
@@ -94,12 +110,12 @@ actor AniListClient {
         cache.removeAll()
     }
 
-    private func send(body: Data, key: String) async throws -> Data {
+    private func send(body: Data, key: String, notesStatus: Bool) async throws -> Answer {
         do {
             try await waitForSlot()
         } catch {
-            noteFailure("Waiting for AniList's rate limit")
-            if let stale = cache.read(key: key, maxAge: .infinity) { return stale }
+            if notesStatus { noteFailure("Waiting for AniList's rate limit") }
+            if let stale = cache.read(key: key, maxAge: .infinity) { return Answer(data: stale, isSaved: true) }
             throw error
         }
         sentAt.append(Date())
@@ -117,19 +133,19 @@ actor AniListClient {
             let code = http?.statusCode ?? 0
             guard code == 200 else {
                 let snippet = String(data: data.prefix(240), encoding: .utf8) ?? ""
-                noteFailure("HTTP \(code) \(snippet)")
+                if notesStatus { noteFailure("HTTP \(code) \(snippet)") }
                 if code == 429 { throw ClientError.rateLimited }
                 throw ClientError.badResponse(code)
             }
-            status.lastSuccess = Date()
+            if notesStatus { status.lastSuccess = Date() }
             cache.write(data, key: key)
-            return data
+            return Answer(data: data, isSaved: false)
         } catch {
             // Bad answers are noted above with their body; this is the network failing.
-            if !(error is ClientError) {
+            if notesStatus, !(error is ClientError) {
                 noteFailure(error.localizedDescription)
             }
-            if let stale = cache.read(key: key, maxAge: .infinity) { return stale }
+            if let stale = cache.read(key: key, maxAge: .infinity) { return Answer(data: stale, isSaved: true) }
             throw error
         }
     }
@@ -191,6 +207,10 @@ actor AniListClient {
 struct AniListDiskCache {
     let directory: URL
 
+    /// Raised when what is saved has to be read differently, so older answers are dropped.
+    static let formatVersion = 2
+    private static let buildMarker = ".build"
+
     init(directory: URL? = nil) {
         if let directory {
             self.directory = directory
@@ -199,6 +219,20 @@ struct AniListDiskCache {
                 ?? FileManager.default.temporaryDirectory
             self.directory = caches.appendingPathComponent("AniList", isDirectory: true)
         }
+    }
+
+    /// This copy of the app: its version and build, and when it was installed. Test builds can
+    /// share a version and build, so the install time tells them apart.
+    static var currentBuild: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        var installed = "?"
+        if let executable = Bundle.main.executableURL,
+           let modified = (try? FileManager.default.attributesOfItem(atPath: executable.path))?[.modificationDate] as? Date {
+            installed = String(Int(modified.timeIntervalSince1970))
+        }
+        return "\(formatVersion)|\(version)|\(build)|\(installed)"
     }
 
     func read(key: String, maxAge: TimeInterval) -> Data? {
@@ -224,5 +258,19 @@ struct AniListDiskCache {
 
     func removeAll() {
         try? FileManager.default.removeItem(at: directory)
+    }
+
+    /// Drops every saved answer written by another build than `build`, then notes `build`.
+    /// True when answers were dropped (or there was nothing noted yet).
+    @discardableResult
+    func removeAllIfWritten(byAnotherBuildThan build: String) -> Bool {
+        let marker = directory.appendingPathComponent(Self.buildMarker)
+        if let noted = try? String(contentsOf: marker, encoding: .utf8), noted == build {
+            return false
+        }
+        removeAll()
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try? Data(build.utf8).write(to: marker, options: .atomic)
+        return true
     }
 }

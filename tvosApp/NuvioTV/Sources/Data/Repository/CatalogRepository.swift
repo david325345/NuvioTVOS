@@ -723,6 +723,23 @@ final class CinemetaCatalogRepository: CatalogRepository {
             )
     }
 
+    /// How long Home waits for AniList's rows after its built-in rows before loading the
+    /// add-on rows without them. AniList normally answers well within it.
+    static let aniListHomeWait: TimeInterval = 1.5
+
+    /// `task`'s value when it is ready within `seconds`, nil otherwise. The task keeps running.
+    static func value<T>(of task: Task<T, Never>, within seconds: TimeInterval) async -> T? {
+        let first = FirstValue<T>()
+        return await withCheckedContinuation { continuation in
+            first.start(continuation)
+            Task { first.finish(await task.value) }
+            Task {
+                try? await Task.sleep(nanoseconds: UInt64(max(seconds, 0) * 1_000_000_000))
+                first.finish(nil)
+            }
+        }
+    }
+
     private func loadHomeCatalogs(
         onUpdate: (([NuvioCatalog]) -> Void)? = nil
     ) async throws -> [NuvioCatalog] {
@@ -741,7 +758,10 @@ final class CinemetaCatalogRepository: CatalogRepository {
             ("series_rating", TVHomeCatalogOrder.catalogDisplayTitle("Top Rated", contentType: "series", showType: showType, addonName: Self.cinemetaDisplayName, customTitle: customTitles[TVHomeCatalogOrder.catalogSettingsKey(addonId: Self.cinemetaAddonId, contentType: "series", catalogId: "imdbRating")]), "series", "imdbRating")
         ]
         let homeVisibility = TVHomeCatalogOrder.homeVisibilityContext()
-        async let aniListRows = AniListService.homeCatalogs()
+        // Settings → Integrations → AniList: its rows, asked from this Apple TV beside the
+        // rows below. They never hold those up: when AniList has not answered by the time the
+        // built-in rows are there, the add-on rows load and AniList's join when it answers.
+        let aniListRows = Task { await AniListService.homeCatalogs() }
         let cinemetaManifestURL = baseURL.appendingPathComponent("manifest.json")
         let eligibleBuiltInIndices = Set(specs.indices.filter { index in
             let spec = specs[index]
@@ -813,9 +833,9 @@ final class CinemetaCatalogRepository: CatalogRepository {
             onUpdate?(catalogs)
         }
 
-        // Settings → Integrations → AniList: its rows, asked from this Apple TV while the
-        // rows above load, and published as soon as they are there.
-        let aniListCatalogs = await aniListRows
+        // AniList's rows, when they are already there (nil: AniList is still answering).
+        let earlyAniListRows = await Self.value(of: aniListRows, within: Self.aniListHomeWait)
+        let aniListCatalogs = earlyAniListRows ?? []
         if !aniListCatalogs.isEmpty {
             for catalog in aniListCatalogs {
                 cacheMetadata(catalog.items ?? [], context: metadataContext)
@@ -885,6 +905,18 @@ final class CinemetaCatalogRepository: CatalogRepository {
         // reflect every catalog, not just the last timed update.
         if lastProgressiveUpdateCount != addonResult.catalogs.count {
             onUpdate?(catalogs)
+        }
+        // AniList answered after the add-on rows started: its rows join the built-in ones now.
+        if earlyAniListRows == nil {
+            let lateAniListRows = await aniListRows.value
+            try Task.checkCancellation()
+            if !lateAniListRows.isEmpty {
+                for catalog in lateAniListRows {
+                    cacheMetadata(catalog.items ?? [], context: metadataContext)
+                }
+                catalogs.insert(contentsOf: lateAniListRows, at: max(catalogs.count - addonResult.catalogs.count, 0))
+                onUpdate?(catalogs)
+            }
         }
         let missingBuiltIns = eligibleBuiltInIndices
             .filter { pages[$0] == nil }
@@ -2007,9 +2039,9 @@ final class CinemetaCatalogRepository: CatalogRepository {
                 cacheMetadata(aniListOnly.items, context: metadataContext)
                 return CatalogSearchOutcome(results: aniListOnly.items, isComplete: missingManifestCount == 0)
             }
-            let isComplete = missingManifestCount == 0
+            let isComplete = missingManifestCount == 0 && !aniListOnly.failed
             let reason: CatalogSearchReason
-            if missingManifestCount > 0 {
+            if missingManifestCount > 0 || aniListOnly.failed {
                 reason = .requestFailed
             } else if decodedAddonSourceCount == 0 && !cinemetaVisible {
                 reason = .noActiveAddons
@@ -2095,7 +2127,8 @@ final class CinemetaCatalogRepository: CatalogRepository {
         // copy would hand them its IMDb id.
         let deduplicated = aniListResults.items + Self.deduplicatedSearchResults(addonResults)
         cacheMetadata(deduplicated, context: metadataContext)
-        let isComplete = missingManifestCount == 0 && failedTargetCount == 0
+        // A search AniList didn't answer is not kept, so asking again reaches AniList.
+        let isComplete = missingManifestCount == 0 && failedTargetCount == 0 && !aniListResults.failed
         logCatalogSearchOutcome(
             configuredManifests: configuredManifestCount,
             decodedManifests: decodedManifestCount,
@@ -3805,5 +3838,30 @@ class MockCatalogRepository: CatalogRepository {
             year: nil,
             sort: nil
         )
+    }
+}
+
+/// The first of two answers to reach `finish`; the other is dropped.
+private final class FirstValue<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<T?, Never>?
+    private var finished = false
+
+    func start(_ continuation: CheckedContinuation<T?, Never>) {
+        lock.lock()
+        self.continuation = continuation
+        lock.unlock()
+    }
+
+    func finish(_ value: T?) {
+        lock.lock()
+        guard !finished, let continuation else {
+            lock.unlock()
+            return
+        }
+        finished = true
+        self.continuation = nil
+        lock.unlock()
+        continuation.resume(returning: value)
     }
 }

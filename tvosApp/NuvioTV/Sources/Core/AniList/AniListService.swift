@@ -8,6 +8,14 @@ enum AniListService {
     /// Content type of the Home rows ("Trending Now - Anime").
     static let homeContentType = "anime"
 
+    /// The round AniList mark on Search's cards, drawn like the service logos on Home's cards.
+    static let searchBadge = CollectionOriginPresentation(
+        reference: CollectionOriginReference(collectionID: addonID, folderID: addonID),
+        title: addonName,
+        imageURLs: [AniListMetaBuilder.ratingIcon],
+        emoji: nil
+    )
+
     static let catalogTTL: TimeInterval = 6 * 3600
     static let searchTTL: TimeInterval = 3600
     /// Entries still airing (or not yet) are asked again after an hour, finished ones after a week.
@@ -50,10 +58,17 @@ enum AniListService {
 
     /// The AniList rows that Layout doesn't hide, in one request.
     static func homeCatalogs() async -> [NuvioCatalog] {
-        guard AniListSettings.showsHomeRows else { return [] }
+        guard AniListSettings.isEnabled else { return [] }
+        guard AniListSettings.showsHomeRows else {
+            AniListDiagnostics.note(.home, "Off: AniList Rows on Home is off")
+            return []
+        }
         let disabled = TVHomeCatalogOrder.disabledCatalogKeys()
         let rows = AniListHomeRow.all.filter { !disabled.contains(catalogSettingsKey($0)) }
-        guard !rows.isEmpty else { return [] }
+        guard !rows.isEmpty else {
+            AniListDiagnostics.note(.home, "Every AniList row is hidden in Layout")
+            return []
+        }
 
         let current = AniListSeason.current()
         let next = AniListSeason.next()
@@ -67,21 +82,26 @@ enum AniListService {
             variables["nextSeasonYear"] = next.year
         }
 
-        guard let data = try? await AniListClient.shared.query(
-            AniListQueries.homeRows(rows), variables: variables, ttl: catalogTTL
-        ) else {
+        let answer: AniListClient.Answer
+        do {
+            answer = try await AniListClient.shared.answer(
+                AniListQueries.homeRows(rows), variables: variables, ttl: catalogTTL
+            )
+        } catch {
+            AniListDiagnostics.note(.home, "Failed: \(AniListDiagnostics.describe(error))")
             return []
         }
         let pages: [String: AniListPage]
         do {
-            pages = try decoder.decode(AniListAliasedPagesResponse.self, from: data).data ?? [:]
+            pages = try decoder.decode(AniListAliasedPagesResponse.self, from: answer.data).data ?? [:]
         } catch {
             await AniListClient.shared.noteFailure("Unreadable Home answer: \(error)")
+            AniListDiagnostics.note(.home, "Unreadable answer · \(AniListDiagnostics.source(answer))")
             return []
         }
 
         let language = AniListSettings.titleLanguage
-        return rows.compactMap { row in
+        let catalogs: [NuvioCatalog] = rows.compactMap { row in
             let items = (pages[row.id]?.media ?? []).map { AniListMetaBuilder.card($0, language: language) }
             guard !items.isEmpty else { return nil }
             let title = catalogDisplayTitle(row)
@@ -97,6 +117,14 @@ enum AniListService {
                 addonName: addonName
             )
         }
+        let titles = catalogs.reduce(0) { $0 + ($1.items?.count ?? 0) }
+        AniListDiagnostics.note(
+            .home,
+            catalogs.isEmpty
+                ? "AniList answered with no titles · \(AniListDiagnostics.source(answer))"
+                : "\(catalogs.count) of \(rows.count) rows, \(titles) titles · \(AniListDiagnostics.source(answer))"
+        )
+        return catalogs
     }
 
     /// See All for an AniList row.
@@ -144,8 +172,12 @@ enum AniListService {
         /// Every title of every result (romaji, English, native, synonyms) and its year,
         /// to recognise the same anime among Cinemeta's results.
         let names: [(name: String, year: Int?)]
+        /// AniList was asked and didn't answer. Search then doesn't keep the results it shows,
+        /// so the same search asks again instead of showing them without AniList.
+        var failed = false
 
         static let empty = SearchResult(items: [], names: [])
+        static let failure = SearchResult(items: [], names: [], failed: true)
 
         func matches(_ meta: NuvioMeta) -> Bool {
             let name = AniListService.matchKey(meta.name)
@@ -159,23 +191,38 @@ enum AniListService {
     }
 
     static func search(_ query: String) async -> SearchResult {
-        guard AniListSettings.searchesAniList else { return .empty }
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty,
-              let data = try? await AniListClient.shared.query(
-                  AniListQueries.search,
-                  variables: ["search": trimmed, "perPage": 30, "isAdult": isAdultVariable],
-                  ttl: searchTTL
-              ) else {
+        guard AniListSettings.isEnabled else { return .empty }
+        guard AniListSettings.searchesAniList else {
+            AniListDiagnostics.note(.search, "Off: Search AniList is off")
             return .empty
+        }
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return .empty }
+        let quoted = "“\(trimmed)”"
+        let answer: AniListClient.Answer
+        do {
+            answer = try await AniListClient.shared.answer(
+                AniListQueries.search,
+                variables: ["search": trimmed, "perPage": 30, "isAdult": isAdultVariable],
+                ttl: searchTTL
+            )
+        } catch {
+            AniListDiagnostics.note(.search, "\(quoted): failed: \(AniListDiagnostics.describe(error))")
+            return .failure
         }
         let media: [AniListMedia]
         do {
-            media = try decoder.decode(AniListPageResponse.self, from: data).data?.Page?.media ?? []
+            media = try decoder.decode(AniListPageResponse.self, from: answer.data).data?.Page?.media ?? []
         } catch {
             await AniListClient.shared.noteFailure("Unreadable search answer: \(error)")
-            return .empty
+            AniListDiagnostics.note(.search, "\(quoted): unreadable answer · \(AniListDiagnostics.source(answer))")
+            return .failure
         }
+        let films = media.filter(AniListMetaBuilder.isMovie).count
+        AniListDiagnostics.note(
+            .search,
+            "\(quoted): \(media.count) results (\(media.count - films) series, \(films) films) · \(AniListDiagnostics.source(answer))"
+        )
         let language = AniListSettings.titleLanguage
         var names: [(name: String, year: Int?)] = []
         for entry in media {
@@ -229,28 +276,34 @@ enum AniListService {
         let tabs = (merge ? chainIDs : [startID]).compactMap { entries[$0] }
         guard !tabs.isEmpty else { throw DetailsError.notFound }
 
-        let useAniZip = AniListSettings.usesEpisodeDetails && !(tabs.count == 1 && AniListMetaBuilder.isMovie(tabs[0]))
-        var aniZip: [Int: [String: AniZipEpisode]] = [:]
-        if useAniZip {
-            await withTaskGroup(of: (Int, [String: AniZipEpisode]).self) { group in
+        // api.ani.zip: titles and pictures of episodes, and TheTVDB's background and logo of
+        // the series. It has no AniList rate limit.
+        var aniZip: [Int: AniZipMappingsResponse] = [:]
+        if AniListSettings.usesEpisodeDetails {
+            await withTaskGroup(of: (Int, AniZipMappingsResponse?).self) { group in
                 for tab in tabs {
                     group.addTask {
-                        let episodes = await Self.aniZipEpisodes(for: tab)
-                        return (tab.id, episodes)
+                        let response = await Self.aniZipMappings(entryID: tab.id, finished: tab.status == "FINISHED")
+                        return (tab.id, response)
                     }
                 }
-                for await (id, episodes) in group {
-                    aniZip[id] = episodes
+                for await (id, response) in group {
+                    aniZip[id] = response
                 }
             }
         }
 
         var episodes: [Int: [NuvioVideo]] = [:]
         for (index, tab) in tabs.enumerated() {
-            episodes[tab.id] = AniListMetaBuilder.episodes(of: tab, season: index + 1, aniZip: aniZip[tab.id] ?? [:])
+            episodes[tab.id] = AniListMetaBuilder.episodes(of: tab, season: index + 1, aniZip: aniZip[tab.id]?.episodes ?? [:])
         }
 
-        guard let meta = AniListMetaBuilder.meta(tabs: tabs, episodes: episodes, language: language) else {
+        var artwork = AniListMetaBuilder.Artwork(tabs: tabs, aniZip: aniZip)
+        if tabs.count == 1, AniListMetaBuilder.isMovie(tabs[0]) {
+            artwork = await Self.fillingFromTmdb(artwork, film: aniZip[tabs[0].id])
+        }
+
+        guard let meta = AniListMetaBuilder.meta(tabs: tabs, episodes: episodes, language: language, artwork: artwork) else {
             throw DetailsError.notFound
         }
         AniListTitleIndex.store(
@@ -277,12 +330,37 @@ enum AniListService {
         return try decoder.decode(AniListPageResponse.self, from: data).data?.Page?.media ?? []
     }
 
-    private static func aniZipEpisodes(for media: AniListMedia) async -> [String: AniZipEpisode] {
-        guard let url = URL(string: "https://api.ani.zip/mappings?anilist_id=\(media.id)") else { return [:] }
-        let ttl = media.status == "FINISHED" ? finishedTTL : aniZipTTL
-        guard let data = try? await AniListClient.shared.get(url, ttl: ttl),
-              let response = try? decoder.decode(AniZipMappingsResponse.self, from: data) else { return [:] }
-        return response.episodes ?? [:]
+    /// What api.ani.zip knows about one AniList entry: its episodes, TheTVDB's pictures of the
+    /// series and its TMDB id. Kept a week for finished entries, a day for the rest.
+    private static func aniZipMappings(entryID: Int, finished: Bool) async -> AniZipMappingsResponse? {
+        guard let url = URL(string: "https://api.ani.zip/mappings?anilist_id=\(entryID)"),
+              let data = try? await AniListClient.shared.get(url, ttl: finished ? finishedTTL : aniZipTTL) else { return nil }
+        return try? decoder.decode(AniZipMappingsResponse.self, from: data)
+    }
+
+    /// A film TheTVDB has no background or logo of takes TMDB's, found by the TMDB id ani.zip
+    /// gives (never by its name). Needs TMDB in Settings with its artwork on.
+    private static func fillingFromTmdb(_ artwork: AniListMetaBuilder.Artwork, film: AniZipMappingsResponse?) async -> AniListMetaBuilder.Artwork {
+        guard artwork.background == nil || artwork.logo == nil,
+              let tmdbID = film?.mappings?.themoviedbID,
+              let found = await TmdbDetailsService.artwork(tmdbId: tmdbID, mediaType: "movie") else { return artwork }
+        return AniListMetaBuilder.Artwork(
+            background: artwork.background ?? found.background,
+            logo: artwork.logo ?? found.logo
+        )
+    }
+
+    /// The background and logo for Home's hero while an AniList card is focused, from ani.zip
+    /// (and TMDB for a film) only, so moving along a row costs no AniList requests.
+    static func heroArtwork(for card: NuvioMeta) async -> AniListMetaBuilder.Artwork? {
+        guard AniListSettings.isEnabled, AniListSettings.usesEpisodeDetails,
+              let entryID = AniListMetaBuilder.aniListID(from: card.id) else { return nil }
+        let response = await aniZipMappings(entryID: entryID, finished: card.status == AniListMetaBuilder.status("FINISHED"))
+        var artwork = AniListMetaBuilder.Artwork(background: response?.fanart, logo: response?.clearLogo)
+        if card.type == "movie" {
+            artwork = await fillingFromTmdb(artwork, film: response)
+        }
+        return artwork == .empty ? nil : artwork
     }
 
     /// Characters with their Japanese voice actors, and AniList's recommendations.
@@ -312,20 +390,29 @@ enum AniListService {
     }
 
     /// Asks AniList for "Frieren" right now, past the saved answers: "OK · 5 results" or why not.
+    /// It leaves the status alone, so an earlier failure stays readable there.
     static func testConnection() async -> String {
         let variables: [String: Any?] = ["search": "Frieren", "perPage": 5, "isAdult": false]
         do {
-            let data = try await AniListClient.shared.query(AniListQueries.search, variables: variables, ttl: 0)
-            let media = try decoder.decode(AniListPageResponse.self, from: data).data?.Page?.media ?? []
-            return media.isEmpty ? "AniList answered with no results" : "OK · \(media.count) results"
+            let answer = try await AniListClient.shared.answer(AniListQueries.search, variables: variables, ttl: 0, notesStatus: false)
+            let media = try decoder.decode(AniListPageResponse.self, from: answer.data).data?.Page?.media ?? []
+            let result = media.isEmpty ? "AniList answered with no results" : "OK · \(media.count) results"
+            return answer.isSaved ? "\(result) · saved answer, AniList didn't answer now" : result
         } catch let error as DecodingError {
-            let message = "Unreadable answer: \(error)"
-            await AniListClient.shared.noteFailure(message)
-            return message
+            return "Unreadable answer: \(error)"
         } catch {
-            let status = await AniListClient.shared.status
-            return status.lastFailureMessage ?? error.localizedDescription
+            return "Failed: \(AniListDiagnostics.describe(error))"
         }
+    }
+
+    /// What Home's AniList rows last did, for Settings.
+    static func homeStatusText() -> String {
+        AniListSettings.isEnabled ? AniListDiagnostics.text(.home) : "Off"
+    }
+
+    /// What the last search did with AniList, for Settings.
+    static func searchStatusText() -> String {
+        AniListSettings.isEnabled ? AniListDiagnostics.text(.search) : "Off"
     }
 
     /// The service's own view, for Settings: is it on, and the last answer from AniList.

@@ -5313,6 +5313,8 @@ private struct AniListOptionsSheet: View {
     @AppStorage(SettingsKey.aniListAdult) private var adult = false
     @State private var cacheCleared = false
     @State private var statusText = ""
+    @State private var homeStatusText = ""
+    @State private var searchStatusText = ""
     @State private var testResult: String?
     @State private var testing = false
 
@@ -5377,7 +5379,7 @@ private struct AniListOptionsSheet: View {
 
                         SettingsToggleRow(
                             title: L10n.string("settings_anilist_episode_details", fallback: "Episode Titles and Pictures"),
-                            subtitle: L10n.string("settings_anilist_episode_details_subtitle", fallback: "From api.ani.zip, where AniList has none"),
+                            subtitle: L10n.string("settings_anilist_episode_details_subtitle", fallback: "From api.ani.zip, where AniList has none, with backgrounds and logos from TheTVDB (TMDB's for films it lacks)"),
                             isOn: $episodeDetails,
                             accentColor: accentColor,
                             isAvailable: enabled
@@ -5423,7 +5425,7 @@ private struct AniListOptionsSheet: View {
 
                     SettingsGroup(
                         title: L10n.string("settings_anilist_section_status", fallback: "Status"),
-                        subtitle: L10n.string("settings_anilist_section_status_subtitle", fallback: "The last answer from AniList")
+                        subtitle: L10n.string("settings_anilist_section_status_subtitle", fallback: "The last answer from AniList, and what Home and Search last did with it")
                     ) {
                         SettingsActionRow(
                             title: L10n.string("settings_anilist_status", fallback: "AniList"),
@@ -5431,7 +5433,25 @@ private struct AniListOptionsSheet: View {
                             value: L10n.string("settings_anilist_status_refresh", fallback: "Refresh"),
                             accentColor: accentColor
                         ) {
-                            Task { statusText = await AniListService.statusText() }
+                            Task { await refreshStatus() }
+                        }
+
+                        SettingsActionRow(
+                            title: L10n.string("settings_anilist_status_home", fallback: "Home Rows"),
+                            subtitle: homeStatusText,
+                            value: L10n.string("settings_anilist_status_refresh", fallback: "Refresh"),
+                            accentColor: accentColor
+                        ) {
+                            Task { await refreshStatus() }
+                        }
+
+                        SettingsActionRow(
+                            title: L10n.string("settings_anilist_status_search", fallback: "Search"),
+                            subtitle: searchStatusText,
+                            value: L10n.string("settings_anilist_status_refresh", fallback: "Refresh"),
+                            accentColor: accentColor
+                        ) {
+                            Task { await refreshStatus() }
                         }
 
                         SettingsActionRow(
@@ -5444,7 +5464,7 @@ private struct AniListOptionsSheet: View {
                             testing = true
                             Task {
                                 testResult = await AniListService.testConnection()
-                                statusText = await AniListService.statusText()
+                                await refreshStatus()
                                 testing = false
                             }
                         }
@@ -5456,7 +5476,7 @@ private struct AniListOptionsSheet: View {
                     ) {
                         SettingsActionRow(
                             title: L10n.string("settings_anilist_clear_cache", fallback: "Clear Saved Answers"),
-                            subtitle: L10n.string("settings_anilist_clear_cache_subtitle", fallback: "Ask AniList again for everything"),
+                            subtitle: L10n.string("settings_anilist_clear_cache_subtitle", fallback: "Ask AniList again for everything. Done by itself after each app update"),
                             value: cacheCleared ? L10n.string("settings_anilist_cleared", fallback: "Cleared") : L10n.string("settings_anilist_clear", fallback: "Clear"),
                             accentColor: accentColor
                         ) {
@@ -5472,16 +5492,23 @@ private struct AniListOptionsSheet: View {
                 .padding(.vertical, 38)
             }
         }
-        .task { statusText = await AniListService.statusText() }
+        .task { await refreshStatus() }
         .onChange(of: enabled) { _, _ in
             AniListSettings.notifyHomeChanged()
-            Task { statusText = await AniListService.statusText() }
+            Task { await refreshStatus() }
         }
         .onChange(of: homeRows) { _, _ in AniListSettings.notifyHomeChanged() }
         .onChange(of: search) { _, _ in AniListSettings.notifyHomeChanged() }
         .onChange(of: hideCinemetaDuplicates) { _, _ in AniListSettings.notifyHomeChanged() }
         .onChange(of: titleLanguage) { _, _ in AniListSettings.notifyHomeChanged() }
         .onChange(of: adult) { _, _ in AniListSettings.notifyHomeChanged() }
+    }
+
+    @MainActor
+    private func refreshStatus() async {
+        statusText = await AniListService.statusText()
+        homeStatusText = AniListService.homeStatusText()
+        searchStatusText = AniListService.searchStatusText()
     }
 
     private func labelBinding<Option: RawRepresentable>(

@@ -133,6 +133,40 @@ enum AniListMetaBuilder {
         )
     }
 
+    /// A card with TheTVDB's background and logo in place of AniList's banner, for Home's hero.
+    static func applying(_ artwork: Artwork, to card: NuvioMeta) -> NuvioMeta {
+        NuvioMeta(
+            id: card.id,
+            name: card.name,
+            description: card.description,
+            posterUrl: card.posterUrl,
+            backgroundUrl: artwork.background ?? card.backgroundUrl,
+            logoUrl: artwork.logo ?? card.logoUrl,
+            imdbId: card.imdbId,
+            tmdbId: card.tmdbId,
+            type: card.type,
+            year: card.year,
+            genres: card.genres,
+            rating: card.rating,
+            releaseInfo: card.releaseInfo,
+            runtime: card.runtime,
+            cast: card.cast,
+            director: card.director,
+            writer: card.writer,
+            certification: card.certification,
+            country: card.country,
+            language: card.language,
+            released: card.released,
+            status: card.status,
+            videos: card.videos,
+            trailerYtIds: card.trailerYtIds,
+            externalRatings: card.externalRatings,
+            posterShape: card.posterShape,
+            isFromAddon: card.isFromAddon,
+            landscapePosterUrl: card.landscapePosterUrl
+        )
+    }
+
     static func rating(_ media: AniListMedia) -> NuvioExternalRating? {
         guard let score = media.averageScore, score > 0 else { return nil }
         return NuvioExternalRating(
@@ -303,12 +337,39 @@ enum AniListMetaBuilder {
 
     // MARK: Titles
 
+    /// Pictures of a whole title beside AniList's own: TheTVDB's background and logo by way of
+    /// api.ani.zip.
+    struct Artwork: Equatable {
+        var background: String? = nil
+        var logo: String? = nil
+
+        static let empty = Artwork()
+
+        init(background: String? = nil, logo: String? = nil) {
+            self.background = background
+            self.logo = logo
+        }
+
+        /// The first entry that has each picture, in tab order.
+        init(tabs: [AniListMedia], aniZip: [Int: AniZipMappingsResponse]) {
+            background = tabs.lazy.compactMap { aniZip[$0.id]?.fanart }.first
+            logo = tabs.lazy.compactMap { aniZip[$0.id]?.clearLogo }.first
+        }
+    }
+
+    /// The background of a title: TheTVDB's 16:9 fanart first, AniList's banner (a thin strip)
+    /// when there is none. Without either, the details screen shows the poster.
+    static func background(tabs: [AniListMedia], artwork: Artwork) -> String? {
+        artwork.background ?? tabs.first?.bannerImage ?? tabs.lazy.compactMap(\.bannerImage).first
+    }
+
     /// A whole title: `tabs` are the entries of the series in order (one for a film, an OVA or
     /// "Each Entry"), `episodes` their episodes by entry id.
     static func meta(
         tabs: [AniListMedia],
         episodes: [Int: [NuvioVideo]],
-        language: AniListSettings.TitleLanguage
+        language: AniListSettings.TitleLanguage,
+        artwork: Artwork = .empty
     ) -> NuvioMeta? {
         guard let root = tabs.first else { return nil }
         let isFilm = tabs.count == 1 && Self.isMovie(root)
@@ -342,7 +403,8 @@ enum AniListMetaBuilder {
             name: title(root.title, language: language),
             description: plainText(root.description),
             posterUrl: root.coverImage?.extraLarge ?? root.coverImage?.large,
-            backgroundUrl: root.bannerImage ?? tabs.lazy.compactMap(\.bannerImage).first,
+            backgroundUrl: background(tabs: tabs, artwork: artwork),
+            logoUrl: artwork.logo,
             type: isFilm ? "movie" : "series",
             year: startYear,
             genres: root.genres,

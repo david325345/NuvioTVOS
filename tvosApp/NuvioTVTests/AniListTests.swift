@@ -288,4 +288,149 @@ final class AniListTests: XCTestCase {
         XCTAssertNil(cache.read(key: "k", maxAge: 60))
         XCTAssertEqual(cache.read(key: "k", maxAge: .infinity), Data("hello".utf8))
     }
+
+    func testSavedAnswersFromAnotherBuildAreDropped() {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("AniListTests-\(UUID().uuidString)")
+        let cache = AniListDiskCache(directory: directory)
+        defer { cache.removeAll() }
+        cache.write(Data("old".utf8), key: "k")
+        XCTAssertTrue(cache.removeAllIfWritten(byAnotherBuildThan: "2|1.0|7|100"))
+        XCTAssertNil(cache.read(key: "k", maxAge: .infinity))
+
+        cache.write(Data("new".utf8), key: "k")
+        XCTAssertFalse(cache.removeAllIfWritten(byAnotherBuildThan: "2|1.0|7|100"))
+        XCTAssertEqual(cache.read(key: "k", maxAge: .infinity), Data("new".utf8))
+
+        XCTAssertTrue(cache.removeAllIfWritten(byAnotherBuildThan: "2|1.0|7|200"))
+        XCTAssertNil(cache.read(key: "k", maxAge: .infinity))
+        XCTAssertTrue(AniListDiskCache.currentBuild.hasPrefix("\(AniListDiskCache.formatVersion)|"))
+    }
+
+    // MARK: Pictures
+
+    private let aniZipJSON = """
+    {"episodes":{"1":{"title":{"en":"The Squad"},"image":"https://zip/1.jpg"}},
+     "images":[{"coverType":"Banner","url":"https://tvdb/banner.jpg"},
+               {"coverType":"Fanart","url":"http://tvdb/fanart.jpg"},
+               {"coverType":"Clearlogo","url":"https://tvdb/logo.png"}],
+     "mappings":{"anilist_id":101,"themoviedb_id":"8392","imdb_id":"tt1"}}
+    """
+
+    func testAniZipGivesTheTVDBBackgroundLogoAndTmdbID() throws {
+        let response = try decoder.decode(AniZipMappingsResponse.self, from: Data(aniZipJSON.utf8))
+        XCTAssertEqual(response.fanart, "https://tvdb/fanart.jpg")
+        XCTAssertEqual(response.clearLogo, "https://tvdb/logo.png")
+        XCTAssertEqual(response.mappings?.themoviedbID, 8392)
+        XCTAssertEqual(response.episodes?["1"]?.englishTitle, "The Squad")
+
+        let numeric = try decoder.decode(AniZipMappingsResponse.self, from: Data(#"{"mappings":{"themoviedb_id":129}}"#.utf8))
+        XCTAssertEqual(numeric.mappings?.themoviedbID, 129)
+    }
+
+    func testAnOddPartOfAniZipCostsOnlyThatPart() throws {
+        let json = #"{"episodes":{"1":{"title":{"en":"The Squad"}}},"images":"none","mappings":[1]}"#
+        let response = try decoder.decode(AniZipMappingsResponse.self, from: Data(json.utf8))
+        XCTAssertEqual(response.episodes?["1"]?.englishTitle, "The Squad")
+        XCTAssertNil(response.fanart)
+        XCTAssertNil(response.mappings)
+    }
+
+    func testTheBackgroundIsTheTVDBFanartBeforeAniListsBanner() throws {
+        let entries = try entries()
+        let tabs = [try XCTUnwrap(entries[101]), try XCTUnwrap(entries[102])]
+        let response = try decoder.decode(AniZipMappingsResponse.self, from: Data(aniZipJSON.utf8))
+
+        // The second season's pictures serve when the first has none.
+        let artwork = AniListMetaBuilder.Artwork(tabs: tabs, aniZip: [102: response])
+        XCTAssertEqual(artwork, AniListMetaBuilder.Artwork(background: "https://tvdb/fanart.jpg", logo: "https://tvdb/logo.png"))
+        let meta = try XCTUnwrap(AniListMetaBuilder.meta(tabs: tabs, episodes: [:], language: .romaji, artwork: artwork))
+        XCTAssertEqual(meta.backgroundUrl, "https://tvdb/fanart.jpg")
+        XCTAssertEqual(meta.logoUrl, "https://tvdb/logo.png")
+
+        let withoutAniZip = try XCTUnwrap(AniListMetaBuilder.meta(tabs: tabs, episodes: [:], language: .romaji))
+        XCTAssertEqual(withoutAniZip.backgroundUrl, "https://img/101b.jpg")
+        XCTAssertNil(withoutAniZip.logoUrl)
+        XCTAssertEqual(AniListMetaBuilder.Artwork(tabs: tabs, aniZip: [:]), .empty)
+    }
+
+    func testTheHeroTakesTheTVDBPicturesAndKeepsTheRest() throws {
+        let card = AniListMetaBuilder.card(try XCTUnwrap(try entries()[101]), language: .english)
+        let hero = AniListMetaBuilder.applying(AniListMetaBuilder.Artwork(background: "https://tvdb/fanart.jpg", logo: nil), to: card)
+        XCTAssertEqual(hero.id, card.id)
+        XCTAssertEqual(hero.name, card.name)
+        XCTAssertEqual(hero.backgroundUrl, "https://tvdb/fanart.jpg")
+        XCTAssertNil(hero.logoUrl)
+        XCTAssertEqual(hero.externalRatings, card.externalRatings)
+        XCTAssertEqual(AniListMetaBuilder.applying(.empty, to: card), card)
+    }
+
+    // MARK: Search
+
+    @MainActor
+    func testSearchEnrichmentLeavesAniListCardsAsTheyAre() async throws {
+        final class CountingRepository: MockCatalogRepository {
+            var refreshed: [String] = []
+            override func refreshMetadata(id: String, type: String) async throws -> NuvioMeta {
+                refreshed.append(id)
+                return NuvioMeta(id: id, name: "Naruto", backgroundUrl: "https://cinemeta/bg.jpg", imdbId: "tt0409591", type: "series", year: 2002)
+            }
+        }
+        let aniList = NuvioMeta(id: "anilist:20", name: "Naruto", posterUrl: "https://img/20.jpg", type: "series", year: 2002)
+        let cinemeta = NuvioMeta(id: "tt0409591", name: "Naruto", posterUrl: "https://cinemeta/20.jpg", imdbId: "tt0409591", type: "series", year: 2002)
+        let repository = CountingRepository()
+
+        XCTAssertFalse(SearchResultEnrichment.hasIncompleteLeadingResults([aniList]))
+        XCTAssertTrue(SearchResultEnrichment.hasIncompleteLeadingResults([aniList, cinemeta]))
+
+        let enriched = await SearchResultEnrichment.enrich([aniList, cinemeta], repository: repository)
+        XCTAssertEqual(repository.refreshed, ["tt0409591"])
+        XCTAssertEqual(enriched.map(\.id), ["anilist:20", "tt0409591"])
+        XCTAssertEqual(enriched.first, aniList)
+        XCTAssertNil(enriched.first?.imdbId)
+    }
+
+    func testASearchAniListDidNotAnswerIsMarked() {
+        XCTAssertTrue(AniListService.SearchResult.failure.failed)
+        XCTAssertFalse(AniListService.SearchResult.empty.failed)
+    }
+
+    // MARK: Status
+
+    func testStatusTellsWhatHomeLastDidAndWhatReachedTheScreen() {
+        AniListDiagnostics.reset()
+        defer { AniListDiagnostics.reset() }
+        let time: (Date) -> String = { _ in "21:38" }
+        XCTAssertEqual(AniListDiagnostics.text(.home, timeStyle: time), "Not asked yet")
+
+        let asked = Date(timeIntervalSince1970: 1_000)
+        AniListDiagnostics.noteHomeOnScreen(rows: 2, at: asked.addingTimeInterval(-60))
+        AniListDiagnostics.note(.home, "5 of 5 rows, 150 titles · from AniList", at: asked)
+        // A count from an earlier load is left out.
+        XCTAssertEqual(AniListDiagnostics.text(.home, timeStyle: time), "21:38 · 5 of 5 rows, 150 titles · from AniList")
+
+        AniListDiagnostics.noteHomeOnScreen(rows: 5, at: asked.addingTimeInterval(2))
+        XCTAssertEqual(AniListDiagnostics.text(.home, timeStyle: time), "21:38 · 5 of 5 rows, 150 titles · from AniList · 5 on screen")
+
+        AniListDiagnostics.note(.search, "“naruto”: 12 results (9 series, 3 films) · saved answer", at: asked)
+        XCTAssertEqual(AniListDiagnostics.text(.search, timeStyle: time), "21:38 · “naruto”: 12 results (9 series, 3 films) · saved answer")
+        XCTAssertEqual(AniListDiagnostics.describe(AniListClient.ClientError.badResponse(400)), "HTTP 400")
+    }
+
+    // MARK: Home
+
+    func testHomeTakesAniListsRowsOnlyWhenTheyAreReady() async {
+        let ready = Task<[Int], Never> { [1, 2] }
+        let readyValue = await CinemetaCatalogRepository.value(of: ready, within: 2)
+        XCTAssertEqual(readyValue, [1, 2])
+
+        let slow = Task<[Int], Never> {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            return [3]
+        }
+        let started = Date()
+        let slowValue = await CinemetaCatalogRepository.value(of: slow, within: 0.1)
+        XCTAssertNil(slowValue)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2)
+        slow.cancel()
+    }
 }
