@@ -1,0 +1,91 @@
+import Foundation
+
+extension SettingsKey {
+    static let aniListEnabled = "nuvio.tv.settings.integrations.aniListEnabled"
+    static let aniListTitleLanguage = "nuvio.tv.settings.integrations.aniListTitleLanguage"
+    static let aniListSeasonMode = "nuvio.tv.settings.integrations.aniListSeasonMode"
+    static let aniListHomeRows = "nuvio.tv.settings.integrations.aniListHomeRows"
+    static let aniListSearch = "nuvio.tv.settings.integrations.aniListSearch"
+    static let aniListHideCinemetaDuplicates = "nuvio.tv.settings.integrations.aniListHideCinemetaDuplicates"
+    static let aniListEpisodeDetails = "nuvio.tv.settings.integrations.aniListEpisodeDetails"
+    static let aniListAdult = "nuvio.tv.settings.integrations.aniListAdult"
+}
+
+/// Settings → Integrations → AniList. Anime from AniList keep their `anilist:` ids everywhere,
+/// so add-ons that declare the `anilist` prefix are asked with `anilist:ID` (a film) or
+/// `anilist:ID:EP` (an episode, numbered as on AniList).
+enum AniListSettings {
+    enum TitleLanguage: String, CaseIterable {
+        case romaji
+        case english
+        case native
+
+        var label: String {
+            switch self {
+            case .romaji: return "Romaji"
+            case .english: return "English"
+            case .native: return "Native"
+            }
+        }
+    }
+
+    /// How the seasons of a series show: all of them as one title with a tab per AniList
+    /// entry, or every AniList entry as a title of its own, as on AniList.
+    enum SeasonMode: String, CaseIterable {
+        case merged
+        case separate
+
+        var label: String {
+            switch self {
+            case .merged: return "One Title"
+            case .separate: return "Each Entry"
+            }
+        }
+    }
+
+    static func isEnabled(in store: UserDefaults = ProfileSettings.current) -> Bool {
+        store.bool(forKey: SettingsKey.aniListEnabled)
+    }
+
+    static var isEnabled: Bool { isEnabled(in: ProfileSettings.current) }
+
+    static var titleLanguage: TitleLanguage {
+        TitleLanguage(rawValue: ProfileSettings.current.string(forKey: SettingsKey.aniListTitleLanguage) ?? "") ?? .romaji
+    }
+
+    static var seasonMode: SeasonMode {
+        SeasonMode(rawValue: ProfileSettings.current.string(forKey: SettingsKey.aniListSeasonMode) ?? "") ?? .merged
+    }
+
+    static func showsHomeRows(in store: UserDefaults = ProfileSettings.current) -> Bool {
+        isEnabled(in: store) && bool(SettingsKey.aniListHomeRows, default: true, in: store)
+    }
+
+    static var showsHomeRows: Bool { showsHomeRows(in: ProfileSettings.current) }
+
+    static var searchesAniList: Bool {
+        isEnabled && bool(SettingsKey.aniListSearch, default: true)
+    }
+
+    static var hidesCinemetaDuplicates: Bool {
+        searchesAniList && bool(SettingsKey.aniListHideCinemetaDuplicates, default: false)
+    }
+
+    static var usesEpisodeDetails: Bool {
+        bool(SettingsKey.aniListEpisodeDetails, default: true)
+    }
+
+    static var showsAdult: Bool {
+        bool(SettingsKey.aniListAdult, default: false)
+    }
+
+    /// Asks Home to load its rows again after a change that adds or removes AniList rows.
+    static func notifyHomeChanged() {
+        NotificationCenter.default.post(name: TVHomeCatalogOrder.changedNotification, object: nil)
+        NotificationCenter.default.post(name: TVHomeCatalogOrder.snapshotChangedNotification, object: nil)
+    }
+
+    private static func bool(_ key: String, default value: Bool, in store: UserDefaults = ProfileSettings.current) -> Bool {
+        store.object(forKey: key) == nil ? value : store.bool(forKey: key)
+    }
+}

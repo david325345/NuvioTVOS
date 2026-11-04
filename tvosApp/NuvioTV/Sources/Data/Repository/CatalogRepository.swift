@@ -740,6 +740,7 @@ final class CinemetaCatalogRepository: CatalogRepository {
             ("series_rating", TVHomeCatalogOrder.catalogDisplayTitle("Top Rated", contentType: "series", showType: showType, addonName: Self.cinemetaDisplayName, customTitle: customTitles[TVHomeCatalogOrder.catalogSettingsKey(addonId: Self.cinemetaAddonId, contentType: "series", catalogId: "imdbRating")]), "series", "imdbRating")
         ]
         let homeVisibility = TVHomeCatalogOrder.homeVisibilityContext()
+        async let aniListRows = AniListService.homeCatalogs()
         let cinemetaManifestURL = baseURL.appendingPathComponent("manifest.json")
         let eligibleBuiltInIndices = Set(specs.indices.filter { index in
             let spec = specs[index]
@@ -811,6 +812,17 @@ final class CinemetaCatalogRepository: CatalogRepository {
             onUpdate?(catalogs)
         }
 
+        // Settings → Integrations → AniList: its rows, asked from this Apple TV while the
+        // rows above load, and published as soon as they are there.
+        let aniListCatalogs = await aniListRows
+        if !aniListCatalogs.isEmpty {
+            for catalog in aniListCatalogs {
+                cacheMetadata(catalog.items ?? [], context: metadataContext)
+            }
+            catalogs.append(contentsOf: aniListCatalogs)
+            onUpdate?(catalogs)
+        }
+
         // Retry only missing rows once after a short backoff. Successful rows
         // remain usable and are never discarded because a sibling host request
         // failed.
@@ -839,7 +851,7 @@ final class CinemetaCatalogRepository: CatalogRepository {
             try Task.checkCancellation()
         }
 
-        let retriedBuiltIns = builtInCatalogs() + (await simklPlanToWatchCatalogs())
+        let retriedBuiltIns = builtInCatalogs() + (await simklPlanToWatchCatalogs()) + aniListCatalogs
         if retriedBuiltIns.count != catalogs.count {
             catalogs = retriedBuiltIns
             onUpdate?(catalogs)
@@ -1213,6 +1225,12 @@ final class CinemetaCatalogRepository: CatalogRepository {
 
     private func loadMetadata(id: String, type: String, cachedIsSeriesHint: Bool? = nil) async throws -> NuvioMeta {
         let metadataContext = Self.metadataCacheContext
+        // Settings → Integrations → AniList: `anilist:` titles come straight from AniList,
+        // before add-ons that also serve them.
+        if AniListService.isAniListTitle(id), let aniListMeta = try await AniListService.metadata(id: id) {
+            cacheMetadata(aniListMeta, requestedID: id, context: metadataContext)
+            return aniListMeta
+        }
         // Query the correct endpoint based on the caller-provided type. The
         // Details screen uses a fresh repository (empty cache) so this always
         // fetches the full /meta payload — real episodes and per-episode ratings.
@@ -1910,6 +1928,8 @@ final class CinemetaCatalogRepository: CatalogRepository {
         guard !trimmed.isEmpty else {
             return CatalogSearchOutcome(results: [], isComplete: true)
         }
+        // Settings → Integrations → AniList: anime straight from AniList, beside the add-ons.
+        async let aniListSearch = AniListService.search(trimmed)
 
         struct SearchTarget {
             let addonName: String
@@ -1981,6 +2001,11 @@ final class CinemetaCatalogRepository: CatalogRepository {
 
         // Do not silently re-enable Cinemeta when the user explicitly disabled it.
         guard !targets.isEmpty else {
+            let aniListOnly = await aniListSearch
+            if !aniListOnly.items.isEmpty {
+                cacheMetadata(aniListOnly.items, context: metadataContext)
+                return CatalogSearchOutcome(results: aniListOnly.items, isComplete: missingManifestCount == 0)
+            }
             let isComplete = missingManifestCount == 0
             let reason: CatalogSearchReason
             if missingManifestCount > 0 {
@@ -2059,8 +2084,15 @@ final class CinemetaCatalogRepository: CatalogRepository {
         // Background enrichment (SearchResultEnrichment) handles artwork & TMDB localization
         // asynchronously for visible cards without blocking the search spinner.
         let failedTargetCount = targetResults.filter { !$0.succeeded }.count
-        let rawResults = targetResults.flatMap { $0.items }
-        let deduplicated = Self.deduplicatedSearchResults(rawResults)
+        let aniListResults = await aniListSearch
+        var addonResults = targetResults.flatMap { $0.items }
+        if AniListSettings.hidesCinemetaDuplicates, !aniListResults.items.isEmpty {
+            // Cinemeta's copy of an anime AniList found too.
+            addonResults.removeAll { $0.isFromAddon != true && aniListResults.matches($0) }
+        }
+        // AniList's cards keep their own id and nothing else: merging them with an add-on's
+        // copy would hand them its IMDb id.
+        let deduplicated = aniListResults.items + Self.deduplicatedSearchResults(addonResults)
         cacheMetadata(deduplicated, context: metadataContext)
         let isComplete = missingManifestCount == 0 && failedTargetCount == 0
         logCatalogSearchOutcome(
@@ -2360,6 +2392,11 @@ final class CinemetaCatalogRepository: CatalogRepository {
         genre: String?
     ) async throws -> CatalogPage {
         let metadataContext = Self.metadataCacheContext
+        if addonId == AniListService.addonID {
+            let page = await AniListService.browse(catalogId: catalogId, skip: skip, genre: genre)
+            cacheMetadata(page.items, context: metadataContext)
+            return page
+        }
         if addonId == "simkl" || (addonId == nil && catalogId == "plantowatch") {
             let allItems = await SimklLibraryService.fetchPlanToWatchItems(
                 type: contentType,

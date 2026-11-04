@@ -414,6 +414,8 @@ enum SettingsKey {
         tmdbUseTrailers, tmdbUseArtwork, tmdbUseBasicInfo, tmdbUseDetails, tmdbUseCredits,
         tmdbUseProductions, tmdbUseNetworks, tmdbUseEpisodes, tmdbUseSeasonPosters,
         tmdbUseMoreLikeThis, tmdbUseCollections, tmdbApplyToHome,
+        aniListEnabled, aniListTitleLanguage, aniListSeasonMode, aniListHomeRows, aniListSearch,
+        aniListHideCinemetaDuplicates, aniListEpisodeDetails, aniListAdult,
         mdbListEnabled, mdbListApiKey, mdbListUseImdb, mdbListUseTmdb,
         mdbListUseTomatoes, mdbListUseMetacritic, mdbListUseTrakt,
         mdbListUseLetterboxd, mdbListUseAudience,
@@ -4298,6 +4300,10 @@ private func layoutVisibleHomeCatalogRows() -> [TVHomeCatalogOrder.SnapshotRow] 
             if row.settingsKey?.hasPrefix("simkl_") == true { return false }
             if ["addon_simkl_movie_plantowatch", "addon_simkl_series_plantowatch", "simkl_plantowatch_movie", "simkl_plantowatch_series"].contains(row.id) { return false }
         }
+        if !AniListSettings.showsHomeRows {
+            if row.addonId == AniListService.addonID { return false }
+            if row.settingsKey?.hasPrefix(AniListService.addonID + "_") == true { return false }
+        }
         return true
     }
 
@@ -4364,6 +4370,26 @@ private func layoutVisibleHomeCatalogRows() -> [TVHomeCatalogOrder.SnapshotRow] 
                     addonId: "simkl",
                     contentType: row.type,
                     catalogId: row.catalogId,
+                    settingsKey: key
+                )
+            )
+        }
+    }
+
+    if AniListSettings.showsHomeRows {
+        // Settings → Integrations → AniList: its rows can be ordered and hidden like any other.
+        let existingIDs = Set(merged.map(\.id))
+        for row in AniListHomeRow.all where !existingIDs.contains(AniListService.catalogRowID(row)) {
+            let key = AniListService.catalogSettingsKey(row)
+            guard !deletedKeys.contains(AniListService.catalogRowID(row)), !deletedKeys.contains(key) else { continue }
+            merged.append(
+                TVHomeCatalogOrder.SnapshotRow(
+                    id: AniListService.catalogRowID(row),
+                    title: AniListService.catalogDisplayTitle(row),
+                    addonName: AniListService.addonName,
+                    addonId: AniListService.addonID,
+                    contentType: AniListService.homeContentType,
+                    catalogId: row.id,
                     settingsKey: key
                 )
             )
@@ -4446,6 +4472,8 @@ private struct IntegrationSettingsView: View {
     @State private var showingWeTrakrLogin = false
     @State private var showingWeTrakrSettings = false
     @State private var showingTmdbOptions = false
+    @State private var showingAniListOptions = false
+    @AppStorage(SettingsKey.aniListEnabled) private var aniListEnabled = false
     @State private var showingMdbListOptions = false
     @State private var showingAISubtitleOptions = false
     @State private var showingP2PConsent = false
@@ -4780,6 +4808,15 @@ private struct IntegrationSettingsView: View {
                 }
 
                 SettingsActionRow(
+                    title: L10n.string("settings_anilist_title", fallback: "AniList"),
+                    subtitle: L10n.string("settings_anilist_integration_subtitle", fallback: "Anime catalogs, search and details straight from AniList, with AniList ids for add-ons"),
+                    value: aniListEnabled ? L10n.string("tvos_common_on", fallback: "On") : L10n.string("settings_open", fallback: "Open"),
+                    accentColor: accentColor
+                ) {
+                    showingAniListOptions = true
+                }
+
+                SettingsActionRow(
                     title: L10n.string("settings_mdblist_ratings_title", fallback: "MDBList Ratings & Badges (API Key)"),
                     subtitle: L10n.string("tvos_settings_mdblist_integration_subtitle", fallback: "Get a free API key at mdblist.com/preferences for ratings and artwork badges"),
                     value: mdbListEnabled && mdbListHasApiKey ? L10n.string("tvos_common_on", fallback: "On") : L10n.string("settings_open", fallback: "Open"),
@@ -5019,6 +5056,10 @@ private struct IntegrationSettingsView: View {
             TmdbOptionsSheet(accentColor: accentColor)
                 .modifier(ClearPresentationBackgroundIfAvailable())
         }
+        .sheet(isPresented: $showingAniListOptions) {
+            AniListOptionsSheet(accentColor: accentColor)
+                .modifier(ClearPresentationBackgroundIfAvailable())
+        }
         .sheet(isPresented: $showingMdbListOptions) {
             MdbListOptionsSheet(accentColor: accentColor)
                 .modifier(ClearPresentationBackgroundIfAvailable())
@@ -5253,6 +5294,171 @@ private struct IntegrationSettingsView: View {
         if wetrakrViewModel.mode != .awaitingApproval {
             wetrakrViewModel.startLogin()
         }
+    }
+}
+
+/// Settings → Integrations → AniList.
+private struct AniListOptionsSheet: View {
+    let accentColor: Color
+
+    @AppStorage(SettingsKey.amoled) private var amoled = false
+    @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
+    @AppStorage(SettingsKey.aniListEnabled) private var enabled = false
+    @AppStorage(SettingsKey.aniListTitleLanguage) private var titleLanguage = AniListSettings.TitleLanguage.romaji.rawValue
+    @AppStorage(SettingsKey.aniListSeasonMode) private var seasonMode = AniListSettings.SeasonMode.merged.rawValue
+    @AppStorage(SettingsKey.aniListHomeRows) private var homeRows = true
+    @AppStorage(SettingsKey.aniListSearch) private var search = true
+    @AppStorage(SettingsKey.aniListHideCinemetaDuplicates) private var hideCinemetaDuplicates = false
+    @AppStorage(SettingsKey.aniListEpisodeDetails) private var episodeDetails = true
+    @AppStorage(SettingsKey.aniListAdult) private var adult = false
+    @State private var cacheCleared = false
+
+    var body: some View {
+        ZStack {
+            Color.nuvioBackground(amoled: amoled, body: bodyColor)
+                .ignoresSafeArea()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("AniList")
+                            .font(.system(size: 36, weight: .bold))
+                            .foregroundColor(.white)
+
+                        Text(L10n.string(
+                            "settings_anilist_header_subtitle",
+                            fallback: "Anime from AniList keep their AniList ids, so add-ons with the anilist prefix are asked with anilist:ID:episode, numbered as on AniList. No API key is needed."
+                        ))
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundColor(.white.opacity(0.62))
+                    }
+
+                    SettingsGroup(
+                        title: L10n.string("settings_anilist_setup_title", fallback: "AniList"),
+                        subtitle: L10n.string("settings_anilist_setup_subtitle", fallback: "Asked from this Apple TV, with answers kept for a while")
+                    ) {
+                        SettingsToggleRow(
+                            title: L10n.string("settings_anilist_enable", fallback: "Enable AniList"),
+                            subtitle: L10n.string("settings_anilist_enable_subtitle", fallback: "Catalogs, search and details of anime from AniList"),
+                            isOn: $enabled,
+                            accentColor: accentColor
+                        )
+                    }
+
+                    SettingsGroup(
+                        title: L10n.string("settings_anilist_section_titles", fallback: "Titles"),
+                        subtitle: L10n.string("settings_anilist_section_titles_subtitle", fallback: "How AniList titles are named and grouped")
+                    ) {
+                        SettingsChoiceRow(
+                            title: L10n.string("settings_anilist_title_language", fallback: "Title Language"),
+                            subtitle: L10n.string("settings_anilist_title_language_subtitle", fallback: "Romaji, English or the original Japanese title"),
+                            selection: labelBinding($titleLanguage, AniListSettings.TitleLanguage.allCases, \.label),
+                            options: AniListSettings.TitleLanguage.allCases.map(\.label),
+                            accentColor: accentColor
+                        )
+                        .opacity(enabled ? 1 : 0.46)
+                        .disabled(!enabled)
+
+                        SettingsChoiceRow(
+                            title: L10n.string("settings_anilist_seasons", fallback: "Seasons"),
+                            subtitle: L10n.string(
+                                "settings_anilist_seasons_subtitle",
+                                fallback: "One Title: a series with a tab per AniList entry. Each Entry: every season on its own, as on AniList. Progress is kept per choice."
+                            ),
+                            selection: labelBinding($seasonMode, AniListSettings.SeasonMode.allCases, \.label),
+                            options: AniListSettings.SeasonMode.allCases.map(\.label),
+                            accentColor: accentColor
+                        )
+                        .opacity(enabled ? 1 : 0.46)
+                        .disabled(!enabled)
+
+                        SettingsToggleRow(
+                            title: L10n.string("settings_anilist_episode_details", fallback: "Episode Titles and Pictures"),
+                            subtitle: L10n.string("settings_anilist_episode_details_subtitle", fallback: "From api.ani.zip, where AniList has none"),
+                            isOn: $episodeDetails,
+                            accentColor: accentColor,
+                            isAvailable: enabled
+                        )
+
+                        SettingsToggleRow(
+                            title: L10n.string("settings_anilist_adult", fallback: "Adult Titles"),
+                            subtitle: L10n.string("settings_anilist_adult_subtitle", fallback: "Show titles AniList marks as adult"),
+                            isOn: $adult,
+                            accentColor: accentColor,
+                            isAvailable: enabled
+                        )
+                    }
+
+                    SettingsGroup(
+                        title: L10n.string("settings_anilist_section_discover", fallback: "Home and Search"),
+                        subtitle: L10n.string("settings_anilist_section_discover_subtitle", fallback: "Order or hide each AniList row in Layout")
+                    ) {
+                        SettingsToggleRow(
+                            title: L10n.string("settings_anilist_home_rows", fallback: "AniList Rows on Home"),
+                            subtitle: L10n.string("settings_anilist_home_rows_subtitle", fallback: "Trending Now, Popular This Season, Upcoming Next Season, All-Time Popular and Top 100"),
+                            isOn: $homeRows,
+                            accentColor: accentColor,
+                            isAvailable: enabled
+                        )
+
+                        SettingsToggleRow(
+                            title: L10n.string("settings_anilist_search", fallback: "Search AniList"),
+                            subtitle: L10n.string("settings_anilist_search_subtitle", fallback: "Anime from AniList among the search results"),
+                            isOn: $search,
+                            accentColor: accentColor,
+                            isAvailable: enabled
+                        )
+
+                        SettingsToggleRow(
+                            title: L10n.string("settings_anilist_hide_duplicates", fallback: "Hide Cinemeta Duplicates"),
+                            subtitle: L10n.string("settings_anilist_hide_duplicates_subtitle", fallback: "Leave out Cinemeta's copy of an anime that AniList found too"),
+                            isOn: $hideCinemetaDuplicates,
+                            accentColor: accentColor,
+                            isAvailable: enabled && search
+                        )
+                    }
+
+                    SettingsGroup(
+                        title: L10n.string("settings_anilist_section_cache", fallback: "Saved Answers"),
+                        subtitle: L10n.string("settings_anilist_section_cache_subtitle", fallback: "Rows keep 6 hours, airing titles an hour, finished ones a week")
+                    ) {
+                        SettingsActionRow(
+                            title: L10n.string("settings_anilist_clear_cache", fallback: "Clear Saved Answers"),
+                            subtitle: L10n.string("settings_anilist_clear_cache_subtitle", fallback: "Ask AniList again for everything"),
+                            value: cacheCleared ? L10n.string("settings_anilist_cleared", fallback: "Cleared") : L10n.string("settings_anilist_clear", fallback: "Clear"),
+                            accentColor: accentColor
+                        ) {
+                            Task {
+                                await AniListService.clearCache()
+                                cacheCleared = true
+                                AniListSettings.notifyHomeChanged()
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 52)
+                .padding(.vertical, 38)
+            }
+        }
+        .onChange(of: enabled) { _, _ in AniListSettings.notifyHomeChanged() }
+        .onChange(of: homeRows) { _, _ in AniListSettings.notifyHomeChanged() }
+        .onChange(of: titleLanguage) { _, _ in AniListSettings.notifyHomeChanged() }
+        .onChange(of: adult) { _, _ in AniListSettings.notifyHomeChanged() }
+    }
+
+    private func labelBinding<Option: RawRepresentable>(
+        _ stored: Binding<String>,
+        _ options: [Option],
+        _ label: KeyPath<Option, String>
+    ) -> Binding<String> where Option.RawValue == String {
+        Binding(
+            get: { (options.first { $0.rawValue == stored.wrappedValue } ?? options[0])[keyPath: label] },
+            set: { newLabel in
+                if let option = options.first(where: { $0[keyPath: label] == newLabel }) {
+                    stored.wrappedValue = option.rawValue
+                }
+            }
+        )
     }
 }
 

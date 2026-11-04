@@ -515,8 +515,10 @@ class DetailsViewModel: ObservableObject {
         // Any cached catalog entry already has the title, artwork, rating, and description needed for frame 0,
         // allowing the details screen to appear immediately while full details and episode guides load in the background.
         var cachedHadImdbId = false
+        var cachedSeedID: String?
         if let cached = repository.cachedMetadata(for: id),
            !cached.name.isEmpty {
+            cachedSeedID = cached.id
             cachedHadImdbId = NuvioMeta.canonicalImdbID(from: cached.imdbId ?? "") != nil
                 || NuvioMeta.canonicalImdbID(from: cached.id) != nil
             uiState = DetailsUiState(
@@ -575,7 +577,10 @@ class DetailsViewModel: ObservableObject {
                     let metaHasImdbId = NuvioMeta.canonicalImdbID(from: meta.imdbId ?? "") != nil
                         || NuvioMeta.canonicalImdbID(from: meta.id) != nil
                     let needsEnrichmentRetry = !cachedHadImdbId && metaHasImdbId
-                    if self.enrichmentTask == nil || needsEnrichmentRetry {
+                    // An AniList card of a later season loads as the whole series, under the
+                    // first season's id: enrich that title, not the card.
+                    let titleChanged = cachedSeedID.map { $0 != meta.id } ?? false
+                    if self.enrichmentTask == nil || needsEnrichmentRetry || titleChanged {
                         if let enrichmentStarter = self.injectedEnrichmentStarter {
                             enrichmentStarter(meta, requestGeneration)
                         } else {
@@ -679,6 +684,20 @@ class DetailsViewModel: ObservableObject {
                 if self.detailsRequestGeneration == generation {
                     self.uiState.isLoadingEnrichment = false
                 }
+            }
+
+            // Settings → Integrations → AniList: characters and recommendations from AniList;
+            // TMDB, Trakt and Simkl know no AniList ids.
+            if AniListService.isAniListTitle(meta.id) {
+                let extras = await AniListService.extras(metaID: meta.id)
+                guard self.isCurrentRequest(metaId: meta.id, generation: generation) else { return }
+                if !extras.people.isEmpty {
+                    self.uiState.people = extras.people
+                }
+                if !extras.recommendations.isEmpty {
+                    self.uiState.moreLikeThis = extras.recommendations
+                }
+                return
             }
 
             let isSeries = meta.isSeries || NuvioMeta.isSeriesType(meta.type)

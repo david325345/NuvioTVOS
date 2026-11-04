@@ -10420,6 +10420,12 @@ enum TVHomeCatalogOrder {
                 return false
             }
         }
+        if row.addonId == AniListService.addonID
+            || (row.settingsKey?.hasPrefix(AniListService.addonID + "_") ?? false) {
+            if !AniListSettings.showsHomeRows {
+                return false
+            }
+        }
         if let addonId = row.addonId, disabledAddonIDs().contains(addonId) {
             return false
         }

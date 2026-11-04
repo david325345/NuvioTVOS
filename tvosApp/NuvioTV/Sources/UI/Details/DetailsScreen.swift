@@ -241,6 +241,7 @@ struct DetailsScreen: View {
                     libraryWatchedContext: libraryWatchedContext,
                     initialPlayRequestID: readyInitialPlaybackRequestID,
                     initialFocusEpisode: initialFocusEpisode,
+                    openedID: id,
                     onInitialPlayRequestConsumed: { requestID in
                         finishInitialPlaybackRequest(requestID)
                     },
@@ -4054,6 +4055,9 @@ struct TvDetailsContent: View {
     var libraryWatchedContext: LibraryWatchedContext? = nil
     var initialPlayRequestID: UInt? = nil
     var initialFocusEpisode: DetailsEpisodeFocus? = nil
+    /// The id the screen was opened with. An AniList card of a later season opens the whole
+    /// series on that season's tab.
+    var openedID: String? = nil
     var onInitialPlayRequestConsumed: ((UInt) -> Void)? = nil
     let onPlayClick: () -> Void
     var onPlayManually: (() -> Void)? = nil
@@ -4458,6 +4462,8 @@ struct TvDetailsContent: View {
                     onPersonClick: { person in
                         let clean = person.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                         guard !clean.isEmpty && clean != "cast" else { return }
+                        // AniList characters have no TMDB page to open.
+                        guard !AniListMetaBuilder.isAniListID(meta.id) else { return }
                         stopBackgroundTrailer(manual: false)
                         onOpenPerson?(person)
                     },
@@ -4491,31 +4497,25 @@ struct TvDetailsContent: View {
                 )
             }
         case .related:
-            if !uiState.moreLikeThis.isEmpty {
-                TvDetailsRelatedRow(
-                    title: L10n.string("settings_tmdb_module_more_like_this", fallback: "More Like This"),
-                    items: uiState.moreLikeThis,
-                    entryLocked: focusedDetailsSection != .related,
-                    onSelect: { item in
-                        stopBackgroundTrailer(manual: false)
-                        onOpenTitle?(item.id, item.type)
-                    },
-                    onBack: handleDetailsBack,
-                    onFocus: {
-                        if focusedDetailsSection != .related {
-                            focusedDetailsSection = .related
-                            withAnimation(.easeOut(duration: TvDetailsScrollTiming.duration)) {
-                                scrollProxy.scrollTo(TvDetailsScrollID.moreLikeThisSection, anchor: .top)
-                            }
-                        } else {
-                            var transaction = Transaction(animation: nil)
-                            transaction.disablesAnimations = true
-                            withTransaction(transaction) {
-                                scrollProxy.scrollTo(TvDetailsScrollID.moreLikeThisSection, anchor: .top)
-                            }
-                        }
+            if !relatedRowsAreEmpty(meta: meta) {
+                VStack(alignment: .leading, spacing: 34) {
+                    // Settings → Integrations → AniList: the title's OVAs, films and other
+                    // relations, above AniList's recommendations.
+                    if !AniListTitleIndex.related(metaID: meta.id).isEmpty {
+                        relatedTitlesRow(
+                            title: L10n.string("details_anilist_related", fallback: "Related"),
+                            items: AniListTitleIndex.related(metaID: meta.id),
+                            scrollProxy: scrollProxy
+                        )
                     }
-                )
+                    if !uiState.moreLikeThis.isEmpty {
+                        relatedTitlesRow(
+                            title: L10n.string("settings_tmdb_module_more_like_this", fallback: "More Like This"),
+                            items: uiState.moreLikeThis,
+                            scrollProxy: scrollProxy
+                        )
+                    }
+                }
                 .padding(.top, 34)
                 .id(TvDetailsScrollID.moreLikeThisSection)
                 .disabled(
@@ -4677,7 +4677,7 @@ struct TvDetailsContent: View {
             let episodePresentation = episodeCache.resolve(
                 meta: meta,
                 progressRevision: progressRevision,
-                focusEpisode: initialFocusEpisode,
+                focusEpisode: initialFocusEpisode ?? aniListTabFocus(for: meta),
                 libraryWatchedContext: libraryWatchedContext,
                 continueItemProvider: { currentContinueWatchingItem(for: meta) },
                 playTargetBuilder: { episodes, continueItem, watchedKeys in
@@ -5110,6 +5110,49 @@ struct TvDetailsContent: View {
         }
     }
 
+    /// The tab of the AniList entry the screen was opened with, unless there is progress to
+    /// resume, which picks its own episode.
+    private func aniListTabFocus(for meta: NuvioMeta) -> DetailsEpisodeFocus? {
+        guard let openedID,
+              openedID.caseInsensitiveCompare(meta.id) != .orderedSame,
+              let season = AniListTitleIndex.season(ofEntry: openedID, inMeta: meta.id),
+              season > 1,
+              currentContinueWatchingItem(for: meta) == nil else { return nil }
+        return DetailsEpisodeFocus(metaID: meta.id, season: season, episode: 1)
+    }
+
+    private func relatedRowsAreEmpty(meta: NuvioMeta?) -> Bool {
+        uiState.moreLikeThis.isEmpty
+            && AniListTitleIndex.related(metaID: meta?.id ?? "").isEmpty
+    }
+
+    private func relatedTitlesRow(title: String, items: [RelatedTitle], scrollProxy: ScrollViewProxy) -> some View {
+        TvDetailsRelatedRow(
+            title: title,
+            items: items,
+            entryLocked: focusedDetailsSection != .related,
+            onSelect: { item in
+                stopBackgroundTrailer(manual: false)
+                onOpenTitle?(item.id, item.type)
+            },
+            onBack: handleDetailsBack,
+            onFocus: {
+                if focusedDetailsSection != .related {
+                    focusedDetailsSection = .related
+                    withAnimation(.easeOut(duration: TvDetailsScrollTiming.duration)) {
+                        scrollProxy.scrollTo(TvDetailsScrollID.moreLikeThisSection, anchor: .top)
+                    }
+                } else {
+                    var transaction = Transaction(animation: nil)
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) {
+                        scrollProxy.scrollTo(TvDetailsScrollID.moreLikeThisSection, anchor: .top)
+                    }
+                }
+            }
+        )
+    }
+
     private var hasCastOrTrailer: Bool {
         guard let meta = uiState.meta else { return false }
         let hasPeople = !uiState.people.isEmpty
@@ -5134,7 +5177,7 @@ struct TvDetailsContent: View {
                     order.append(.cast)
                 }
             case .related:
-                if !uiState.moreLikeThis.isEmpty {
+                if !relatedRowsAreEmpty(meta: uiState.meta) {
                     order.append(.related)
                 }
             case .network:
@@ -8162,7 +8205,11 @@ private struct TvDetailsEpisodes: View {
     }
 
     private func seasonTitle(_ season: Int) -> String {
-        season <= 0 ? "Specials" : "Season \(season)"
+        // AniList titles name each tab after its AniList entry.
+        if let name = AniListTitleIndex.tabTitle(metaID: meta.id, season: season) {
+            return name
+        }
+        return season <= 0 ? "Specials" : "Season \(season)"
     }
 
     private func continueProgress(for video: NuvioVideo) -> Double? {
