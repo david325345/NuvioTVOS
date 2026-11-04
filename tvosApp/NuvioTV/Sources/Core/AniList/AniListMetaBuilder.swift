@@ -86,7 +86,7 @@ enum AniListMetaBuilder {
 
     static func contentType(_ media: AniListMedia) -> String { isMovie(media) ? "movie" : "series" }
 
-    static func isTab(_ media: AniListMedia) -> Bool { media.format.map(tabFormats.contains) ?? false }
+    static func isTab(_ media: AniListMedia) -> Bool { media.format.map { tabFormats.contains($0) } ?? false }
 
     static func year(_ media: AniListMedia) -> Int? { media.seasonYear ?? media.startDate?.year }
 
@@ -125,7 +125,7 @@ enum AniListMetaBuilder {
             type: contentType(media),
             year: year(media),
             genres: media.genres,
-            releaseInfo: year(media).map(String.init),
+            releaseInfo: year(media).map { String($0) },
             country: media.countryOfOrigin,
             language: "ja",
             status: status(media.status),
@@ -146,7 +146,7 @@ enum AniListMetaBuilder {
     }
 
     static func relatedTitle(_ media: AniListMedia, relation: String?, language: AniListSettings.TitleLanguage) -> RelatedTitle {
-        let label = [relation.flatMap(relationLabel) ?? formatLabel(media.format), year(media).map(String.init)]
+        let label = [relation.flatMap(relationLabel) ?? formatLabel(media.format), year(media).map { String($0) }]
             .compactMap { $0 }
             .joined(separator: " · ")
         return RelatedTitle(
@@ -311,15 +311,15 @@ enum AniListMetaBuilder {
         language: AniListSettings.TitleLanguage
     ) -> NuvioMeta? {
         guard let root = tabs.first else { return nil }
-        let isMovie = tabs.count == 1 && isMovie(root)
+        let isFilm = tabs.count == 1 && Self.isMovie(root)
         let last = tabs.last ?? root
-        let videos = isMovie ? nil : tabs.flatMap { episodes[$0.id] ?? [] }
+        let videos = isFilm ? nil : tabs.flatMap { episodes[$0.id] ?? [] }
 
         let startYear = year(root)
         let endYear = last.endDate?.year
         let releaseInfo: String?
         if let startYear {
-            if isMovie {
+            if isFilm {
                 releaseInfo = String(startYear)
             } else if last.status == "RELEASING" || last.status == "NOT_YET_RELEASED" {
                 releaseInfo = "\(startYear)–"
@@ -343,7 +343,7 @@ enum AniListMetaBuilder {
             description: plainText(root.description),
             posterUrl: root.coverImage?.extraLarge ?? root.coverImage?.large,
             backgroundUrl: root.bannerImage ?? tabs.lazy.compactMap(\.bannerImage).first,
-            type: isMovie ? "movie" : "series",
+            type: isFilm ? "movie" : "series",
             year: startYear,
             genres: root.genres,
             releaseInfo: releaseInfo,
