@@ -79,6 +79,20 @@ enum AniListSettings {
         bool(SettingsKey.aniListAdult, default: false)
     }
 
+    /// What Home and Search read from these settings. It is part of their source signatures, so
+    /// turning AniList on or changing what it shows reloads Home and drops cached search results.
+    static var sourceSignature: String {
+        guard isEnabled else { return "anilist:off" }
+        return [
+            "anilist:on",
+            showsHomeRows ? "rows" : "norows",
+            searchesAniList ? "search" : "nosearch",
+            hidesCinemetaDuplicates ? "dedupe" : "all",
+            titleLanguage.rawValue,
+            showsAdult ? "adult" : "safe",
+        ].joined(separator: ",")
+    }
+
     /// Asks Home to load its rows again after a change that adds or removes AniList rows.
     static func notifyHomeChanged() {
         NotificationCenter.default.post(name: TVHomeCatalogOrder.changedNotification, object: nil)

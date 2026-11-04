@@ -515,7 +515,8 @@ final class CinemetaCatalogRepository: CatalogRepository {
         [
             ProfileSettings.activeProfileID ?? "default",
             isCinemetaEnabled ? "1" : "0",
-            configuredStreamAddonManifestURLs.map(\.absoluteString).joined(separator: ",")
+            configuredStreamAddonManifestURLs.map(\.absoluteString).joined(separator: ","),
+            AniListSettings.sourceSignature
         ].joined(separator: "|")
     }
 
@@ -551,7 +552,7 @@ final class CinemetaCatalogRepository: CatalogRepository {
         }).sorted().joined(separator: "|")
         let explicitHomeKeys = visibility.explicitHomeKeys.sorted().joined(separator: ",")
         let showType = ProfileSettings.current.object(forKey: SettingsKey.homeCatalogShowType) as? Bool ?? true
-        return "cinemeta:\(cinemetaEnabled) simklPlan:\(simklPlanEnabled) urls:[\(urls)] disabled:[\(disabled)] disabledAddonIDs:[\(disabledAddonIDs)] disabledAddonNames:[\(disabledAddonNames)] deleted:[\(deleted)] order:[\(order)] customTitles:[\(customTitles)] folderSources:[\(folderSources)] explicitHome:[\(explicitHomeKeys)] showType:\(showType) metadata:[\(Self.metadataCacheContext)] homeTmdb:\(TmdbDetailsService.useHomeEnrichment)"
+        return "cinemeta:\(cinemetaEnabled) simklPlan:\(simklPlanEnabled) urls:[\(urls)] disabled:[\(disabled)] disabledAddonIDs:[\(disabledAddonIDs)] disabledAddonNames:[\(disabledAddonNames)] deleted:[\(deleted)] order:[\(order)] customTitles:[\(customTitles)] folderSources:[\(folderSources)] explicitHome:[\(explicitHomeKeys)] showType:\(showType) metadata:[\(Self.metadataCacheContext)] homeTmdb:\(TmdbDetailsService.useHomeEnrichment) \(AniListSettings.sourceSignature)"
     }
     private let baseURL = URL(string: "https://v3-cinemeta.strem.io")!
     private static var cachedMetaById: [String: NuvioMeta] = [:]

@@ -21,8 +21,16 @@ actor AniListClient {
     /// Longest wait for a free slot before an old answer, or an error, is returned instead.
     private static let longestWait: TimeInterval = 20
 
+    /// The last answer AniList gave, for the status in Settings → Integrations → AniList.
+    struct Status {
+        var lastSuccess: Date?
+        var lastFailure: Date?
+        var lastFailureMessage: String?
+    }
+
     private let session: URLSession
     private let cache: AniListDiskCache
+    private(set) var status = Status()
     private var sentAt: [Date] = []
     private var blockedUntil: Date?
     private var inFlight: [String: Task<Data, Error>] = [:]
@@ -72,8 +80,8 @@ actor AniListClient {
             var request = URLRequest(url: url)
             request.setValue("application/json", forHTTPHeaderField: "Accept")
             let (data, response) = try await session.data(for: request)
-            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            guard status == 200 else { throw ClientError.badResponse(status) }
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard code == 200 else { throw ClientError.badResponse(code) }
             cache.write(data, key: key)
             return data
         } catch {
@@ -90,6 +98,7 @@ actor AniListClient {
         do {
             try await waitForSlot()
         } catch {
+            noteFailure("Waiting for AniList's rate limit")
             if let stale = cache.read(key: key, maxAge: .infinity) { return stale }
             throw error
         }
@@ -105,17 +114,29 @@ actor AniListClient {
             let (data, response) = try await session.data(for: request)
             let http = response as? HTTPURLResponse
             noteLimits(from: http)
-            let status = http?.statusCode ?? 0
-            guard status == 200 else {
-                if status == 429 { throw ClientError.rateLimited }
-                throw ClientError.badResponse(status)
+            let code = http?.statusCode ?? 0
+            guard code == 200 else {
+                let snippet = String(data: data.prefix(240), encoding: .utf8) ?? ""
+                noteFailure("HTTP \(code) \(snippet)")
+                if code == 429 { throw ClientError.rateLimited }
+                throw ClientError.badResponse(code)
             }
+            status.lastSuccess = Date()
             cache.write(data, key: key)
             return data
         } catch {
+            // Bad answers are noted above with their body; this is the network failing.
+            if !(error is ClientError) {
+                noteFailure(error.localizedDescription)
+            }
             if let stale = cache.read(key: key, maxAge: .infinity) { return stale }
             throw error
         }
+    }
+
+    func noteFailure(_ message: String) {
+        status.lastFailure = Date()
+        status.lastFailureMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func waitForSlot() async throws {

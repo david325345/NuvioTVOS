@@ -5312,6 +5312,9 @@ private struct AniListOptionsSheet: View {
     @AppStorage(SettingsKey.aniListEpisodeDetails) private var episodeDetails = true
     @AppStorage(SettingsKey.aniListAdult) private var adult = false
     @State private var cacheCleared = false
+    @State private var statusText = ""
+    @State private var testResult: String?
+    @State private var testing = false
 
     var body: some View {
         ZStack {
@@ -5419,6 +5422,35 @@ private struct AniListOptionsSheet: View {
                     }
 
                     SettingsGroup(
+                        title: L10n.string("settings_anilist_section_status", fallback: "Status"),
+                        subtitle: L10n.string("settings_anilist_section_status_subtitle", fallback: "The last answer from AniList")
+                    ) {
+                        SettingsActionRow(
+                            title: L10n.string("settings_anilist_status", fallback: "AniList"),
+                            subtitle: statusText,
+                            value: L10n.string("settings_anilist_status_refresh", fallback: "Refresh"),
+                            accentColor: accentColor
+                        ) {
+                            Task { statusText = await AniListService.statusText() }
+                        }
+
+                        SettingsActionRow(
+                            title: L10n.string("settings_anilist_test", fallback: "Test Connection"),
+                            subtitle: testResult ?? L10n.string("settings_anilist_test_subtitle", fallback: "Search AniList for Frieren now, past the saved answers"),
+                            value: testing ? "…" : L10n.string("settings_anilist_test_action", fallback: "Test"),
+                            accentColor: accentColor
+                        ) {
+                            guard !testing else { return }
+                            testing = true
+                            Task {
+                                testResult = await AniListService.testConnection()
+                                statusText = await AniListService.statusText()
+                                testing = false
+                            }
+                        }
+                    }
+
+                    SettingsGroup(
                         title: L10n.string("settings_anilist_section_cache", fallback: "Saved Answers"),
                         subtitle: L10n.string("settings_anilist_section_cache_subtitle", fallback: "Rows keep 6 hours, airing titles an hour, finished ones a week")
                     ) {
@@ -5440,8 +5472,14 @@ private struct AniListOptionsSheet: View {
                 .padding(.vertical, 38)
             }
         }
-        .onChange(of: enabled) { _, _ in AniListSettings.notifyHomeChanged() }
+        .task { statusText = await AniListService.statusText() }
+        .onChange(of: enabled) { _, _ in
+            AniListSettings.notifyHomeChanged()
+            Task { statusText = await AniListService.statusText() }
+        }
         .onChange(of: homeRows) { _, _ in AniListSettings.notifyHomeChanged() }
+        .onChange(of: search) { _, _ in AniListSettings.notifyHomeChanged() }
+        .onChange(of: hideCinemetaDuplicates) { _, _ in AniListSettings.notifyHomeChanged() }
         .onChange(of: titleLanguage) { _, _ in AniListSettings.notifyHomeChanged() }
         .onChange(of: adult) { _, _ in AniListSettings.notifyHomeChanged() }
     }
