@@ -178,7 +178,11 @@ enum AniListService {
 
     static func matchKey(_ name: String) -> String {
         let folded = name.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil)
-        return String(folded.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }.map(Character.init))
+        var key = ""
+        for scalar in folded.unicodeScalars where CharacterSet.alphanumerics.contains(scalar) {
+            key.unicodeScalars.append(scalar)
+        }
+        return key
     }
 
     // MARK: Details
@@ -219,7 +223,7 @@ enum AniListService {
             await withTaskGroup(of: (Int, [String: AniZipEpisode]).self) { group in
                 for tab in tabs {
                     group.addTask {
-                        let episodes = await aniZipEpisodes(for: tab)
+                        let episodes = await Self.aniZipEpisodes(for: tab)
                         return (tab.id, episodes)
                     }
                 }
