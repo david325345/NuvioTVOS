@@ -1,0 +1,155 @@
+name: Stream List PR test build (fork)
+
+# Fork only, never part of the PR: builds an unsigned IPA of the Stream List
+# PR branch and runs its tests, plus the whole suite for comparison.
+on:
+  push:
+    branches: [stream-list-pr-test]
+  workflow_dispatch:
+
+jobs:
+  ipa:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Tuist
+        run: brew install tuist
+      - name: Make it a separate app (Nuvio Test)
+        # Its own bundle ID, name and App Group, so the test build installs next to the
+        # release app instead of replacing it. Only this job: the tests keep the real IDs.
+        run: |
+          set -euo pipefail
+          perl -pi -e 's/^let bundleID = "com\.pyksel\.nuviotvos"$/let bundleID = "com.pyksel.nuviotvos.test"/' tvosApp/Project.swift
+          grep -q '^let bundleID = "com.pyksel.nuviotvos.test"$' tvosApp/Project.swift
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Nuvio Test" tvosApp/NuvioTV/Info.plist
+          perl -pi -e 's/group\.com\.pyksel\.nuviotvos</group.com.pyksel.nuviotvos.test</' \
+            tvosApp/NuvioTV/NuvioTV.entitlements tvosApp/TopShelf/TopShelf.entitlements
+          echo "::notice::bundle com.pyksel.nuviotvos.test · Nuvio Test · group.com.pyksel.nuviotvos.test"
+      - name: Build unsigned IPA
+        run: |
+          set -o pipefail
+          report() {
+            grep -E "error: " build.log | grep -v "produced no further output" \
+              | sort -u | head -40 | while IFS= read -r line; do echo "::error::$line"; done
+          }
+          trap 'report' ERR
+          bash scripts/build-ipa.sh 2>&1 | tee build.log
+      - name: Embed the App Group entitlement (Top Shelf test)
+        # The unsigned IPA carries no entitlements at all, so a sideloader has no App Group to
+        # register and the Top Shelf extension never gets the app's rows. Fake-sign both
+        # binaries with just the App Group, which the sideloader reads when it re-signs.
+        run: |
+          set -euo pipefail
+          brew install ldid
+          work="$(mktemp -d)"
+          cp build-ipa/NuvioTV-unsigned.ipa "$work/in.ipa"
+          cd "$work"
+          unzip -q in.ipa
+          app="Payload/NuvioTV.app"
+          cat > groups.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>com.apple.security.application-groups</key>
+            <array>
+              <string>group.com.pyksel.nuviotvos.test</string>
+            </array>
+          </dict>
+          </plist>
+          PLIST
+          for appex in "$app"/PlugIns/*.appex; do
+            exe=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$appex/Info.plist")
+            ldid -Sgroups.plist "$appex/$exe"
+            echo "::notice::$(basename "$appex"): $(ldid -e "$appex/$exe" | tr -d '\n' | grep -o 'group\.[^<]*' || echo none)"
+          done
+          exe=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$app/Info.plist")
+          ldid -Sgroups.plist "$app/$exe"
+          echo "::notice::NuvioTV.app: $(ldid -e "$app/$exe" | tr -d '\n' | grep -o 'group\.[^<]*' || echo none)"
+          rm in.ipa
+          zip -qry out.ipa Payload
+          cp out.ipa "$GITHUB_WORKSPACE/build-ipa/NuvioTV-unsigned.ipa"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NuvioTest-stream-list-pr-unsigned-ipa
+          path: build-ipa/NuvioTV-unsigned.ipa
+          retention-days: 7
+
+  preview-tests:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Tuist
+        run: brew install tuist
+      - name: Generate Xcode project
+        run: tuist generate --path tvosApp --no-open
+      - name: Stream List and related tests
+        env:
+          NUVIO_TEST_ARTIFACTS: ${{ runner.temp }}/nuvio-tests
+          NUVIO_DERIVED_DATA: ${{ runner.temp }}/NuvioTVDerivedData
+        run: |
+          set -o pipefail
+          report() {
+            grep -E "error: |XCTAssert|failed \(" "$NUVIO_TEST_ARTIFACTS/xcodebuild.log" 2>/dev/null \
+              | grep -v "produced no further output" \
+              | sort -u | head -40 | while IFS= read -r line; do echo "::error::$line"; done
+          }
+          trap 'report' ERR
+          bash scripts/test-tvos.sh \
+            -only-testing:NuvioTVTests/StreamListStyleTests \
+            -only-testing:NuvioTVTests/PlayerControlsSettingsTests \
+            -only-testing:NuvioTVTests/SeekrTrickplayTests
+      - name: Stream List and related test results
+        if: always()
+        env:
+          NUVIO_TEST_ARTIFACTS: ${{ runner.temp }}/nuvio-tests
+        run: |
+          xcrun xcresulttool get test-results tests \
+            --path "$NUVIO_TEST_ARTIFACTS/Tests.xcresult" --format json > tests.json || exit 0
+          ruby -rjson -e '
+            def walk(node, suite, out)
+              name = node["name"].to_s
+              suite = name if node["nodeType"] == "Test Suite"
+              if node["nodeType"] == "Test Case" && ["StreamListStyleTests", "PlayerControlsSettingsTests", "SeekrTrickplayTests"].include?(suite)
+                out << ["#{suite}.#{name}", node["result"]]
+              end
+              (node["children"] || []).each { |child| walk(child, suite, out) }
+            end
+            out = []
+            JSON.parse(File.read("tests.json")).fetch("testNodes", []).each { |n| walk(n, nil, out) }
+            passed = out.count { |_, r| r == "Passed" }
+            puts "::notice::Stream List and related tests #{passed}/#{out.size} passed"
+            out.reject { |_, r| r == "Passed" }.each { |n, r| puts "::error::#{n}: #{r}" }
+          '
+
+  all-tests:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Tuist
+        run: brew install tuist
+      - name: Generate Xcode project
+        run: tuist generate --path tvosApp --no-open
+      - name: Whole test suite
+        env:
+          NUVIO_TEST_ARTIFACTS: ${{ runner.temp }}/nuvio-tests
+          NUVIO_DERIVED_DATA: ${{ runner.temp }}/NuvioTVDerivedData
+        run: |
+          set -o pipefail
+          report() {
+            grep -E "error: |XCTAssert|failed \(" "$NUVIO_TEST_ARTIFACTS/xcodebuild.log" 2>/dev/null \
+              | grep -v "produced no further output" \
+              | sort -u | head -60 | while IFS= read -r line; do echo "::error::$line"; done
+          }
+          trap 'report' ERR
+          bash scripts/test-tvos.sh
