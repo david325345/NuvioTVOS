@@ -1555,6 +1555,14 @@ struct PosterGridCard: View {
             .overlay(alignment: .topTrailing) {
                 WatchedCheckmarkBadge(meta: meta)
             }
+            .overlay(alignment: .bottomTrailing) {
+                // Settings → Integrations → AniList: tells AniList's results from the add-ons'
+                // copies of the same anime in Search.
+                if customPosterScreen == .search, AniListMetaBuilder.isAniListID(meta.id) {
+                    CollectionOriginBadge(origin: AniListService.searchBadge)
+                        .padding(10)
+                }
+            }
             .overlay(
                 shape.stroke(
                     showsFocusedAppearance ? AppFocusOutline.color : .clear,

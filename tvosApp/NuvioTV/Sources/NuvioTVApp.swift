@@ -8142,6 +8142,12 @@ struct TVHomeView: View {
                 collectionSections: collectionSections,
                 resetFocusIfEmpty: isColdStart
             )
+            if AniListSettings.isEnabled {
+                // Settings → Integrations → AniList → Status: the rows that reached Home.
+                AniListDiagnostics.noteHomeOnScreen(rows: store.sections.filter {
+                    $0.addonId == AniListService.addonID && !$0.isLoadingPlaceholder && !$0.items.isEmpty
+                }.count)
+            }
             store.finishLoad(generation, for: identity)
             lastLoadedInputSignature = inputSignature
             refreshWatchedTitles()
@@ -8659,6 +8665,13 @@ struct TVHomeView: View {
     /// `focusedMeta` (hero) and the pending focus target without stalling `@MainActor`.
     @MainActor
     private func enrichSettledCatalogMeta(_ settledMeta: NuvioMeta, in sectionId: String) {
+        // Settings → Integrations → AniList: an AniList card already has its description and
+        // rating. Its full details would cost AniList requests on every focus, so only its
+        // background and logo are asked, from ani.zip.
+        if AniListMetaBuilder.isAniListID(settledMeta.id) {
+            enrichAniListHero(settledMeta, in: sectionId)
+            return
+        }
         let metadataContext = CinemetaCatalogRepository.metadataCacheContext
         let enrichmentKey = "\(metadataContext)\u{1f}\(settledMeta.type.lowercased())\u{1f}\(settledMeta.id)"
         if let cached = focusWork.enrichedHeroMetadata[enrichmentKey] {
@@ -8702,6 +8715,37 @@ struct TVHomeView: View {
             focusWork.pendingFocusedMeta = merged
             TVHomeDebugTrace.log("hero.enrich published merged hero item=\(settledMeta.id)")
         }
+    }
+
+    @MainActor
+    private func enrichAniListHero(_ settledMeta: NuvioMeta, in sectionId: String) {
+        let metadataContext = CinemetaCatalogRepository.metadataCacheContext
+        let enrichmentKey = "\(metadataContext)\u{1f}anilist\u{1f}\(settledMeta.id)"
+        if let cached = focusWork.enrichedHeroMetadata[enrichmentKey] {
+            publishAniListHero(cached, for: settledMeta, in: sectionId)
+            return
+        }
+        focusWork.heroEnrichmentTask?.cancel()
+        focusWork.heroEnrichmentTask = Task { @MainActor in
+            guard let artwork = await AniListService.heroArtwork(for: settledMeta),
+                  !Task.isCancelled,
+                  metadataContext == CinemetaCatalogRepository.metadataCacheContext else { return }
+            let hero = AniListMetaBuilder.applying(artwork, to: settledMeta)
+            focusWork.enrichedHeroMetadata[enrichmentKey] = hero
+            publishAniListHero(hero, for: settledMeta, in: sectionId)
+        }
+    }
+
+    @MainActor
+    private func publishAniListHero(_ hero: NuvioMeta, for settledMeta: NuvioMeta, in sectionId: String) {
+        guard focusWork.pendingFocusedMeta?.id == settledMeta.id,
+              focusWork.pendingSectionId == sectionId,
+              focusWork.pendingFocusedFolder == nil else {
+            return
+        }
+        focusedMeta = hero
+        focusWork.pendingFocusedMeta = hero
+        TVHomeDebugTrace.log("hero.enrich published AniList artwork item=\(settledMeta.id)")
     }
 
     @MainActor

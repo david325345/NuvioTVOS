@@ -182,6 +182,72 @@ struct AniZipEpisode: Decodable, Hashable {
     }
 }
 
+/// One picture of the whole series from api.ani.zip, taken from TheTVDB: "Fanart" (16:9),
+/// "Clearlogo", "Poster" or "Banner".
+struct AniZipImage: Decodable, Hashable {
+    var coverType: String? = nil
+    var url: String? = nil
+}
+
+/// The other ids api.ani.zip knows for an AniList entry. Only TMDB's is read, to find pictures
+/// of a film by id; streams and progress keep the AniList id.
+struct AniZipMappings: Decodable, Hashable {
+    var themoviedbID: Int? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case themoviedbID = "themoviedb_id"
+    }
+
+    init(themoviedbID: Int? = nil) {
+        self.themoviedbID = themoviedbID
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        // A number, or the same number as text.
+        if let number = try? container.decode(Int.self, forKey: .themoviedbID) {
+            themoviedbID = number
+        } else if let text = try? container.decode(String.self, forKey: .themoviedbID) {
+            themoviedbID = Int(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+    }
+}
+
 struct AniZipMappingsResponse: Decodable {
     var episodes: [String: AniZipEpisode]? = nil
+    var images: [AniZipImage]? = nil
+    var mappings: AniZipMappings? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case episodes, images, mappings
+    }
+
+    init(episodes: [String: AniZipEpisode]? = nil, images: [AniZipImage]? = nil, mappings: AniZipMappings? = nil) {
+        self.episodes = episodes
+        self.images = images
+        self.mappings = mappings
+    }
+
+    /// A part ani.zip answers differently from what is expected costs only that part.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        episodes = try? container.decodeIfPresent([String: AniZipEpisode].self, forKey: .episodes)
+        images = try? container.decodeIfPresent([AniZipImage].self, forKey: .images)
+        mappings = try? container.decodeIfPresent(AniZipMappings.self, forKey: .mappings)
+    }
+
+    /// The first picture of a kind, as an https address.
+    func image(_ coverType: String) -> String? {
+        for image in images ?? [] where image.coverType?.caseInsensitiveCompare(coverType) == .orderedSame {
+            guard let url = image.url?.trimmingCharacters(in: .whitespacesAndNewlines), !url.isEmpty else { continue }
+            return url.hasPrefix("http://") ? "https://" + url.dropFirst("http://".count) : url
+        }
+        return nil
+    }
+
+    /// TheTVDB's 16:9 background, which AniList doesn't have (its banner is a thin strip).
+    var fanart: String? { image("Fanart") }
+
+    /// TheTVDB's title logo.
+    var clearLogo: String? { image("Clearlogo") }
 }
