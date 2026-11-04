@@ -69,8 +69,14 @@ enum AniListService {
 
         guard let data = try? await AniListClient.shared.query(
             AniListQueries.homeRows(rows), variables: variables, ttl: catalogTTL
-        ),
-            let pages = try? decoder.decode(AniListAliasedPagesResponse.self, from: data).data else {
+        ) else {
+            return []
+        }
+        let pages: [String: AniListPage]
+        do {
+            pages = try decoder.decode(AniListAliasedPagesResponse.self, from: data).data ?? [:]
+        } catch {
+            await AniListClient.shared.noteFailure("Unreadable Home answer: \(error)")
             return []
         }
 
@@ -160,8 +166,14 @@ enum AniListService {
                   AniListQueries.search,
                   variables: ["search": trimmed, "perPage": 30, "isAdult": isAdultVariable],
                   ttl: searchTTL
-              ),
-              let media = try? decoder.decode(AniListPageResponse.self, from: data).data?.Page?.media else {
+              ) else {
+            return .empty
+        }
+        let media: [AniListMedia]
+        do {
+            media = try decoder.decode(AniListPageResponse.self, from: data).data?.Page?.media ?? []
+        } catch {
+            await AniListClient.shared.noteFailure("Unreadable search answer: \(error)")
             return .empty
         }
         let language = AniListSettings.titleLanguage
@@ -297,6 +309,40 @@ enum AniListService {
 
     static func clearCache() async {
         await AniListClient.shared.clearCache()
+    }
+
+    /// Asks AniList for "Frieren" right now, past the saved answers: "OK · 5 results" or why not.
+    static func testConnection() async -> String {
+        let variables: [String: Any?] = ["search": "Frieren", "perPage": 5, "isAdult": false]
+        do {
+            let data = try await AniListClient.shared.query(AniListQueries.search, variables: variables, ttl: 0)
+            let media = try decoder.decode(AniListPageResponse.self, from: data).data?.Page?.media ?? []
+            return media.isEmpty ? "AniList answered with no results" : "OK · \(media.count) results"
+        } catch let error as DecodingError {
+            let message = "Unreadable answer: \(error)"
+            await AniListClient.shared.noteFailure(message)
+            return message
+        } catch {
+            let status = await AniListClient.shared.status
+            return status.lastFailureMessage ?? error.localizedDescription
+        }
+    }
+
+    /// The service's own view, for Settings: is it on, and the last answer from AniList.
+    static func statusText() async -> String {
+        guard AniListSettings.isEnabled else { return "Off" }
+        let status = await AniListClient.shared.status
+        let time = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .short)
+        func at(_ date: Date) -> String {
+            DateFormatter.localizedString(from: date, dateStyle: .none, timeStyle: .short)
+        }
+        if let failure = status.lastFailure, failure > (status.lastSuccess ?? .distantPast) {
+            return "Error at \(at(failure)): \(status.lastFailureMessage ?? "unknown")"
+        }
+        if let success = status.lastSuccess {
+            return "OK · last answer at \(at(success))"
+        }
+        return "On · no request yet (\(time))"
     }
 }
 
