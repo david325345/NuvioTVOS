@@ -9467,6 +9467,9 @@ private struct TvStreamFilterButton: View {
 /// The stream list as `style` draws it, with sample streams, for the Stream List editor in
 /// Settings: the whole screen at 1920 × 1080 (summary, filters, episode line, cards), scaled to
 /// `width`. Nothing in it takes the focus; the first card is drawn as focused.
+///
+/// It draws plain translucent fills where the picker uses Liquid Glass: glass ignores
+/// `scaleEffect` and would cover the whole preview.
 struct StreamListPreview: View {
     let style: StreamListStyle
     let showAddonLogo: Bool
@@ -9475,32 +9478,35 @@ struct StreamListPreview: View {
     @FocusState private var focus: String?
 
     private static let canvas = CGSize(width: 1920, height: 1080)
+    private static let title = "Breaking Bad"
+    private static let episodeLine = "Season 5 · Episode 14"
+    private static let episodeTitle = "Ozymandias"
 
     static let samples: [NuvioStream] = [
         NuvioStream(
             url: "https://preview.invalid/1.mkv",
-            name: "AIOStreams [TB+]\n2160p · HDR10 · WEB-DL · Dual Audio · Multi Subs",
-            description: "Sousou.no.Frieren.S01E05.Phantoms.of.the.Dead.2160p.CR.WEB-DL.DUAL.AAC2.0.H.265-VARYG.mkv\nQuality: WEB-DL · 2160p · HDR10\nCodec: HEVC 10bit · AAC 2.0\nAudio: Japanese, English\nSubtitles: English, Spanish, Portuguese, French, German, Italian, Arabic, Russian\nSize: 2.9 GB · Cached\nSource: Nyaa · Group: VARYG",
-            addonName: "AIOStreams",
-            videoSize: 2_900_000_000),
+            name: "Torrentio\n1080p",
+            description: "Breaking.Bad.S05E14.Ozymandias.1080p.BluRay.REMUX.AVC.DTS-HD.MA.5.1\n👤 188 💾 27.9 GB ⚙️ ThePirateBay\n🇬🇧 / 🇪🇸 / 🇫🇷 / 🇩🇪 / 🇮🇹",
+            addonName: "Torrentio",
+            videoSize: 27_900_000_000),
         NuvioStream(
             url: "https://preview.invalid/2.mkv",
-            name: "NimeToDex\n1080p · BD",
-            description: "[Judas] Sousou no Frieren - S01E05 (BD 1080p HEVC x265 10bit Dual-Audio) [Multi-Subs].mkv\nSize: 1.6 GB · Seeds: 214",
-            addonName: "NimeToDex",
-            videoSize: 1_600_000_000),
+            name: "Torrentio\n1080p",
+            description: "Breaking.Bad.S05E14.Ozymandias.1080p.BluRay.x265.10bit.AAC.5.1\n👤 96 💾 1.9 GB ⚙️ 1337x",
+            addonName: "Torrentio",
+            videoSize: 1_900_000_000),
         NuvioStream(
             url: "https://preview.invalid/3.mkv",
-            name: "Torrentio\n1080p",
-            description: "[Erai-raws] Sousou no Frieren - 05 [1080p CR WEB-DL AVC AAC][MultiSub][ENG][POR-BR][SPA-LA][SPA][ARA][FRE][GER][ITA][RUS].mkv\nSeeds: 86 · Size: 1.3 GB",
+            name: "Torrentio\n720p",
+            description: "Breaking.Bad.S05E14.720p.BluRay.x264\n👤 54 💾 1.1 GB ⚙️ EZTV",
             addonName: "Torrentio",
-            videoSize: 1_300_000_000),
+            videoSize: 1_100_000_000),
         NuvioStream(
             url: "https://preview.invalid/4.mkv",
-            name: "Usenet Direct\n1080p",
-            description: "Sousou.no.Frieren.S01E05.1080p.NF.WEB-DL.AAC2.0.H.264-VARYG\nSize: 1.4 GB",
-            addonName: "Usenet Direct",
-            videoSize: 1_400_000_000),
+            name: "Torrentio\n480p",
+            description: "Breaking Bad S05E14 Ozymandias 480p WEB-DL x264\n👤 21 💾 350 MB ⚙️ TorrentGalaxy",
+            addonName: "Torrentio",
+            videoSize: 350_000_000),
     ]
 
     var body: some View {
@@ -9512,9 +9518,10 @@ struct StreamListPreview: View {
             showAddonLogo: showAddonLogo, badgePlacement: settings.badgePlacement)
         let panelTop = (Self.canvas.height - layout.stackHeight) / 2
         let panelLeft = Self.canvas.width - 64 - layout.panelWidth
+        let panelShape = RoundedRectangle(cornerRadius: 32, style: .continuous)
 
         ZStack(alignment: .topLeading) {
-            Color(red: 0.06, green: 0.08, blue: 0.11)
+            backdrop
 
             if layout.showsSummary {
                 summary(width: layout.summaryWidth)
@@ -9531,6 +9538,8 @@ struct StreamListPreview: View {
                         .frame(height: StreamListStyle.headerHeight)
                 }
 
+                // The picker scrolls; here the cards keep their own height and the panel cuts
+                // them off, so they never squeeze into each other.
                 VStack(spacing: style.metrics.cardSpacing) {
                     ForEach(Array(Self.samples.enumerated()), id: \.offset) { index, stream in
                         TvStreamCard(
@@ -9543,14 +9552,13 @@ struct StreamListPreview: View {
                         )
                     }
                 }
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(style.metrics.panelPadding)
                 .frame(width: layout.panelWidth, height: layout.panelHeight, alignment: .top)
-                .modifier(TvStreamGlass(shape: RoundedRectangle(cornerRadius: 32, style: .continuous), tint: Color.black.opacity(0.22)))
-                .clipShape(RoundedRectangle(cornerRadius: 32, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 32, style: .continuous)
-                        .stroke(Color.white.opacity(0.10), lineWidth: 1)
-                )
+                .background(Color.black.opacity(0.22), in: panelShape)
+                .background(Color.white.opacity(0.07), in: panelShape)
+                .clipShape(panelShape)
+                .overlay(panelShape.stroke(Color.white.opacity(0.12), lineWidth: 1))
             }
             .frame(width: layout.panelWidth, alignment: .topLeading)
             .offset(x: panelLeft, y: panelTop)
@@ -9567,18 +9575,34 @@ struct StreamListPreview: View {
         )
     }
 
+    /// In place of the title's backdrop: a warm, dark gradient under the same dimming.
+    private var backdrop: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(red: 0.36, green: 0.27, blue: 0.14),
+                    Color(red: 0.16, green: 0.13, blue: 0.10),
+                    Color(red: 0.05, green: 0.06, blue: 0.08),
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            Color.black.opacity(0.55)
+        }
+    }
+
     private func summary(width: CGFloat) -> some View {
         VStack(spacing: 30) {
-            Text("Frieren")
+            Text(Self.title)
                 .font(.appFont(size: 58, weight: .bold))
                 .foregroundColor(.white)
                 .lineLimit(2)
                 .minimumScaleFactor(0.6)
             VStack(spacing: 12) {
-                Text("Season 1 · Episode 5")
+                Text(Self.episodeLine)
                     .font(.system(size: 36, weight: .semibold))
                     .foregroundColor(.white)
-                Text("Phantoms of the Dead")
+                Text(Self.episodeTitle)
                     .font(.system(size: 30, weight: .regular))
                     .foregroundColor(.white.opacity(0.7))
             }
@@ -9589,7 +9613,7 @@ struct StreamListPreview: View {
 
     private var header: some View {
         HStack(spacing: 36) {
-            Text("Frieren")
+            Text(Self.title)
                 .font(.appFont(size: 52, weight: .bold))
                 .foregroundColor(.white)
             Rectangle()
@@ -9597,15 +9621,15 @@ struct StreamListPreview: View {
                 .frame(width: 2, height: 72)
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 0) {
-                    Text("Season 1 · Episode 5")
+                    Text(Self.episodeLine)
                         .font(.system(size: 34, weight: .semibold))
                         .foregroundColor(.white)
-                    Text("  ·  Phantoms of the Dead")
+                    Text("  ·  \(Self.episodeTitle)")
                         .font(.system(size: 34, weight: .regular))
                         .foregroundColor(.white.opacity(0.75))
                 }
                 .lineLimit(1)
-                Text("Adventure  •  Fantasy  •  2023")
+                Text("Crime  •  Drama  •  Thriller  •  2013")
                     .font(.system(size: 24, weight: .medium))
                     .foregroundColor(.white.opacity(0.6))
             }
@@ -9616,13 +9640,16 @@ struct StreamListPreview: View {
 
     private var filters: some View {
         HStack(spacing: 18) {
-            ForEach(["All", "AIOStreams", "NimeToDex", "Torrentio", "Usenet Direct"], id: \.self) { name in
+            ForEach(["All", "Torrentio"], id: \.self) { name in
+                let selected = name == "All"
                 Text(name)
                     .font(.system(size: 26, weight: .medium))
-                    .foregroundColor(name == "All" ? .black : .white)
+                    .foregroundColor(selected ? .black : .white)
                     .padding(.horizontal, 26)
                     .frame(height: 58)
-                    .modifier(TvDetailsGlassBackground(filled: name == "All", shape: Capsule()))
+                    .background(
+                        Capsule().fill(selected ? Color.white.opacity(0.96) : Color.white.opacity(0.12))
+                    )
             }
             Spacer(minLength: 0)
         }
