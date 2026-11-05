@@ -189,17 +189,20 @@ struct AniZipImage: Decodable, Hashable {
     var url: String? = nil
 }
 
-/// The other ids api.ani.zip knows for an AniList entry. Only TMDB's is read, to find pictures
-/// of a film by id; streams and progress keep the AniList id.
+/// The other ids api.ani.zip knows for an AniList entry. They are read only to find pictures of
+/// the title (TMDB by id, Metahub by IMDb id); streams and progress keep the AniList id.
 struct AniZipMappings: Decodable, Hashable {
     var themoviedbID: Int? = nil
+    var imdbID: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case themoviedbID = "themoviedb_id"
+        case imdbID = "imdb_id"
     }
 
-    init(themoviedbID: Int? = nil) {
+    init(themoviedbID: Int? = nil, imdbID: String? = nil) {
         self.themoviedbID = themoviedbID
+        self.imdbID = imdbID
     }
 
     init(from decoder: Decoder) throws {
@@ -209,6 +212,13 @@ struct AniZipMappings: Decodable, Hashable {
             themoviedbID = number
         } else if let text = try? container.decode(String.self, forKey: .themoviedbID) {
             themoviedbID = Int(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        // Only a whole IMDb id ("tt" and digits) is kept.
+        if let text = try? container.decode(String.self, forKey: .imdbID) {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if trimmed.hasPrefix("tt"), trimmed.count > 2, trimmed.dropFirst(2).allSatisfy(\.isNumber) {
+                imdbID = trimmed
+            }
         }
     }
 }

@@ -364,6 +364,18 @@ final class AniListTests: XCTestCase {
         XCTAssertEqual(numeric.mappings?.themoviedbID, 129)
     }
 
+    func testOnlyAWholeIMDbIDLeadsToMetahub() throws {
+        let mapped = try decoder.decode(AniZipMappings.self, from: Data(#"{"imdb_id":" TT5370118 "}"#.utf8))
+        XCTAssertEqual(mapped.imdbID, "tt5370118")
+        XCTAssertNil(try decoder.decode(AniZipMappings.self, from: Data(#"{"imdb_id":"tt"}"#.utf8)).imdbID)
+        XCTAssertNil(try decoder.decode(AniZipMappings.self, from: Data(#"{"imdb_id":null}"#.utf8)).imdbID)
+
+        let metahub = try XCTUnwrap(AniListService.metahubArtwork(imdbID: "tt5370118"))
+        XCTAssertEqual(metahub.logo.absoluteString, "https://images.metahub.space/logo/medium/tt5370118/img")
+        XCTAssertEqual(metahub.background.absoluteString, "https://images.metahub.space/background/medium/tt5370118/img")
+        XCTAssertNil(AniListService.metahubArtwork(imdbID: "anilist:21202"))
+    }
+
     func testAnOddPartOfAniZipCostsOnlyThatPart() throws {
         let json = #"{"episodes":{"1":{"title":{"en":"The Squad"}}},"images":"none","mappings":[1]}"#
         let response = try decoder.decode(AniZipMappingsResponse.self, from: Data(json.utf8))
