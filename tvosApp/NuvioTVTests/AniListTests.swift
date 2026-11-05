@@ -468,6 +468,14 @@ final class AniListTests: XCTestCase {
         XCTAssertNil(AniListService.armIMDbID(in: Data(#"{"imdb":"21209876"}"#.utf8)))
     }
 
+    func testACardCarriesItsYouTubeTrailerForTheHero() {
+        let onYouTube = AniListMedia(id: 7, type: "ANIME", format: "TV", trailer: AniListTrailer(id: " dQw4w9WgXcQ ", site: "youtube"))
+        XCTAssertEqual(AniListMetaBuilder.card(onYouTube, language: .romaji).trailerYtIds, ["dQw4w9WgXcQ"])
+        let onDailymotion = AniListMedia(id: 8, type: "ANIME", format: "TV", trailer: AniListTrailer(id: "x7abc", site: "dailymotion"))
+        XCTAssertNil(AniListMetaBuilder.card(onDailymotion, language: .romaji).trailerYtIds)
+        XCTAssertNil(AniListMetaBuilder.card(AniListMedia(id: 9, type: "ANIME", format: "TV"), language: .romaji).trailerYtIds)
+    }
+
     func testTheHeroNamesTheSeasonUnderTheSeriesLogo() throws {
         let card = AniListMetaBuilder.card(try XCTUnwrap(try entries()[102]), language: .romaji)
         XCTAssertEqual(AniListMetaBuilder.nameUnderLogo(card), card.name)

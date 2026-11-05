@@ -129,8 +129,16 @@ enum AniListMetaBuilder {
             country: media.countryOfOrigin,
             language: "ja",
             status: status(media.status),
+            trailerYtIds: youTubeTrailer(media).map { [$0] },
             externalRatings: rating(media).map { [$0] }
         )
+    }
+
+    /// An entry's trailer when it is on YouTube, which Nuvio plays; Dailymotion's are left out.
+    static func youTubeTrailer(_ media: AniListMedia) -> String? {
+        guard media.trailer?.site?.lowercased() == "youtube",
+              let id = media.trailer?.id?.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty else { return nil }
+        return id
     }
 
     /// The name shown under the logo of an AniList title: its logo is the series', so it can't
@@ -443,10 +451,7 @@ enum AniListMetaBuilder {
             releaseInfo = nil
         }
 
-        let trailer = tabs.compactMap { media -> String? in
-            guard media.trailer?.site?.lowercased() == "youtube", let id = media.trailer?.id, !id.isEmpty else { return nil }
-            return id
-        }
+        let trailer = tabs.compactMap(youTubeTrailer)
 
         return NuvioMeta(
             id: metaID(root.id),
