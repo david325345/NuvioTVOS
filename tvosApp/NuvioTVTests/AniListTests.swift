@@ -271,7 +271,44 @@ final class AniListTests: XCTestCase {
         XCTAssertEqual(AniListClient.cacheKey(for: first), AniListClient.cacheKey(for: second))
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: first) as? [String: Any])
         let variables = try XCTUnwrap(json["variables"] as? [String: Any])
-        XCTAssertTrue(variables["a"] is NSNull)
+        XCTAssertNil(variables["a"])
+        XCTAssertEqual(variables["b"] as? Int, 2)
+    }
+
+    /// AniList reads `isAdult: null` as a filter that finds nothing, so "no filter" leaves the
+    /// variable out, even when it arrives as an optional inside `Any?`.
+    func testVariablesWithoutAValueAreLeftOut() throws {
+        let showAdult: Bool? = nil
+        let hideAdult: Bool? = false
+        let season: String? = nil
+        let body = try AniListClient.body(
+            query: "query",
+            variables: ["isAdult": showAdult, "season": season, "genre": nil, "perPage": 30]
+        )
+        let variables = try XCTUnwrap((JSONSerialization.jsonObject(with: body) as? [String: Any])?["variables"] as? [String: Any])
+        XCTAssertEqual(Set(variables.keys), ["perPage"])
+
+        let hidden = try AniListClient.body(query: "query", variables: ["isAdult": hideAdult])
+        let hiddenVariables = try XCTUnwrap((JSONSerialization.jsonObject(with: hidden) as? [String: Any])?["variables"] as? [String: Any])
+        XCTAssertEqual(hiddenVariables["isAdult"] as? Bool, false)
+        XCTAssertTrue(String(decoding: hidden, as: UTF8.self).contains("\"isAdult\":false"))
+    }
+
+    func testAnErrorAniListSendsAs200IsRecognised() {
+        let onlyError = Data(#"{"errors":[{"message":"Max query complexity exceeded","status":400}],"data":null}"#.utf8)
+        XCTAssertEqual(AniListClient.errorMessage(in: onlyError), "Max query complexity exceeded")
+        XCTAssertFalse(AniListClient.hasData(onlyError))
+
+        let partial = Data(#"{"errors":[{"message":"One page failed"}],"data":{"trending":{"media":[]},"top":null}}"#.utf8)
+        XCTAssertEqual(AniListClient.errorMessage(in: partial), "One page failed")
+        XCTAssertTrue(AniListClient.hasData(partial))
+
+        let fine = Data(#"{"data":{"Page":{"media":[{"id":1}]}}}"#.utf8)
+        XCTAssertNil(AniListClient.errorMessage(in: fine))
+        XCTAssertEqual(
+            AniListDiagnostics.describe(AniListClient.ClientError.answeredWithError("Max query complexity exceeded")),
+            "AniList: Max query complexity exceeded"
+        )
     }
 
     func testTheDiskCacheHonoursItsAge() throws {

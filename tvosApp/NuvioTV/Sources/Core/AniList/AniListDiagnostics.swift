@@ -62,6 +62,8 @@ enum AniListDiagnostics {
             return "AniList's rate limit (30 a minute)"
         case AniListClient.ClientError.badResponse(let code):
             return "HTTP \(code)"
+        case AniListClient.ClientError.answeredWithError(let message):
+            return "AniList: \(message)"
         case is DecodingError:
             return "unreadable answer"
         default:
