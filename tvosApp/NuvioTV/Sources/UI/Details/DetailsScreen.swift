@@ -4683,19 +4683,6 @@ struct TvDetailsContent: View {
 
     // MARK: AniList
 
-    /// The AniList entry and episode of the play target: an AniList title's own, a Cinemeta
-    /// anime's as AniList knows it, an AniList series' first entry before any episode.
-    private static func aniListTarget(meta: NuvioMeta, episode: NuvioVideo?) async -> AniListScrobbler.Target? {
-        guard AniListAccount.isLoggedIn else { return nil }
-        if let target = await AniListScrobbler.target(meta: meta, video: episode, season: episode?.season, episode: episode?.episode) {
-            return target
-        }
-        if AniListMetaBuilder.isAniListID(meta.id), let first = AniListAccount.entryIDs(of: meta).first {
-            return AniListScrobbler.Target(entryID: first, episode: 0, label: meta.name)
-        }
-        return nil
-    }
-
     /// "Watching 5/12", "Planning", "Add" (on no list yet).
     private var aniListButtonTitle: String {
         guard let target = aniListTarget else { return "AniList" }
@@ -4704,24 +4691,6 @@ struct TvDetailsContent: View {
         if entry.status == "PLANNING" || entry.status == "COMPLETED" { return label }
         let progress = entry.progress ?? 0
         return AniListAccount.mediaState(for: target.entryID)?.episodes.map { "\(label) \(progress)/\($0)" } ?? "\(label) \(progress)"
-    }
-
-    /// Which AniList entry the menu changes: the tab of an AniList series, or the entry a
-    /// Cinemeta episode was found to be ("Kono Subarashii Sekai ni Shukufuku wo! 2 E5").
-    private func aniListDialogTitle(meta: NuvioMeta) -> String {
-        guard let target = aniListTarget else { return "AniList" }
-        if AniListMetaBuilder.isAniListID(meta.id) {
-            let season = meta.videos?.first(where: { AniListMetaBuilder.aniListID(from: $0.id) == target.entryID })?.season
-            let tab = season.flatMap { AniListTitleIndex.tabTitle(metaID: meta.id, season: $0) }
-            return "AniList: \(tab ?? meta.name)"
-        }
-        return "AniList: \(target.label)"
-    }
-
-    private var aniListDialogMessage: String {
-        guard let target = aniListTarget else { return "" }
-        guard let entry = AniListAccount.entry(for: target.entryID) else { return "Not on your list yet" }
-        return AniListAccount.describe(entry)
     }
 
     var body: some View {
@@ -4995,49 +4964,13 @@ struct TvDetailsContent: View {
             .task(id: meta.id) {
                 await AniListAccount.refreshStates(for: meta)
             }
-            .task(id: "\(meta.id)|\(playTarget.episode?.id ?? "")|\(AniListAccount.login?.viewerID ?? 0)") {
-                aniListTarget = await Self.aniListTarget(meta: meta, episode: playTarget.episode)
-                if let target = aniListTarget, !AniListAccount.hasAsked(target.entryID) {
-                    await AniListAccount.refreshStates(ids: [target.entryID])
-                }
-            }
-            .confirmationDialog(
-                aniListDialogTitle(meta: meta),
-                isPresented: $showingAniListMenu,
-                titleVisibility: .visible
-            ) {
-                if let target = aniListTarget {
-                    let entry = AniListAccount.entry(for: target.entryID)
-                    ForEach(AniListAccount.statuses, id: \.self) { status in
-                        Button(AniListAccount.statusLabel(status) + (entry?.status == status ? " ✓" : "")) {
-                            Task { await AniListAccount.setStatus(status, entryID: target.entryID) }
-                        }
-                    }
-                    Button("Score…") { showingAniListScore = true }
-                    Button(AniListAccount.mediaState(for: target.entryID)?.isFavourite == true ? "Remove from Favourites" : "Add to Favourites") {
-                        Task { await AniListAccount.toggleFavourite(entryID: target.entryID) }
-                    }
-                    if entry != nil {
-                        Button("Remove from List", role: .destructive) {
-                            Task { await AniListAccount.remove(entryID: target.entryID) }
-                        }
-                    }
-                }
-            } message: {
-                Text(aniListDialogMessage)
-            }
-            .confirmationDialog("Score on AniList", isPresented: $showingAniListScore, titleVisibility: .visible) {
-                if let target = aniListTarget {
-                    ForEach(Array(stride(from: 10, through: 1, by: -1)), id: \.self) { score in
-                        Button("\(score)/10") {
-                            Task { await AniListAccount.setScore(score * 10, entryID: target.entryID) }
-                        }
-                    }
-                    Button("Remove Score", role: .destructive) {
-                        Task { await AniListAccount.setScore(0, entryID: target.entryID) }
-                    }
-                }
-            }
+            .modifier(TvDetailsAniListMenus(
+                meta: meta,
+                episode: playTarget.episode,
+                target: $aniListTarget,
+                showingMenu: $showingAniListMenu,
+                showingScore: $showingAniListScore
+            ))
             .onReceive(NotificationCenter.default.publisher(for: TraktSettingsStore.libraryChangedNotification).receive(on: RunLoop.main)) { _ in
                 progressRevision &+= 1
             }
@@ -5692,6 +5625,101 @@ private struct TvDetailsActionRow: View {
         .onExitCommand {
             onBack?()
         }
+    }
+}
+
+/// Settings → Integrations → AniList: finds which AniList entry the play target is, and the
+/// menus of the AniList button (list status, score, favourite). Kept out of the details body so
+/// the compiler checks it on its own.
+private struct TvDetailsAniListMenus: ViewModifier {
+    let meta: NuvioMeta
+    let episode: NuvioVideo?
+    @Binding var target: AniListScrobbler.Target?
+    @Binding var showingMenu: Bool
+    @Binding var showingScore: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .task(id: "\(meta.id)|\(episode?.id ?? "")|\(AniListAccount.login?.viewerID ?? 0)") {
+                target = await Self.findTarget(meta: meta, episode: episode)
+                if let target, !AniListAccount.hasAsked(target.entryID) {
+                    await AniListAccount.refreshStates(ids: [target.entryID])
+                }
+            }
+            .confirmationDialog(dialogTitle, isPresented: $showingMenu, titleVisibility: .visible) {
+                menuButtons
+            } message: {
+                Text(dialogMessage)
+            }
+            .confirmationDialog("Score on AniList", isPresented: $showingScore, titleVisibility: .visible) {
+                scoreButtons
+            }
+    }
+
+    @ViewBuilder
+    private var menuButtons: some View {
+        if let target {
+            let current = AniListAccount.entry(for: target.entryID)?.status
+            ForEach(AniListAccount.statuses, id: \.self) { status in
+                Button(AniListAccount.statusLabel(status) + (current == status ? " ✓" : "")) {
+                    Task { await AniListAccount.setStatus(status, entryID: target.entryID) }
+                }
+            }
+            Button("Score…") { showingScore = true }
+            Button(AniListAccount.mediaState(for: target.entryID)?.isFavourite == true ? "Remove from Favourites" : "Add to Favourites") {
+                Task { await AniListAccount.toggleFavourite(entryID: target.entryID) }
+            }
+            if current != nil {
+                Button("Remove from List", role: .destructive) {
+                    Task { await AniListAccount.remove(entryID: target.entryID) }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var scoreButtons: some View {
+        if let target {
+            ForEach(Array(stride(from: 10, through: 1, by: -1)), id: \.self) { score in
+                Button("\(score)/10") {
+                    Task { await AniListAccount.setScore(score * 10, entryID: target.entryID) }
+                }
+            }
+            Button("Remove Score", role: .destructive) {
+                Task { await AniListAccount.setScore(0, entryID: target.entryID) }
+            }
+        }
+    }
+
+    /// Which AniList entry the menu changes: the tab of an AniList series, or the entry a
+    /// Cinemeta episode was found to be ("Kono Subarashii Sekai ni Shukufuku wo! 2 E5").
+    private var dialogTitle: String {
+        guard let target else { return "AniList" }
+        if AniListMetaBuilder.isAniListID(meta.id) {
+            let season = meta.videos?.first(where: { AniListMetaBuilder.aniListID(from: $0.id) == target.entryID })?.season
+            let tab = season.flatMap { AniListTitleIndex.tabTitle(metaID: meta.id, season: $0) }
+            return "AniList: \(tab ?? meta.name)"
+        }
+        return "AniList: \(target.label)"
+    }
+
+    private var dialogMessage: String {
+        guard let target else { return "" }
+        guard let entry = AniListAccount.entry(for: target.entryID) else { return "Not on your list yet" }
+        return AniListAccount.describe(entry)
+    }
+
+    /// The AniList entry and episode of the play target: an AniList title's own, a Cinemeta
+    /// anime's as AniList knows it, an AniList series' first entry before any episode.
+    private static func findTarget(meta: NuvioMeta, episode: NuvioVideo?) async -> AniListScrobbler.Target? {
+        guard AniListAccount.isLoggedIn else { return nil }
+        if let found = await AniListScrobbler.target(meta: meta, video: episode, season: episode?.season, episode: episode?.episode) {
+            return found
+        }
+        if AniListMetaBuilder.isAniListID(meta.id), let first = AniListAccount.entryIDs(of: meta).first {
+            return AniListScrobbler.Target(entryID: first, episode: 0, label: meta.name)
+        }
+        return nil
     }
 }
 

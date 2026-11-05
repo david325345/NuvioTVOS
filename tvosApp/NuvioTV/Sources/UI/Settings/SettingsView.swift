@@ -5380,233 +5380,15 @@ private struct AniListOptionsSheet: View {
                         )
                     }
 
-                    SettingsGroup(
-                        title: L10n.string("settings_anilist_section_titles", fallback: "Titles"),
-                        subtitle: L10n.string("settings_anilist_section_titles_subtitle", fallback: "How AniList titles are named and grouped")
-                    ) {
-                        SettingsChoiceRow(
-                            title: L10n.string("settings_anilist_title_language", fallback: "Title Language"),
-                            subtitle: L10n.string("settings_anilist_title_language_subtitle", fallback: "Romaji, English or the original Japanese title"),
-                            selection: labelBinding($titleLanguage, AniListSettings.TitleLanguage.allCases, \.label),
-                            options: AniListSettings.TitleLanguage.allCases.map(\.label),
-                            accentColor: accentColor
-                        )
-                        .opacity(enabled ? 1 : 0.46)
-                        .disabled(!enabled)
+                    titlesGroup
 
-                        SettingsChoiceRow(
-                            title: L10n.string("settings_anilist_seasons", fallback: "Seasons"),
-                            subtitle: L10n.string(
-                                "settings_anilist_seasons_subtitle",
-                                fallback: "One Title: a series with a tab per AniList entry. Each Entry: every season on its own, as on AniList. Progress is kept per choice."
-                            ),
-                            selection: labelBinding($seasonMode, AniListSettings.SeasonMode.allCases, \.label),
-                            options: AniListSettings.SeasonMode.allCases.map(\.label),
-                            accentColor: accentColor
-                        )
-                        .opacity(enabled ? 1 : 0.46)
-                        .disabled(!enabled)
+                    homeSearchGroup
 
-                        SettingsToggleRow(
-                            title: L10n.string("settings_anilist_episode_details", fallback: "Episode Titles and Pictures"),
-                            subtitle: L10n.string("settings_anilist_episode_details_subtitle", fallback: "From api.ani.zip, where AniList has none, with backgrounds and logos from TheTVDB, TMDB or Metahub"),
-                            isOn: $episodeDetails,
-                            accentColor: accentColor,
-                            isAvailable: enabled
-                        )
+                    accountGroup
 
-                        SettingsToggleRow(
-                            title: L10n.string("settings_anilist_adult", fallback: "Adult Titles"),
-                            subtitle: L10n.string("settings_anilist_adult_subtitle", fallback: "Show titles AniList marks as adult"),
-                            isOn: $adult,
-                            accentColor: accentColor,
-                            isAvailable: enabled
-                        )
-                    }
+                    statusGroup
 
-                    SettingsGroup(
-                        title: L10n.string("settings_anilist_section_discover", fallback: "Home and Search"),
-                        subtitle: L10n.string("settings_anilist_section_discover_subtitle", fallback: "Order or hide each AniList row in Layout")
-                    ) {
-                        SettingsToggleRow(
-                            title: L10n.string("settings_anilist_home_rows", fallback: "AniList Rows on Home"),
-                            subtitle: L10n.string("settings_anilist_home_rows_subtitle", fallback: "Trending Now, Popular This Season, Upcoming Next Season, All-Time Popular and Top 100"),
-                            isOn: $homeRows,
-                            accentColor: accentColor,
-                            isAvailable: enabled
-                        )
-
-                        SettingsToggleRow(
-                            title: L10n.string("settings_anilist_search", fallback: "Search AniList"),
-                            subtitle: L10n.string("settings_anilist_search_subtitle", fallback: "Anime from AniList among the search results"),
-                            isOn: $search,
-                            accentColor: accentColor,
-                            isAvailable: enabled
-                        )
-
-                        SettingsToggleRow(
-                            title: L10n.string("settings_anilist_hide_duplicates", fallback: "Hide Cinemeta Duplicates"),
-                            subtitle: L10n.string("settings_anilist_hide_duplicates_subtitle", fallback: "Leave out Cinemeta's copy of an anime that AniList found too"),
-                            isOn: $hideCinemetaDuplicates,
-                            accentColor: accentColor,
-                            isAvailable: enabled && search
-                        )
-                    }
-
-                    SettingsGroup(
-                        title: L10n.string("settings_anilist_section_account", fallback: "Account"),
-                        subtitle: L10n.string("settings_anilist_section_account_subtitle", fallback: "Your AniList lists on Home, and what you watch written to them")
-                    ) {
-                        if let accountName {
-                            SettingsActionRow(
-                                title: L10n.format("settings_anilist_logged_in", fallback: "Logged in as %@", accountName),
-                                subtitle: L10n.string("settings_anilist_logged_in_subtitle", fallback: "The token lasts a year; log in again when AniList stops taking it"),
-                                value: L10n.string("settings_anilist_log_out", fallback: "Log Out"),
-                                accentColor: accentColor
-                            ) {
-                                AniListAccount.logOut()
-                                accountName = nil
-                                Task { await refreshStatus() }
-                            }
-
-                            SettingsToggleRow(
-                                title: L10n.string("settings_anilist_scrobble", fallback: "Write Watched Episodes"),
-                                subtitle: L10n.string("settings_anilist_scrobble_subtitle", fallback: "After an episode is watched to the end, or marked in details. Progress only goes forward"),
-                                isOn: $scrobble,
-                                accentColor: accentColor
-                            )
-
-                            SettingsToggleRow(
-                                title: L10n.string("settings_anilist_scrobble_cinemeta", fallback: "Also Anime from Cinemeta"),
-                                subtitle: L10n.string("settings_anilist_scrobble_cinemeta_subtitle", fallback: "Found on AniList by TMDB/IMDb id and air date, never by name"),
-                                isOn: $scrobbleCinemeta,
-                                accentColor: accentColor,
-                                isAvailable: scrobble
-                            )
-
-                            SettingsToggleRow(
-                                title: L10n.string("settings_anilist_list_rows", fallback: "My Lists on Home"),
-                                subtitle: L10n.string("settings_anilist_list_rows_subtitle", fallback: "Watching, Planning and Paused, like other rows in Layout"),
-                                isOn: $listRows,
-                                accentColor: accentColor,
-                                isAvailable: homeRows
-                            )
-                        } else {
-                            SettingsTextFieldRow(
-                                title: L10n.string("settings_anilist_client_id", fallback: "Client ID"),
-                                subtitle: L10n.string(
-                                    "settings_anilist_client_id_subtitle",
-                                    fallback: "anilist.co → Settings → Developer → Create New Client, with the Redirect URL https://anilist.co/api/v2/oauth/pin"
-                                ),
-                                placeholder: "12345",
-                                text: $clientID
-                            )
-
-                            if let url = AniListAccount.authorizeURL(clientID: clientID) {
-                                SettingsQRCodeCard(
-                                    title: L10n.string("settings_anilist_allow", fallback: "Allow access on your phone, then copy the token"),
-                                    link: url.absoluteString
-                                )
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 8)
-
-                                SettingsNativeTextFieldRow(
-                                    title: L10n.string("settings_anilist_token", fallback: "Token"),
-                                    subtitle: L10n.string("settings_anilist_token_subtitle", fallback: "Paste it with the keyboard on your iPhone"),
-                                    placeholder: L10n.string("settings_anilist_token_placeholder", fallback: "Paste token"),
-                                    text: $tokenDraft,
-                                    isSecure: true,
-                                    status: loginMessage,
-                                    onCommit: logIn
-                                )
-
-                                SettingsActionRow(
-                                    title: L10n.string("settings_anilist_log_in", fallback: "Log In"),
-                                    subtitle: loginMessage ?? L10n.string("settings_anilist_log_in_subtitle", fallback: "Checks the token with AniList and keeps it on this Apple TV, for this profile"),
-                                    value: loggingIn ? "…" : L10n.string("settings_anilist_log_in", fallback: "Log In"),
-                                    accentColor: accentColor
-                                ) {
-                                    logIn()
-                                }
-                            }
-                        }
-                    }
-                    .opacity(enabled ? 1 : 0.46)
-                    .disabled(!enabled)
-
-                    SettingsGroup(
-                        title: L10n.string("settings_anilist_section_status", fallback: "Status"),
-                        subtitle: L10n.string("settings_anilist_section_status_subtitle", fallback: "The last answer from AniList, and what Home and Search last did with it")
-                    ) {
-                        SettingsActionRow(
-                            title: L10n.string("settings_anilist_status", fallback: "AniList"),
-                            subtitle: statusText,
-                            value: L10n.string("settings_anilist_status_refresh", fallback: "Refresh"),
-                            accentColor: accentColor
-                        ) {
-                            Task { await refreshStatus() }
-                        }
-
-                        SettingsActionRow(
-                            title: L10n.string("settings_anilist_status_home", fallback: "Home Rows"),
-                            subtitle: homeStatusText,
-                            value: L10n.string("settings_anilist_status_refresh", fallback: "Refresh"),
-                            accentColor: accentColor
-                        ) {
-                            Task { await refreshStatus() }
-                        }
-
-                        SettingsActionRow(
-                            title: L10n.string("settings_anilist_status_search", fallback: "Search"),
-                            subtitle: searchStatusText,
-                            value: L10n.string("settings_anilist_status_refresh", fallback: "Refresh"),
-                            accentColor: accentColor
-                        ) {
-                            Task { await refreshStatus() }
-                        }
-
-                        SettingsActionRow(
-                            title: L10n.string("settings_anilist_status_account", fallback: "Your List"),
-                            subtitle: accountStatusText,
-                            value: L10n.string("settings_anilist_status_refresh", fallback: "Refresh"),
-                            accentColor: accentColor
-                        ) {
-                            Task { await refreshStatus() }
-                        }
-
-                        SettingsActionRow(
-                            title: L10n.string("settings_anilist_test", fallback: "Test Connection"),
-                            subtitle: testResult ?? L10n.string("settings_anilist_test_subtitle", fallback: "Search AniList for Frieren now, past the saved answers"),
-                            value: testing ? "…" : L10n.string("settings_anilist_test_action", fallback: "Test"),
-                            accentColor: accentColor
-                        ) {
-                            guard !testing else { return }
-                            testing = true
-                            Task {
-                                testResult = await AniListService.testConnection()
-                                await refreshStatus()
-                                testing = false
-                            }
-                        }
-                    }
-
-                    SettingsGroup(
-                        title: L10n.string("settings_anilist_section_cache", fallback: "Saved Answers"),
-                        subtitle: L10n.string("settings_anilist_section_cache_subtitle", fallback: "Rows keep 6 hours, airing titles an hour, finished ones a week")
-                    ) {
-                        SettingsActionRow(
-                            title: L10n.string("settings_anilist_clear_cache", fallback: "Clear Saved Answers"),
-                            subtitle: L10n.string("settings_anilist_clear_cache_subtitle", fallback: "Ask AniList again for everything. Done by itself after each app update"),
-                            value: cacheCleared ? L10n.string("settings_anilist_cleared", fallback: "Cleared") : L10n.string("settings_anilist_clear", fallback: "Clear"),
-                            accentColor: accentColor
-                        ) {
-                            Task {
-                                await AniListService.clearCache()
-                                cacheCleared = true
-                                AniListSettings.notifyHomeChanged()
-                            }
-                        }
-                    }
+                    savedAnswersGroup
                 }
                 .padding(.horizontal, 52)
                 .padding(.vertical, 38)
@@ -5623,6 +5405,264 @@ private struct AniListOptionsSheet: View {
         .onChange(of: titleLanguage) { _, _ in AniListSettings.notifyHomeChanged() }
         .onChange(of: adult) { _, _ in AniListSettings.notifyHomeChanged() }
         .onChange(of: listRows) { _, _ in AniListSettings.notifyHomeChanged() }
+    }
+
+    // Split out of `body` so the compiler can check each part in time.
+    @ViewBuilder
+    private var titlesGroup: some View {
+        SettingsGroup(
+            title: L10n.string("settings_anilist_section_titles", fallback: "Titles"),
+            subtitle: L10n.string("settings_anilist_section_titles_subtitle", fallback: "How AniList titles are named and grouped")
+        ) {
+            SettingsChoiceRow(
+                title: L10n.string("settings_anilist_title_language", fallback: "Title Language"),
+                subtitle: L10n.string("settings_anilist_title_language_subtitle", fallback: "Romaji, English or the original Japanese title"),
+                selection: labelBinding($titleLanguage, AniListSettings.TitleLanguage.allCases, \.label),
+                options: AniListSettings.TitleLanguage.allCases.map(\.label),
+                accentColor: accentColor
+            )
+            .opacity(enabled ? 1 : 0.46)
+            .disabled(!enabled)
+
+            SettingsChoiceRow(
+                title: L10n.string("settings_anilist_seasons", fallback: "Seasons"),
+                subtitle: L10n.string(
+                    "settings_anilist_seasons_subtitle",
+                    fallback: "One Title: a series with a tab per AniList entry. Each Entry: every season on its own, as on AniList. Progress is kept per choice."
+                ),
+                selection: labelBinding($seasonMode, AniListSettings.SeasonMode.allCases, \.label),
+                options: AniListSettings.SeasonMode.allCases.map(\.label),
+                accentColor: accentColor
+            )
+            .opacity(enabled ? 1 : 0.46)
+            .disabled(!enabled)
+
+            SettingsToggleRow(
+                title: L10n.string("settings_anilist_episode_details", fallback: "Episode Titles and Pictures"),
+                subtitle: L10n.string("settings_anilist_episode_details_subtitle", fallback: "From api.ani.zip, where AniList has none, with backgrounds and logos from TheTVDB, TMDB or Metahub"),
+                isOn: $episodeDetails,
+                accentColor: accentColor,
+                isAvailable: enabled
+            )
+
+            SettingsToggleRow(
+                title: L10n.string("settings_anilist_adult", fallback: "Adult Titles"),
+                subtitle: L10n.string("settings_anilist_adult_subtitle", fallback: "Show titles AniList marks as adult"),
+                isOn: $adult,
+                accentColor: accentColor,
+                isAvailable: enabled
+            )
+        }
+    }
+
+    // Split out of `body` so the compiler can check each part in time.
+    @ViewBuilder
+    private var homeSearchGroup: some View {
+        SettingsGroup(
+            title: L10n.string("settings_anilist_section_discover", fallback: "Home and Search"),
+            subtitle: L10n.string("settings_anilist_section_discover_subtitle", fallback: "Order or hide each AniList row in Layout")
+        ) {
+            SettingsToggleRow(
+                title: L10n.string("settings_anilist_home_rows", fallback: "AniList Rows on Home"),
+                subtitle: L10n.string("settings_anilist_home_rows_subtitle", fallback: "Trending Now, Popular This Season, Upcoming Next Season, All-Time Popular and Top 100"),
+                isOn: $homeRows,
+                accentColor: accentColor,
+                isAvailable: enabled
+            )
+
+            SettingsToggleRow(
+                title: L10n.string("settings_anilist_search", fallback: "Search AniList"),
+                subtitle: L10n.string("settings_anilist_search_subtitle", fallback: "Anime from AniList among the search results"),
+                isOn: $search,
+                accentColor: accentColor,
+                isAvailable: enabled
+            )
+
+            SettingsToggleRow(
+                title: L10n.string("settings_anilist_hide_duplicates", fallback: "Hide Cinemeta Duplicates"),
+                subtitle: L10n.string("settings_anilist_hide_duplicates_subtitle", fallback: "Leave out Cinemeta's copy of an anime that AniList found too"),
+                isOn: $hideCinemetaDuplicates,
+                accentColor: accentColor,
+                isAvailable: enabled && search
+            )
+        }
+    }
+
+    // Split out of `body` so the compiler can check each part in time.
+    @ViewBuilder
+    private var accountGroup: some View {
+        SettingsGroup(
+            title: L10n.string("settings_anilist_section_account", fallback: "Account"),
+            subtitle: L10n.string("settings_anilist_section_account_subtitle", fallback: "Your AniList lists on Home, and what you watch written to them")
+        ) {
+            if let accountName {
+                loggedInRows(name: accountName)
+            } else {
+                loginRows
+            }
+        }
+        .opacity(enabled ? 1 : 0.46)
+        .disabled(!enabled)
+    }
+
+    @ViewBuilder
+    private func loggedInRows(name: String) -> some View {
+        SettingsActionRow(
+            title: L10n.format("settings_anilist_logged_in", fallback: "Logged in as %@", name),
+            subtitle: L10n.string("settings_anilist_logged_in_subtitle", fallback: "The token lasts a year; log in again when AniList stops taking it"),
+            value: L10n.string("settings_anilist_log_out", fallback: "Log Out"),
+            accentColor: accentColor
+        ) {
+            AniListAccount.logOut()
+            accountName = nil
+            Task { await refreshStatus() }
+        }
+
+        SettingsToggleRow(
+            title: L10n.string("settings_anilist_scrobble", fallback: "Write Watched Episodes"),
+            subtitle: L10n.string("settings_anilist_scrobble_subtitle", fallback: "After an episode is watched to the end, or marked in details. Progress only goes forward"),
+            isOn: $scrobble,
+            accentColor: accentColor
+        )
+
+        SettingsToggleRow(
+            title: L10n.string("settings_anilist_scrobble_cinemeta", fallback: "Also Anime from Cinemeta"),
+            subtitle: L10n.string("settings_anilist_scrobble_cinemeta_subtitle", fallback: "Found on AniList by TMDB/IMDb id and air date, never by name"),
+            isOn: $scrobbleCinemeta,
+            accentColor: accentColor,
+            isAvailable: scrobble
+        )
+
+        SettingsToggleRow(
+            title: L10n.string("settings_anilist_list_rows", fallback: "My Lists on Home"),
+            subtitle: L10n.string("settings_anilist_list_rows_subtitle", fallback: "Watching, Planning and Paused, like other rows in Layout"),
+            isOn: $listRows,
+            accentColor: accentColor,
+            isAvailable: homeRows
+        )
+    }
+
+    @ViewBuilder
+    private var loginRows: some View {
+        SettingsTextFieldRow(
+            title: L10n.string("settings_anilist_client_id", fallback: "Client ID"),
+            subtitle: L10n.string(
+                "settings_anilist_client_id_subtitle",
+                fallback: "anilist.co → Settings → Developer → Create New Client, with the Redirect URL https://anilist.co/api/v2/oauth/pin"
+            ),
+            placeholder: "12345",
+            text: $clientID
+        )
+
+        if let url = AniListAccount.authorizeURL(clientID: clientID) {
+            SettingsQRCodeCard(
+                title: L10n.string("settings_anilist_allow", fallback: "Allow access on your phone, then copy the token"),
+                link: url.absoluteString
+            )
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+
+            SettingsNativeTextFieldRow(
+                title: L10n.string("settings_anilist_token", fallback: "Token"),
+                subtitle: L10n.string("settings_anilist_token_subtitle", fallback: "Paste it with the keyboard on your iPhone"),
+                placeholder: L10n.string("settings_anilist_token_placeholder", fallback: "Paste token"),
+                text: $tokenDraft,
+                isSecure: true,
+                status: loginMessage,
+                onCommit: logIn
+            )
+
+            SettingsActionRow(
+                title: L10n.string("settings_anilist_log_in", fallback: "Log In"),
+                subtitle: loginMessage ?? L10n.string("settings_anilist_log_in_subtitle", fallback: "Checks the token with AniList and keeps it on this Apple TV, for this profile"),
+                value: loggingIn ? "…" : L10n.string("settings_anilist_log_in", fallback: "Log In"),
+                accentColor: accentColor
+            ) {
+                logIn()
+            }
+        }
+    }
+
+    // Split out of `body` so the compiler can check each part in time.
+    @ViewBuilder
+    private var statusGroup: some View {
+        SettingsGroup(
+            title: L10n.string("settings_anilist_section_status", fallback: "Status"),
+            subtitle: L10n.string("settings_anilist_section_status_subtitle", fallback: "The last answer from AniList, and what Home and Search last did with it")
+        ) {
+            SettingsActionRow(
+                title: L10n.string("settings_anilist_status", fallback: "AniList"),
+                subtitle: statusText,
+                value: L10n.string("settings_anilist_status_refresh", fallback: "Refresh"),
+                accentColor: accentColor
+            ) {
+                Task { await refreshStatus() }
+            }
+
+            SettingsActionRow(
+                title: L10n.string("settings_anilist_status_home", fallback: "Home Rows"),
+                subtitle: homeStatusText,
+                value: L10n.string("settings_anilist_status_refresh", fallback: "Refresh"),
+                accentColor: accentColor
+            ) {
+                Task { await refreshStatus() }
+            }
+
+            SettingsActionRow(
+                title: L10n.string("settings_anilist_status_search", fallback: "Search"),
+                subtitle: searchStatusText,
+                value: L10n.string("settings_anilist_status_refresh", fallback: "Refresh"),
+                accentColor: accentColor
+            ) {
+                Task { await refreshStatus() }
+            }
+
+            SettingsActionRow(
+                title: L10n.string("settings_anilist_status_account", fallback: "Your List"),
+                subtitle: accountStatusText,
+                value: L10n.string("settings_anilist_status_refresh", fallback: "Refresh"),
+                accentColor: accentColor
+            ) {
+                Task { await refreshStatus() }
+            }
+
+            SettingsActionRow(
+                title: L10n.string("settings_anilist_test", fallback: "Test Connection"),
+                subtitle: testResult ?? L10n.string("settings_anilist_test_subtitle", fallback: "Search AniList for Frieren now, past the saved answers"),
+                value: testing ? "…" : L10n.string("settings_anilist_test_action", fallback: "Test"),
+                accentColor: accentColor
+            ) {
+                guard !testing else { return }
+                testing = true
+                Task {
+                    testResult = await AniListService.testConnection()
+                    await refreshStatus()
+                    testing = false
+                }
+            }
+        }
+    }
+
+    // Split out of `body` so the compiler can check each part in time.
+    @ViewBuilder
+    private var savedAnswersGroup: some View {
+        SettingsGroup(
+            title: L10n.string("settings_anilist_section_cache", fallback: "Saved Answers"),
+            subtitle: L10n.string("settings_anilist_section_cache_subtitle", fallback: "Rows keep 6 hours, airing titles an hour, finished ones a week")
+        ) {
+            SettingsActionRow(
+                title: L10n.string("settings_anilist_clear_cache", fallback: "Clear Saved Answers"),
+                subtitle: L10n.string("settings_anilist_clear_cache_subtitle", fallback: "Ask AniList again for everything. Done by itself after each app update"),
+                value: cacheCleared ? L10n.string("settings_anilist_cleared", fallback: "Cleared") : L10n.string("settings_anilist_clear", fallback: "Clear"),
+                accentColor: accentColor
+            ) {
+                Task {
+                    await AniListService.clearCache()
+                    cacheCleared = true
+                    AniListSettings.notifyHomeChanged()
+                }
+            }
+        }
     }
 
     @MainActor
