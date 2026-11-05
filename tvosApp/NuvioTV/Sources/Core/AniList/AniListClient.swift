@@ -14,6 +14,8 @@ actor AniListClient {
     enum ClientError: Error {
         case rateLimited
         case badResponse(Int)
+        /// A failure status with AniList's own words for it ("Invalid token", "Not Found.").
+        case refused(Int, String)
         /// AniList answered 200 with only an error in it.
         case answeredWithError(String)
     }
@@ -195,6 +197,7 @@ actor AniListClient {
                 let snippet = String(data: data.prefix(240), encoding: .utf8) ?? ""
                 if notesStatus { noteFailure("HTTP \(code) \(snippet)") }
                 if code == 429 { throw ClientError.rateLimited }
+                if let message = Self.errorMessage(in: data) { throw ClientError.refused(code, message) }
                 throw ClientError.badResponse(code)
             }
             if let message = Self.errorMessage(in: data) {

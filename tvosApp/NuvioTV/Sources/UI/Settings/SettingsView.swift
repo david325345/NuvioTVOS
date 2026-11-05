@@ -5564,10 +5564,10 @@ private struct AniListOptionsSheet: View {
 
             SettingsNativeTextFieldRow(
                 title: L10n.string("settings_anilist_token", fallback: "Token"),
-                subtitle: L10n.string("settings_anilist_token_subtitle", fallback: "Paste it with the keyboard on your iPhone"),
+                subtitle: L10n.string("settings_anilist_token_subtitle", fallback: "Paste it with the keyboard on your iPhone, in one go. The number after the dots is its length: about 1,000"),
                 placeholder: L10n.string("settings_anilist_token_placeholder", fallback: "Paste token"),
                 text: $tokenDraft,
-                isSecure: true,
+                hidesText: true,
                 status: loginMessage,
                 onCommit: logIn
             )
@@ -17379,6 +17379,9 @@ private struct SettingsNativeTextFieldRow: View {
     let placeholder: String
     @Binding var text: String
     var isSecure: Bool = false
+    /// Shown as dots and a length, but edited in a plain field: a secure field clears itself
+    /// when typed into again, which can leave a long pasted token cut short.
+    var hidesText: Bool = false
     var fieldWidth: CGFloat = 300
     var status: String? = nil
     var statusColor: Color = .white.opacity(0.56)
@@ -17431,6 +17434,7 @@ private struct SettingsNativeTextFieldRow: View {
 
     private var displayText: String {
         guard !text.isEmpty else { return placeholder }
+        if hidesText { return "•••••• \(text.count)" }
         return isSecure ? String(repeating: "•", count: text.count) : text
     }
 }

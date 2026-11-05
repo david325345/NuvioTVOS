@@ -513,6 +513,96 @@ final class AniListTests: XCTestCase {
         )
         XCTAssertNil(AniListAccount.authorizeURL(clientID: "abc"))
         XCTAssertNil(AniListAccount.authorizeURL(clientID: ""))
+        XCTAssertEqual(AniListAccount.token(fromPasted: "Bearer eyJabc.def.ghi"), "eyJabc.def.ghi")
+    }
+
+    /// A token shaped like AniList's: an RS256 JWT with a 256-byte signature.
+    private func jwt(aud: Any = "56063", sub: Any = "8395785", exp: Date = Date(timeIntervalSince1970: 1_825_000_000)) -> String {
+        func part(_ data: Data) -> String {
+            data.base64EncodedString()
+                .replacingOccurrences(of: "+", with: "-")
+                .replacingOccurrences(of: "/", with: "_")
+                .replacingOccurrences(of: "=", with: "")
+        }
+        let header = try! JSONSerialization.data(withJSONObject: ["typ": "JWT", "alg": "RS256", "jti": String(repeating: "a", count: 80)])
+        let claims: [String: Any] = [
+            "aud": aud, "jti": String(repeating: "b", count: 80), "iat": 1_760_000_000,
+            "nbf": 1_760_000_000, "exp": exp.timeIntervalSince1970, "sub": sub, "scopes": [String](),
+        ]
+        let payload = try! JSONSerialization.data(withJSONObject: claims)
+        let signature = Data((0..<256).map { UInt8($0 % 251) })
+        return [part(header), part(payload), part(signature)].joined(separator: ".")
+    }
+
+    func testAWholeTokenIsReadWithoutAskingAniList() {
+        let now = Date(timeIntervalSince1970: 1_790_000_000)
+        let token = jwt()
+        let (facts, problem) = AniListAccount.inspect(token, now: now)
+        XCTAssertNil(problem)
+        XCTAssertEqual(facts.parts, 3)
+        XCTAssertEqual(facts.clientID, "56063")
+        XCTAssertEqual(facts.userID, "8395785")
+        XCTAssertEqual(facts.expires, Date(timeIntervalSince1970: 1_825_000_000))
+        XCTAssertEqual(facts.summary, "token \(token.count) characters, 3 parts, client 56063")
+        // Claims sent as numbers read the same.
+        XCTAssertEqual(AniListAccount.inspect(jwt(aud: 56063, sub: 8395785), now: now).facts.clientID, "56063")
+    }
+
+    func testABrokenTokenIsCaughtBeforeAniListIsAsked() {
+        let now = Date(timeIntervalSince1970: 1_790_000_000)
+        let token = jwt()
+
+        // Cut off inside the signature, inside the payload, or pasted twice.
+        XCTAssertEqual(AniListAccount.inspect(String(token.dropLast(40)), now: now).problem, .incomplete(length: token.count - 40))
+        XCTAssertEqual(AniListAccount.inspect(String(token.dropLast(37)), now: now).problem, .incomplete(length: token.count - 37))
+        let firstTwo = token.split(separator: ".").prefix(2).joined(separator: ".")
+        XCTAssertEqual(AniListAccount.inspect(firstTwo, now: now).problem, .incomplete(length: firstTwo.count))
+        XCTAssertEqual(AniListAccount.inspect(token + token, now: now).problem, .incomplete(length: token.count * 2))
+
+        // The Client Secret, or the Client ID.
+        let secret = String(repeating: "x", count: 40)
+        XCTAssertEqual(AniListAccount.inspect(secret, now: now).problem, .notAToken(length: 40))
+        XCTAssertEqual(AniListAccount.inspect("56063", now: now).problem, .notAToken(length: 5))
+
+        // Changed on the way: a dash made into "—", or an ellipsis where it was shortened.
+        let dashed = token.replacingOccurrences(of: "-", with: "—")
+        if dashed != token {
+            XCTAssertEqual(AniListAccount.inspect(dashed, now: now).problem, .changed(length: dashed.count))
+        }
+        let shortened = String(token.prefix(500)) + "…"
+        XCTAssertEqual(AniListAccount.inspect(shortened, now: now).problem, .changed(length: 501))
+
+        // Past its year.
+        let expired = jwt(exp: Date(timeIntervalSince1970: 1_780_000_000))
+        XCTAssertEqual(AniListAccount.inspect(expired, now: now).problem, .expired(Date(timeIntervalSince1970: 1_780_000_000)))
+    }
+
+    func testLoggingInWithABrokenTokenSaysWhyAndKeepsNothing() async {
+        let saved = AniListAccount.storage
+        AniListAccount.storage = AniListMemoryTokenStorage()
+        defer { AniListAccount.storage = saved }
+        let token = jwt()
+
+        do {
+            try await AniListAccount.logIn(pasted: String(token.prefix(600)), now: Date(timeIntervalSince1970: 1_790_000_000))
+            XCTFail("A cut-off token must not be sent")
+        } catch {
+            XCTAssertEqual(error as? AniListAccount.AccountError, .badToken(.incomplete(length: 600)))
+            XCTAssertEqual(error.localizedDescription, AniListAccount.TokenProblem.incomplete(length: 600).message)
+        }
+        XCTAssertNil(AniListAccount.storage.login(for: ProfileSettings.activeProfileScope))
+        let note = AniListDiagnostics.entry(.account)?.text ?? ""
+        XCTAssertTrue(note.hasPrefix("Log in stopped: The token arrived incomplete"), note)
+        XCTAssertTrue(note.contains("· token 600 characters, 3 parts, client 56063"), note)
+        XCTAssertFalse(note.contains(String(token.prefix(40))))
+    }
+
+    func testAniListsOwnWordsAreShownWithAFailure() {
+        XCTAssertEqual(AniListDiagnostics.describe(AniListClient.ClientError.refused(404, "Not Found.")), "HTTP 404 · Not Found.")
+        XCTAssertEqual(
+            AniListAccount.AccountError.notAccepted("HTTP 400 · Invalid token").localizedDescription,
+            "AniList didn't accept the token (HTTP 400 · Invalid token)."
+        )
     }
 
     private func entry(_ status: String?, progress: Int = 0, repeatCount: Int = 0, started: Bool = true) -> AniListListEntry {

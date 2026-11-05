@@ -17,15 +17,124 @@ enum AniListAccount {
 
     static let decoder = JSONDecoder()
 
-    enum AccountError: LocalizedError {
+    enum AccountError: LocalizedError, Equatable {
         case emptyToken
         case notAccepted(String)
+        /// Something is wrong with the pasted text itself, so AniList isn't asked.
+        case badToken(TokenProblem)
 
         var errorDescription: String? {
             switch self {
             case .emptyToken: return "Paste the token AniList shows after you allow access."
             case .notAccepted(let reason): return "AniList didn't accept the token (\(reason))."
+            case .badToken(let problem): return problem.message
             }
+        }
+    }
+
+    /// What is wrong with a pasted token, seen without asking AniList.
+    enum TokenProblem: Equatable {
+        /// Too short, or not in three parts: the Client ID or Secret, say.
+        case notAToken(length: Int)
+        /// In three parts but cut off, or two pasted together.
+        case incomplete(length: Int)
+        /// With characters a token never has, from the keyboard or the copy.
+        case changed(length: Int)
+        case expired(Date)
+
+        var message: String {
+            switch self {
+            case .notAToken(let length):
+                return "This isn't the token (\(length) characters). Copy the long text AniList shows after Authorize, not the Client ID or Secret."
+            case .incomplete(let length):
+                return "The token arrived incomplete (\(length) characters, about 1,000 expected). Paste it again in one go."
+            case .changed(let length):
+                return "The token arrived changed: it has characters a token never has (\(length) characters). Paste it again."
+            case .expired(let date):
+                let formatter = DateFormatter()
+                formatter.dateStyle = .medium
+                formatter.timeStyle = .none
+                return "The token expired on \(formatter.string(from: date)). Allow access again for a new one."
+            }
+        }
+    }
+
+    /// The public part of a token: AniList's tokens are JWTs, whose middle part says which API
+    /// client and account they belong to and until when. The signature stays unread.
+    struct TokenFacts: Equatable {
+        var length: Int
+        var parts: Int
+        var clientID: String? = nil
+        var userID: String? = nil
+        var expires: Date? = nil
+
+        /// "1084 characters, 3 parts, client 56063", for Status. Never the token itself.
+        var summary: String {
+            var text = "token \(length) characters, \(parts) part\(parts == 1 ? "" : "s")"
+            if let clientID { text += ", client \(clientID)" }
+            return text
+        }
+    }
+
+    private static let tokenCharacters = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.")
+
+    /// Reads the public part of `token` and says what is wrong with it, if anything.
+    static func inspect(_ token: String, now: Date = Date()) -> (facts: TokenFacts, problem: TokenProblem?) {
+        let length = token.count
+        let pieces = token.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+        var facts = TokenFacts(length: length, parts: pieces.count)
+        let short = length < 200
+
+        guard token.allSatisfy({ tokenCharacters.contains($0) }) else {
+            return (facts, short ? .notAToken(length: length) : .changed(length: length))
+        }
+        guard pieces.count == 3 else {
+            return (facts, short ? .notAToken(length: length) : .incomplete(length: length))
+        }
+        guard let header = jsonObject(base64URL: pieces[0]),
+              let payload = jsonObject(base64URL: pieces[1]) else {
+            return (facts, short ? .notAToken(length: length) : .incomplete(length: length))
+        }
+        facts.clientID = claimText(payload["aud"])
+        facts.userID = claimText(payload["sub"])
+        if let exp = payload["exp"] as? NSNumber {
+            facts.expires = Date(timeIntervalSince1970: exp.doubleValue)
+        }
+
+        // An RSA signature is as long as its key: 256, 384 or 512 bytes. Any other length means
+        // the end of the token is missing, or something follows it.
+        guard let signature = data(base64URL: pieces[2]) else {
+            return (facts, .incomplete(length: length))
+        }
+        let algorithm = (header["alg"] as? String)?.uppercased() ?? ""
+        if algorithm.hasPrefix("RS") || algorithm.hasPrefix("PS"), ![256, 384, 512].contains(signature.count) {
+            return (facts, .incomplete(length: length))
+        }
+        if let expires = facts.expires, expires <= now {
+            return (facts, .expired(expires))
+        }
+        return (facts, nil)
+    }
+
+    private static func data(base64URL text: String) -> Data? {
+        guard !text.isEmpty, text.count % 4 != 1 else { return nil }
+        var base64 = text.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        base64 += String(repeating: "=", count: (4 - base64.count % 4) % 4)
+        return Data(base64Encoded: base64)
+    }
+
+    private static func jsonObject(base64URL text: String) -> [String: Any]? {
+        guard let data = data(base64URL: text) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+
+    /// A claim that may be a string or a number.
+    private static func claimText(_ value: Any?) -> String? {
+        switch value {
+        case let string as String: return string.isEmpty ? nil : string
+        case let number as NSNumber: return number.stringValue
+        case let list as [Any]: return list.compactMap { claimText($0) }.first
+        default: return nil
         }
     }
 
@@ -62,21 +171,35 @@ enum AniListAccount {
                 text = String(text[..<end])
             }
         }
-        return text.filter { !$0.isWhitespace }
+        text = text.filter { !$0.isWhitespace }
+        // "Bearer eyJ…", copied with the word that goes before it in a request.
+        if text.lowercased().hasPrefix("bearer"), text.dropFirst("bearer".count).hasPrefix("eyJ") {
+            text = String(text.dropFirst("bearer".count))
+        }
+        return text
     }
 
-    /// Checks the pasted token with AniList and keeps it for this profile.
+    /// Checks the pasted token, then asks AniList whose it is, and keeps it for this profile.
+    /// Each try is noted in Status → Your List with the token's length and client, never the token.
     @discardableResult
-    static func logIn(pasted: String) async throws -> Login {
+    static func logIn(pasted: String, now: Date = Date()) async throws -> Login {
         let token = token(fromPasted: pasted)
         guard !token.isEmpty else { throw AccountError.emptyToken }
+        let (facts, problem) = inspect(token, now: now)
+        if let problem {
+            AniListDiagnostics.note(.account, "Log in stopped: \(problem.message) · \(facts.summary)")
+            throw AccountError.badToken(problem)
+        }
         let answer: AniListClient.Answer
         do {
             answer = try await AniListClient.shared.answer(AniListQueries.viewer, ttl: 0, notesStatus: false, token: token, saves: false)
         } catch {
-            throw AccountError.notAccepted(AniListDiagnostics.describe(error))
+            let reason = AniListDiagnostics.describe(error)
+            AniListDiagnostics.note(.account, "Log in failed: \(reason) · \(facts.summary)")
+            throw AccountError.notAccepted(reason)
         }
         guard let viewer = try? decoder.decode(AniListViewerResponse.self, from: answer.data).data?.Viewer else {
+            AniListDiagnostics.note(.account, "Log in failed: no account in AniList's answer · \(facts.summary)")
             throw AccountError.notAccepted("no account in its answer")
         }
         let login = Login(token: token, viewerID: viewer.id, viewerName: viewer.name, avatar: viewer.avatar?.large, savedAt: Date())
