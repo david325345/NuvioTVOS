@@ -14,6 +14,8 @@ actor AniListClient {
     enum ClientError: Error {
         case rateLimited
         case badResponse(Int)
+        /// AniList answered 200 with only an error in it.
+        case answeredWithError(String)
     }
 
     /// An answer, and whether it was saved earlier rather than given by AniList just now.
@@ -137,6 +139,12 @@ actor AniListClient {
                 if code == 429 { throw ClientError.rateLimited }
                 throw ClientError.badResponse(code)
             }
+            if let message = Self.errorMessage(in: data) {
+                // An error sent as 200. It is never saved, so the next ask reaches AniList.
+                if notesStatus { noteFailure("AniList: \(message)") }
+                if Self.hasData(data) { return Answer(data: data, isSaved: false) }
+                throw ClientError.answeredWithError(message)
+            }
             if notesStatus { status.lastSuccess = Date() }
             cache.write(data, key: key)
             return Answer(data: data, isSaved: false)
@@ -187,15 +195,45 @@ actor AniListClient {
         }
     }
 
+    /// A variable without a value is left out, so its argument is left out too. AniList reads an
+    /// explicit null as a filter: `isAdult: null` finds nothing, `season: null` nothing either.
     static func body(query: String, variables: [String: Any?]) throws -> Data {
         var cleaned: [String: Any] = [:]
         for (name, value) in variables {
-            cleaned[name] = value ?? NSNull()
+            if let value, let present = unwrapped(value) {
+                cleaned[name] = present
+            }
         }
         return try JSONSerialization.data(
             withJSONObject: ["query": query, "variables": cleaned],
             options: [.sortedKeys]
         )
+    }
+
+    /// The value inside however many optionals hold it (a `Bool?` passed as `Any?`), or nil.
+    private static func unwrapped(_ value: Any) -> Any? {
+        let mirror = Mirror(reflecting: value)
+        guard mirror.displayStyle == .optional else { return value }
+        guard let wrapped = mirror.children.first?.value else { return nil }
+        return unwrapped(wrapped)
+    }
+
+    /// AniList's own error in an answer it sent as 200, joined into one line, or nil.
+    static func errorMessage(in data: Data) -> String? {
+        // Cheap look before parsing: nearly every answer has no errors.
+        guard data.range(of: Data("\"errors\"".utf8)) != nil,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let errors = object["errors"] as? [[String: Any]], !errors.isEmpty else { return nil }
+        let messages = errors.compactMap { ($0["message"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return messages.isEmpty ? "unknown error" : messages.joined(separator: "; ")
+    }
+
+    /// Whether an answer with errors still carries some data (one of several pages, say).
+    static func hasData(_ data: Data) -> Bool {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let payload = object["data"] as? [String: Any] else { return false }
+        return payload.values.contains { !($0 is NSNull) }
     }
 
     static func cacheKey(for body: Data) -> String {
