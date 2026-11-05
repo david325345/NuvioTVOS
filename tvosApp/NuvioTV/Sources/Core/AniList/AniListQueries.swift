@@ -133,6 +133,16 @@ enum AniListQueries {
     mutation ($animeId: Int) { ToggleFavourite(animeId: $animeId) { anime(perPage: 1) { nodes { id } } } }
     """
 
+    /// An entry's earlier seasons, for its pictures when it has none of its own.
+    static let prequels = """
+    query ($id: Int) {
+      Media(id: $id, type: ANIME) {
+        id format
+        relations { edges { relationType node { id type format startDate { year month day } } } }
+      }
+    }
+    """
+
     /// The entries of a franchise by id, with their relations and airing dates, to find which
     /// entry and episode an episode of a Cinemeta series is.
     static let franchise = """

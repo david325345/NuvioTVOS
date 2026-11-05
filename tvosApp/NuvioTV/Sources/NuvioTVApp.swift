@@ -11418,7 +11418,7 @@ private struct TVHeroView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             if let logoUrl = meta.logoUrl {
-                CachedHeroLogo(url: logoUrl, title: meta.name)
+                CachedHeroLogo(url: logoUrl, title: meta.name, nameBelow: AniListMetaBuilder.nameUnderLogo(meta))
             } else {
                 Text(meta.name)
                     .font(.appFont(size: 54, weight: .bold))
@@ -12394,8 +12394,9 @@ private struct TVGridHeroSlideshowView: View {
             // 1. Logo or Title
             Group {
                 if let logoURL = item.logoUrl, !logoURL.isEmpty {
-                    CachedHeroLogo(url: logoURL, title: item.name)
-                        .frame(maxWidth: 540, maxHeight: 110, alignment: .bottomLeading)
+                    let nameBelow = AniListMetaBuilder.nameUnderLogo(item)
+                    CachedHeroLogo(url: logoURL, title: item.name, nameBelow: nameBelow, logoMaxHeight: 110)
+                        .frame(maxWidth: 540, maxHeight: nameBelow == nil ? 110 : 190, alignment: .bottomLeading)
                 } else {
                     Text(item.name)
                         .font(.appFont(size: 48, weight: .bold))
@@ -12738,6 +12739,10 @@ private struct TVGridHeroSlideshowView: View {
 private struct CachedHeroLogo: View {
     let url: String
     let title: String
+    /// The title's whole name under its logo: AniList's logo is the series', so a second
+    /// season would otherwise look like its first.
+    var nameBelow: String? = nil
+    var logoMaxHeight: CGFloat = 136
 
     @State private var image: UIImage?
     @State private var loadedURL: String?
@@ -12756,22 +12761,33 @@ private struct CachedHeroLogo: View {
         // fallback must not reserve that slot either.
         Group {
             if showsLogoImage {
-                ZStack(alignment: .bottomLeading) {
-                    if let outgoingImage {
-                        Image(uiImage: outgoingImage)
-                            .resizable()
-                            .scaledToFit()
-                            .opacity(outgoingOpacity)
+                VStack(alignment: .leading, spacing: 10) {
+                    ZStack(alignment: .bottomLeading) {
+                        if let outgoingImage {
+                            Image(uiImage: outgoingImage)
+                                .resizable()
+                                .scaledToFit()
+                                .opacity(outgoingOpacity)
+                        }
+                        if let image {
+                            Image(uiImage: image)
+                                .resizable()
+                                .scaledToFit()
+                                .opacity(imageOpacity)
+                                .id(loadedURL)
+                        }
                     }
-                    if let image {
-                        Image(uiImage: image)
-                            .resizable()
-                            .scaledToFit()
-                            .opacity(imageOpacity)
-                            .id(loadedURL)
+                    .frame(maxWidth: 520, maxHeight: logoMaxHeight, alignment: .bottomLeading)
+
+                    if let nameBelow, !nameBelow.isEmpty {
+                        Text(nameBelow)
+                            .font(.appFont(size: 28, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.92))
+                            .lineLimit(2)
+                            .shadow(color: .black.opacity(0.6), radius: 6, y: 3)
+                            .frame(maxWidth: 620, alignment: .leading)
                     }
                 }
-                .frame(maxWidth: 520, maxHeight: 136, alignment: .bottomLeading)
             } else {
                 Text(title)
                     .font(.appFont(size: 54, weight: .bold))

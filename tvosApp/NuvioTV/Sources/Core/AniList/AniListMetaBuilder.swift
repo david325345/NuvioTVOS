@@ -133,6 +133,15 @@ enum AniListMetaBuilder {
         )
     }
 
+    /// The name shown under the logo of an AniList title: its logo is the series', so it can't
+    /// tell a second season from the first. In details only with "Each Entry", where a title is
+    /// one season; with "One Title" it is the whole series.
+    static func nameUnderLogo(_ meta: NuvioMeta, inDetails: Bool = false) -> String? {
+        guard aniListID(from: meta.id) != nil, !meta.name.isEmpty else { return nil }
+        if inDetails, AniListSettings.seasonMode != .separate { return nil }
+        return meta.name
+    }
+
     /// A card with TheTVDB's background and logo in place of AniList's banner, for Home's hero.
     static func applying(_ artwork: Artwork, to card: NuvioMeta) -> NuvioMeta {
         NuvioMeta(
@@ -256,6 +265,19 @@ enum AniListMetaBuilder {
         return (ids, missing)
     }
 
+    /// The season before `media`: its latest prequel that is a series (TV, TV Short or ONA).
+    /// A film before it is not a season, and its pictures would be the film's.
+    static func previousSeason(of media: AniListMedia) -> Int? {
+        (media.relations?.edges ?? [])
+            .compactMap { edge -> AniListMedia? in
+                guard edge.relationType == "PREQUEL", let node = edge.node, node.id != media.id,
+                      node.type == nil || node.type == "ANIME", isTab(node) else { return nil }
+                return node
+            }
+            .max { sortKey($0) < sortKey($1) }?
+            .id
+    }
+
     private static func sortKey(_ media: AniListMedia) -> Int {
         let date = media.startDate
         return (date?.year ?? 9999) * 10_000 + (date?.month ?? 12) * 100 + (date?.day ?? 31)
@@ -365,6 +387,13 @@ enum AniListMetaBuilder {
         var logo: String? = nil
 
         static let empty = Artwork()
+
+        var isComplete: Bool { background != nil && logo != nil }
+
+        /// These pictures, with what is missing taken from `other`.
+        func filled(by other: Artwork) -> Artwork {
+            Artwork(background: background ?? other.background, logo: logo ?? other.logo)
+        }
 
         init(background: String? = nil, logo: String? = nil) {
             self.background = background
