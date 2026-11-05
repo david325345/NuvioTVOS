@@ -497,4 +497,142 @@ final class AniListTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(started), 2)
         slow.cancel()
     }
+
+    // MARK: Account
+
+    func testThePastedTokenIsFoundInWhateverWasCopied() {
+        XCTAssertEqual(AniListAccount.token(fromPasted: "  abc.def.ghi \n"), "abc.def.ghi")
+        XCTAssertEqual(
+            AniListAccount.token(fromPasted: "https://anilist.co/api/v2/oauth/pin#access_token=abc.def&token_type=Bearer&expires_in=31536000"),
+            "abc.def"
+        )
+        XCTAssertEqual(AniListAccount.token(fromPasted: ""), "")
+        XCTAssertEqual(
+            AniListAccount.authorizeURL(clientID: " 12345 ")?.absoluteString,
+            "https://anilist.co/api/v2/oauth/authorize?client_id=12345&response_type=token"
+        )
+        XCTAssertNil(AniListAccount.authorizeURL(clientID: "abc"))
+        XCTAssertNil(AniListAccount.authorizeURL(clientID: ""))
+    }
+
+    private func entry(_ status: String?, progress: Int = 0, repeatCount: Int = 0, started: Bool = true) -> AniListListEntry {
+        AniListListEntry(id: 1, mediaId: 101, status: status, progress: progress, repeatCount: repeatCount,
+                         startedAt: started ? AniListDate(year: 2026, month: 1, day: 1) : nil)
+    }
+
+    func testWatchingMovesProgressForwardOnly() {
+        typealias Change = AniListAccount.Change
+        // Not on a list: starts watching today.
+        XCTAssertEqual(AniListAccount.change(for: .watched(episode: 1, byPlaying: true), entry: nil, total: 12),
+                       Change(status: "CURRENT", progress: 1, startsToday: true))
+        // Planning: moves to Watching.
+        XCTAssertEqual(AniListAccount.change(for: .watched(episode: 3, byPlaying: true), entry: entry("PLANNING", started: false), total: 12),
+                       Change(status: "CURRENT", progress: 3, startsToday: true))
+        // Watching, an older episode again: nothing.
+        XCTAssertNil(AniListAccount.change(for: .watched(episode: 4, byPlaying: true), entry: entry("CURRENT", progress: 5), total: 12))
+        // Watching, the next one.
+        XCTAssertEqual(AniListAccount.change(for: .watched(episode: 6, byPlaying: true), entry: entry("CURRENT", progress: 5), total: 12),
+                       Change(status: "CURRENT", progress: 6))
+        // The last one completes it.
+        XCTAssertEqual(AniListAccount.change(for: .watched(episode: 12, byPlaying: true), entry: entry("CURRENT", progress: 11), total: 12),
+                       Change(status: "COMPLETED", progress: 12, completesToday: true))
+        // Airing with no known total never completes.
+        XCTAssertEqual(AniListAccount.change(for: .watched(episode: 30, byPlaying: true), entry: entry("CURRENT", progress: 29), total: nil),
+                       Change(status: "CURRENT", progress: 30))
+        // A film (one episode).
+        XCTAssertEqual(AniListAccount.change(for: .watched(episode: 1, byPlaying: true), entry: nil, total: 1),
+                       Change(status: "COMPLETED", progress: 1, startsToday: true, completesToday: true))
+    }
+
+    func testRewatchesAndCompletedEntries() {
+        typealias Change = AniListAccount.Change
+        // Playing the first episode of a completed series starts a rewatch; marking it doesn't.
+        XCTAssertEqual(AniListAccount.change(for: .watched(episode: 1, byPlaying: true), entry: entry("COMPLETED", progress: 12), total: 12),
+                       Change(status: "REPEATING", progress: 1))
+        XCTAssertNil(AniListAccount.change(for: .watched(episode: 1, byPlaying: false), entry: entry("COMPLETED", progress: 12), total: 12))
+        XCTAssertNil(AniListAccount.change(for: .watched(episode: 5, byPlaying: true), entry: entry("COMPLETED", progress: 12), total: 12))
+        // A rewatch counts on and ends as another completion.
+        XCTAssertEqual(AniListAccount.change(for: .watched(episode: 2, byPlaying: true), entry: entry("REPEATING", progress: 1, repeatCount: 1), total: 12),
+                       Change(progress: 2))
+        XCTAssertEqual(AniListAccount.change(for: .watched(episode: 12, byPlaying: true), entry: entry("REPEATING", progress: 11, repeatCount: 1), total: 12),
+                       Change(status: "COMPLETED", progress: 12, repeatCount: 2, completesToday: true))
+    }
+
+    func testUnwatchingGoesBackToTheEpisodeBefore() {
+        typealias Change = AniListAccount.Change
+        XCTAssertEqual(AniListAccount.change(for: .unwatched(episode: 5), entry: entry("CURRENT", progress: 7), total: 12),
+                       Change(progress: 4))
+        XCTAssertEqual(AniListAccount.change(for: .unwatched(episode: 12), entry: entry("COMPLETED", progress: 12), total: 12),
+                       Change(status: "CURRENT", progress: 11))
+        XCTAssertNil(AniListAccount.change(for: .unwatched(episode: 9), entry: entry("CURRENT", progress: 7), total: 12))
+        XCTAssertNil(AniListAccount.change(for: .unwatched(episode: 1), entry: nil, total: 12))
+    }
+
+    func testEpisodeNumbersAndEntriesOfATitle() throws {
+        XCTAssertEqual(AniListAccount.episodeNumber(in: "anilist:102:5"), 5)
+        XCTAssertNil(AniListAccount.episodeNumber(in: "anilist:102"))
+        XCTAssertNil(AniListAccount.episodeNumber(in: "tt0903747:1:1"))
+        let meta = NuvioMeta(id: "anilist:101", name: "Kaiju Sentai", type: "series", videos: [
+            NuvioVideo(id: "anilist:101:1", title: "1", season: 1, episode: 1, thumbnail: nil, overview: nil, released: nil, rating: nil),
+            NuvioVideo(id: "anilist:102:1", title: "1", season: 2, episode: 1, thumbnail: nil, overview: nil, released: nil, rating: nil),
+            NuvioVideo(id: "anilist:102:2", title: "2", season: 2, episode: 2, thumbnail: nil, overview: nil, released: nil, rating: nil),
+        ])
+        XCTAssertEqual(AniListAccount.entryIDs(of: meta), [101, 102])
+        XCTAssertEqual(AniListAccount.entryIDs(of: NuvioMeta(id: "anilist:555", name: "Film", type: "movie")), [555])
+    }
+
+    func testListEntriesDecodeWithTheirRewatchCount() throws {
+        let json = #"{"data":{"Page":{"mediaList":[{"id":9,"mediaId":21202,"status":"CURRENT","progress":4,"repeat":1,"score":80,"startedAt":{"year":2026,"month":11,"day":1},"media":{"id":21202,"episodes":10,"isFavourite":true}}]}}}"#
+        let list = try XCTUnwrap(decoder.decode(AniListEntryPageResponse.self, from: Data(json.utf8)).data?.Page?.mediaList)
+        XCTAssertEqual(list.first?.repeatCount, 1)
+        XCTAssertEqual(list.first?.progress, 4)
+        XCTAssertEqual(list.first?.score, 80)
+        XCTAssertEqual(list.first?.media?.isFavourite, true)
+    }
+
+    // MARK: Cinemeta anime on AniList
+
+    func testAirDaysAreComparedAsDays() {
+        XCTAssertEqual(AniListMatcher.day(of: "2016-01-14T00:00:00.000Z"), "2016-01-14")
+        XCTAssertNil(AniListMatcher.day(of: "2016"))
+        XCTAssertEqual(AniListMatcher.daysBetween("2016-01-14", "2016-01-15"), 1)
+        XCTAssertEqual(AniListMatcher.daysBetween("2016-01-15", "2016-01-14"), -1)
+    }
+
+    func testACinemetaEpisodeIsMatchedByItsAirDayThenByTheTVDBNumbers() {
+        typealias Candidate = AniListMatcher.Candidate
+        // A split season: TheTVDB S1E13 is the first episode of the second AniList entry.
+        let candidates = [
+            Candidate(entryID: 1, episode: 12, airDay: "2026-03-27", tvdbSeason: 1, tvdbEpisode: 12),
+            Candidate(entryID: 2, episode: 1, airDay: "2026-07-03", tvdbSeason: 1, tvdbEpisode: 13),
+            Candidate(entryID: 2, episode: 2, airDay: "2026-07-10", tvdbSeason: 1, tvdbEpisode: 14),
+        ]
+        XCTAssertEqual(AniListMatcher.pick(from: candidates, airDay: "2026-07-03", season: 1, episode: 13)?.episode, 1)
+        // A day off for time zones.
+        XCTAssertEqual(AniListMatcher.pick(from: candidates, airDay: "2026-07-11", season: 1, episode: 14), candidates[2])
+        // IMDb numbers it differently: the day still wins.
+        XCTAssertEqual(AniListMatcher.pick(from: candidates, airDay: "2026-07-03", season: 2, episode: 1), candidates[1])
+        // No day: TheTVDB's numbers.
+        XCTAssertEqual(AniListMatcher.pick(from: candidates, airDay: nil, season: 1, episode: 12), candidates[0])
+        // Nothing that day and no numbers: nothing.
+        XCTAssertNil(AniListMatcher.pick(from: candidates, airDay: "2026-05-01", season: 3, episode: 1))
+
+        // Two episodes the same day: the numbers tell them apart, or nothing is written.
+        let premiere = [
+            Candidate(entryID: 5, episode: 1, airDay: "2026-01-10", tvdbSeason: 1, tvdbEpisode: 1),
+            Candidate(entryID: 5, episode: 2, airDay: "2026-01-10", tvdbSeason: 1, tvdbEpisode: 2),
+        ]
+        XCTAssertEqual(AniListMatcher.pick(from: premiere, airDay: "2026-01-10", season: 1, episode: 2), premiere[1])
+        XCTAssertNil(AniListMatcher.pick(from: premiere, airDay: "2026-01-10", season: 3, episode: 7))
+    }
+
+    func testAniZipEpisodesKeepTheirTheTVDBNumbersAndDays() throws {
+        let json = #"{"episodes":{"1":{"seasonNumber":1,"episodeNumber":"13","absoluteEpisodeNumber":13,"airdate":"2026-07-03","title":{"en":"Again"}}}}"#
+        let response = try decoder.decode(AniZipMappingsResponse.self, from: Data(json.utf8))
+        let episode = try XCTUnwrap(response.episodes?["1"])
+        XCTAssertEqual(episode.seasonNumber, 1)
+        XCTAssertEqual(episode.episodeNumber, 13)
+        XCTAssertEqual(episode.airDay, "2026-07-03")
+        XCTAssertEqual(episode.englishTitle, "Again")
+    }
 }

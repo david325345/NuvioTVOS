@@ -9,6 +9,10 @@ extension SettingsKey {
     static let aniListHideCinemetaDuplicates = "nuvio.tv.settings.integrations.aniListHideCinemetaDuplicates"
     static let aniListEpisodeDetails = "nuvio.tv.settings.integrations.aniListEpisodeDetails"
     static let aniListAdult = "nuvio.tv.settings.integrations.aniListAdult"
+    static let aniListClientID = "nuvio.tv.settings.integrations.aniListClientID"
+    static let aniListScrobble = "nuvio.tv.settings.integrations.aniListScrobble"
+    static let aniListScrobbleCinemeta = "nuvio.tv.settings.integrations.aniListScrobbleCinemeta"
+    static let aniListListRows = "nuvio.tv.settings.integrations.aniListListRows"
 }
 
 /// Settings → Integrations → AniList. Anime from AniList keep their `anilist:` ids everywhere,
@@ -79,6 +83,26 @@ enum AniListSettings {
         bool(SettingsKey.aniListAdult, default: false)
     }
 
+    /// The Client ID of the viewer's AniList API client, which AniList asks for when they log in.
+    static var clientID: String {
+        (ProfileSettings.current.string(forKey: SettingsKey.aniListClientID) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Write how far the viewer watched an AniList title to their AniList list.
+    static var scrobbles: Bool {
+        AniListAccount.isLoggedIn && bool(SettingsKey.aniListScrobble, default: true)
+    }
+
+    /// Also for anime from Cinemeta, found on AniList by their TMDB/IMDb id and air dates.
+    static var scrobblesCinemeta: Bool {
+        scrobbles && bool(SettingsKey.aniListScrobbleCinemeta, default: true)
+    }
+
+    /// The viewer's lists (Watching, Planning, Paused) as Home rows.
+    static var showsListRows: Bool {
+        showsHomeRows && AniListAccount.isLoggedIn && bool(SettingsKey.aniListListRows, default: true)
+    }
+
     /// What Home and Search read from these settings. It is part of their source signatures, so
     /// turning AniList on or changing what it shows reloads Home and drops cached search results.
     static var sourceSignature: String {
@@ -90,6 +114,7 @@ enum AniListSettings {
             hidesCinemetaDuplicates ? "dedupe" : "all",
             titleLanguage.rawValue,
             showsAdult ? "adult" : "safe",
+            showsListRows ? "lists:\(AniListAccount.login?.viewerID ?? 0)" : "nolists",
         ].joined(separator: ",")
     }
 
