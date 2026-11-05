@@ -5447,9 +5447,27 @@ private struct TvDetailsLogo: View {
                let url = URL(string: logoUrl) {
                 AsyncImage(url: url) { phase in
                     if case .success(let image) = phase {
-                        image
-                            .resizable()
-                            .scaledToFit()
+                        if let nameBelow = AniListMetaBuilder.nameUnderLogo(meta, inDetails: true) {
+                            // The season's own name under the series' logo.
+                            VStack(alignment: alignment == .center ? .center : .leading, spacing: 8) {
+                                image
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(maxHeight: 92, alignment: alignment)
+                                Text(nameBelow)
+                                    .font(.appFont(size: 26, weight: .semibold))
+                                    .foregroundColor(.white.opacity(0.92))
+                                    .lineLimit(2)
+                                    .minimumScaleFactor(0.8)
+                                    .shadow(color: .black.opacity(0.65), radius: 10, y: 4)
+                                    .multilineTextAlignment(alignment == .center ? .center : .leading)
+                            }
+                            .frame(maxWidth: 560, alignment: alignment)
+                        } else {
+                            image
+                                .resizable()
+                                .scaledToFit()
+                        }
                     } else {
                         titleFallback
                     }

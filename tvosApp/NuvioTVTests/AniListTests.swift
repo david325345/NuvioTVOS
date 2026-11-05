@@ -1,3 +1,4 @@
+import ImageIO
 import XCTest
 @testable import NuvioTV
 
@@ -400,6 +401,78 @@ final class AniListTests: XCTestCase {
         XCTAssertEqual(withoutAniZip.backgroundUrl, "https://img/101b.jpg")
         XCTAssertNil(withoutAniZip.logoUrl)
         XCTAssertEqual(AniListMetaBuilder.Artwork(tabs: tabs, aniZip: [:]), .empty)
+    }
+
+    /// A picture `width`×`height`: letters on a see-through background, or a filled still.
+    private func picture(width: Int, height: Int, seeThrough: Bool, type: String = "public.png") throws -> Data {
+        let context = try XCTUnwrap(CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        context.clear(CGRect(x: 0, y: 0, width: width, height: height))
+        context.setFillColor(red: 0.9, green: 0.2, blue: 0.3, alpha: 1)
+        if seeThrough {
+            context.fill(CGRect(x: width / 10, y: height / 3, width: width * 8 / 10, height: height / 3))
+        } else {
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        }
+        let image = try XCTUnwrap(context.makeImage())
+        let data = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(data as CFMutableData, type as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        return data as Data
+    }
+
+    func testOnlyALogoStandsInTheHerosTitle() throws {
+        XCTAssertTrue(AniListClient.looksLikeLogo(try picture(width: 400, height: 150, seeThrough: true)))
+        // A still or a poster, in a PNG or a JPEG.
+        XCTAssertFalse(AniListClient.looksLikeLogo(try picture(width: 400, height: 225, seeThrough: false)))
+        XCTAssertFalse(AniListClient.looksLikeLogo(try picture(width: 400, height: 225, seeThrough: false, type: "public.jpeg")))
+        XCTAssertFalse(AniListClient.looksLikeLogo(try picture(width: 200, height: 400, seeThrough: true)))
+        XCTAssertFalse(AniListClient.looksLikeLogo(Data("<html>Not Found</html>".utf8)))
+    }
+
+    func testASecondSeasonTakesItsPicturesFromTheSeasonBefore() throws {
+        func node(_ id: Int, _ format: String, _ year: Int, type: String = "ANIME") -> AniListMedia {
+            AniListMedia(id: id, type: type, format: format, startDate: AniListDate(year: year, month: 1, day: 1))
+        }
+        let season3 = AniListMedia(id: 3, format: "TV", relations: AniListRelationConnection(edges: [
+            AniListRelationEdge(relationType: "PREQUEL", node: node(1, "TV", 2020)),
+            AniListRelationEdge(relationType: "PREQUEL", node: node(2, "TV", 2022)),
+            AniListRelationEdge(relationType: "PREQUEL", node: node(9, "MOVIE", 2023)),
+            AniListRelationEdge(relationType: "SEQUEL", node: node(4, "TV", 2026)),
+            AniListRelationEdge(relationType: "ADAPTATION", node: node(5, "MANGA", 2018, type: "MANGA")),
+        ]))
+        XCTAssertEqual(AniListMetaBuilder.previousSeason(of: season3), 2)
+
+        // After a film, with no season before it.
+        let afterFilm = AniListMedia(id: 10, format: "TV", relations: AniListRelationConnection(edges: [
+            AniListRelationEdge(relationType: "PREQUEL", node: node(9, "MOVIE", 2023)),
+        ]))
+        XCTAssertNil(AniListMetaBuilder.previousSeason(of: afterFilm))
+        XCTAssertNil(AniListMetaBuilder.previousSeason(of: AniListMedia(id: 1, format: "TV")))
+
+        let own = AniListMetaBuilder.Artwork(background: nil, logo: "https://tvdb/s2-logo.png")
+        let earlier = AniListMetaBuilder.Artwork(background: "https://tvdb/s1-fanart.jpg", logo: "https://tvdb/s1-logo.png")
+        XCTAssertFalse(own.isComplete)
+        XCTAssertEqual(own.filled(by: earlier), AniListMetaBuilder.Artwork(background: "https://tvdb/s1-fanart.jpg", logo: "https://tvdb/s2-logo.png"))
+        XCTAssertTrue(own.filled(by: earlier).isComplete)
+    }
+
+    func testArmServerGivesTheIMDbIdAniZipLacks() {
+        let json = #"{"anidb":17617,"anilist":163132,"imdb":"tt21209876","themoviedb":null,"thetvdb":424536}"#
+        XCTAssertEqual(AniListService.armIMDbID(in: Data(json.utf8)), "tt21209876")
+        XCTAssertNil(AniListService.armIMDbID(in: Data(#"{"anilist":1,"imdb":null}"#.utf8)))
+        XCTAssertNil(AniListService.armIMDbID(in: Data("null".utf8)))
+        XCTAssertNil(AniListService.armIMDbID(in: Data(#"{"imdb":"21209876"}"#.utf8)))
+    }
+
+    func testTheHeroNamesTheSeasonUnderTheSeriesLogo() throws {
+        let card = AniListMetaBuilder.card(try XCTUnwrap(try entries()[102]), language: .romaji)
+        XCTAssertEqual(AniListMetaBuilder.nameUnderLogo(card), card.name)
+        let other = NuvioMeta(id: "tt0903747", name: "Breaking Bad", type: "series")
+        XCTAssertNil(AniListMetaBuilder.nameUnderLogo(other))
     }
 
     func testTheHeroTakesTheTVDBPicturesAndKeepsTheRest() throws {

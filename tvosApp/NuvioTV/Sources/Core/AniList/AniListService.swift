@@ -358,11 +358,18 @@ enum AniListService {
             episodes[tab.id] = AniListMetaBuilder.episodes(of: tab, season: index + 1, aniZip: aniZip[tab.id]?.episodes ?? [:])
         }
 
-        let artwork = await Self.fillingArtwork(
-            AniListMetaBuilder.Artwork(tabs: tabs, aniZip: aniZip),
-            mappings: tabs.compactMap { aniZip[$0.id]?.mappings }.first,
-            isFilm: tabs.count == 1 && AniListMetaBuilder.isMovie(tabs[0])
-        )
+        // Pictures of the first entry that has them, in tab order; with "Each Entry", a second
+        // season without pictures takes its first season's.
+        let isFilm = tabs.count == 1 && AniListMetaBuilder.isMovie(tabs[0])
+        var artwork = AniListMetaBuilder.Artwork.empty
+        if AniListSettings.usesEpisodeDetails {
+            for tab in tabs where !artwork.isComplete {
+                artwork = artwork.filled(by: await Self.entryArtwork(entryID: tab.id, aniZip: aniZip[tab.id], isFilm: isFilm))
+            }
+            if !isFilm {
+                artwork = await Self.borrowingFromEarlierSeasons(artwork, entryID: tabs[0].id, known: tabs[0])
+            }
+        }
 
         guard let meta = AniListMetaBuilder.meta(tabs: tabs, episodes: episodes, language: language, artwork: artwork) else {
             throw DetailsError.notFound
@@ -399,30 +406,96 @@ enum AniListService {
         return try? decoder.decode(AniZipMappingsResponse.self, from: data)
     }
 
-    /// What TheTVDB lacks, from the next source that has it, found by the ids ani.zip gives
-    /// (never by name): TMDB (with TMDB on in Settings, its key and artwork), then Metahub by
-    /// IMDb id, where Cinemeta's titles take theirs. Metahub is asked only for pictures it
-    /// answers for, so a title without a logo keeps its name.
-    private static func fillingArtwork(
-        _ start: AniListMetaBuilder.Artwork,
-        mappings: AniZipMappings?,
+    // MARK: Pictures
+
+    /// The pictures of one entry: TheTVDB's by way of ani.zip, then what is missing from TMDB
+    /// (with TMDB on in Settings, its key and artwork) and from Metahub, where Cinemeta takes
+    /// its pictures. Both are found by ids, never by name: ani.zip's, or arm-server's IMDb id
+    /// when ani.zip has none. A logo is taken only when it is one (`AniListClient.isLogo`), so
+    /// a still never stands in the hero's title; with no logo, the title's name stays.
+    static func entryArtwork(
+        entryID: Int,
+        aniZip: AniZipMappingsResponse?,
         isFilm: Bool
     ) async -> AniListMetaBuilder.Artwork {
-        var artwork = start
-        guard artwork.background == nil || artwork.logo == nil, let mappings else { return artwork }
-        if let tmdbID = mappings.themoviedbID,
+        var artwork = AniListMetaBuilder.Artwork(background: aniZip?.fanart)
+        artwork.logo = await checkedLogo(aniZip?.clearLogo)
+        guard !artwork.isComplete else { return artwork }
+
+        let mappings = aniZip?.mappings
+        if let tmdbID = mappings?.themoviedbID,
            let found = await TmdbDetailsService.artwork(tmdbId: tmdbID, mediaType: isFilm ? "movie" : "tv") {
             artwork.background = artwork.background ?? found.background
-            artwork.logo = artwork.logo ?? found.logo
+            if artwork.logo == nil { artwork.logo = await checkedLogo(found.logo) }
         }
-        guard let imdbID = mappings.imdbID, let metahub = metahubArtwork(imdbID: imdbID) else { return artwork }
-        if artwork.logo == nil, await AniListClient.shared.imageExists(metahub.logo) {
-            artwork.logo = metahub.logo.absoluteString
-        }
+        guard !artwork.isComplete else { return artwork }
+
+        var imdbID = mappings?.imdbID
+        if imdbID == nil { imdbID = await armIMDbID(aniListID: entryID) }
+        guard let imdbID, let metahub = metahubArtwork(imdbID: imdbID) else { return artwork }
+        if artwork.logo == nil { artwork.logo = await checkedLogo(metahub.logo.absoluteString) }
         if artwork.background == nil, await AniListClient.shared.imageExists(metahub.background) {
             artwork.background = metahub.background.absoluteString
         }
         return artwork
+    }
+
+    private static func checkedLogo(_ candidate: String?) async -> String? {
+        guard let candidate, let url = URL(string: candidate), await AniListClient.shared.isLogo(url) else { return nil }
+        return candidate
+    }
+
+    /// What an entry still lacks, from its earlier seasons, at most three back: a second season
+    /// new on ani.zip has no pictures yet, but its first has. `known` is the entry when its
+    /// relations are at hand; otherwise each step asks AniList once and keeps the answer a week.
+    static func borrowingFromEarlierSeasons(
+        _ artwork: AniListMetaBuilder.Artwork,
+        entryID: Int,
+        known: AniListMedia?
+    ) async -> AniListMetaBuilder.Artwork {
+        var artwork = artwork
+        var current = known?.id == entryID ? known : nil
+        var currentID = entryID
+        var seen: Set<Int> = [entryID]
+        var steps = 0
+        while steps < 3, !artwork.isComplete, !Task.isCancelled {
+            steps += 1
+            let media: AniListMedia?
+            if let current, current.relations != nil {
+                media = current
+            } else {
+                media = await prequels(of: currentID)
+            }
+            guard let media, let previousID = AniListMetaBuilder.previousSeason(of: media),
+                  seen.insert(previousID).inserted else { break }
+            let zip = await aniZipMappings(entryID: previousID, finished: true)
+            artwork = artwork.filled(by: await entryArtwork(entryID: previousID, aniZip: zip, isFilm: false))
+            current = nil
+            currentID = previousID
+        }
+        return artwork
+    }
+
+    private static func prequels(of id: Int) async -> AniListMedia? {
+        guard let data = try? await AniListClient.shared.query(
+            AniListQueries.prequels, variables: ["id": id], ttl: finishedTTL, notesStatus: false
+        ) else { return nil }
+        return try? decoder.decode(AniListMediaResponse.self, from: data).data?.Media
+    }
+
+    /// The IMDb id arm-server has for an AniList entry. Kept a week.
+    static func armIMDbID(aniListID: Int) async -> String? {
+        guard let url = URL(string: "https://arm.haglund.dev/api/v2/ids?source=anilist&id=\(aniListID)"),
+              let data = try? await AniListClient.shared.get(url, ttl: finishedTTL) else { return nil }
+        return armIMDbID(in: data)
+    }
+
+    static func armIMDbID(in data: Data) -> String? {
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let imdb = object["imdb"] as? String else { return nil }
+        let id = imdb.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard id.hasPrefix("tt"), id.count > 2, id.dropFirst(2).allSatisfy(\.isNumber) else { return nil }
+        return id
     }
 
     /// Metahub's logo and background of an IMDb title, as Cinemeta gives them.
@@ -439,12 +512,12 @@ enum AniListService {
     static func heroArtwork(for card: NuvioMeta) async -> AniListMetaBuilder.Artwork? {
         guard AniListSettings.isEnabled, AniListSettings.usesEpisodeDetails,
               let entryID = AniListMetaBuilder.aniListID(from: card.id) else { return nil }
+        let isFilm = card.type == "movie"
         let response = await aniZipMappings(entryID: entryID, finished: card.status == AniListMetaBuilder.status("FINISHED"))
-        let artwork = await fillingArtwork(
-            AniListMetaBuilder.Artwork(background: response?.fanart, logo: response?.clearLogo),
-            mappings: response?.mappings,
-            isFilm: card.type == "movie"
-        )
+        var artwork = await entryArtwork(entryID: entryID, aniZip: response, isFilm: isFilm)
+        if !isFilm {
+            artwork = await borrowingFromEarlierSeasons(artwork, entryID: entryID, known: nil)
+        }
         return artwork == .empty ? nil : artwork
     }
 

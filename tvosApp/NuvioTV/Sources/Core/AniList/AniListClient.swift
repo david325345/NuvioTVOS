@@ -1,5 +1,7 @@
+import CoreGraphics
 import CryptoKit
 import Foundation
+import ImageIO
 
 /// Talks to graphql.anilist.co (and api.ani.zip) from this Apple TV.
 ///
@@ -167,6 +169,51 @@ actor AniListClient {
         let exists = (200..<300).contains(http?.statusCode ?? 0) && (type.isEmpty || type.hasPrefix("image/"))
         cache.write(Data([exists ? 1 : 0]), key: key)
         return exists
+    }
+
+    /// Whether the picture at `url` is a title logo: letters on a see-through background. A still
+    /// or a poster in its place sits in the hero's title as a miniature. Kept a week; a network
+    /// failure is not kept.
+    func isLogo(_ url: URL) async -> Bool {
+        let key = Self.cacheKey(for: Data("logo \(url.absoluteString)".utf8))
+        if let saved = cache.read(key: key, maxAge: Self.imageCheckTTL) {
+            return saved == Data([1])
+        }
+        guard let answer = try? await session.data(from: url) else { return false }
+        let code = (answer.1 as? HTTPURLResponse)?.statusCode ?? 0
+        let isLogo = (200..<300).contains(code) && Self.looksLikeLogo(answer.0)
+        cache.write(Data([isLogo ? 1 : 0]), key: key)
+        return isLogo
+    }
+
+    /// A logo is not taller than wide, and at least a twentieth of it is see-through. A JPEG,
+    /// or a PNG without transparency, is a picture.
+    static func looksLikeLogo(_ data: Data) -> Bool {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue,
+              let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue,
+              width > 0, height > 0, height <= width * 1.5 else { return false }
+        if let hasAlpha = properties[kCGImagePropertyHasAlpha] as? Bool, !hasAlpha { return false }
+
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: 64,
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return false }
+        let side = 32
+        guard let context = CGContext(
+            data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: side * 4,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return false }
+        context.clear(CGRect(x: 0, y: 0, width: side, height: side))
+        context.draw(image, in: CGRect(x: 0, y: 0, width: side, height: side))
+        guard let pixels = context.data?.bindMemory(to: UInt8.self, capacity: side * side * 4) else { return false }
+        var clear = 0
+        for index in stride(from: 3, to: side * side * 4, by: 4) where pixels[index] < 26 {
+            clear += 1
+        }
+        return Double(clear) / Double(side * side) >= 0.05
     }
 
     private func send(body: Data, key: String, notesStatus: Bool, token: String? = nil, saves: Bool = true) async throws -> Answer {
