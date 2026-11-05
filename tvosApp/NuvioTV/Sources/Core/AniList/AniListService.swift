@@ -483,6 +483,17 @@ enum AniListService {
         return try? decoder.decode(AniListMediaResponse.self, from: data).data?.Media
     }
 
+    /// The IMDb id of an AniList title, for Trailerio's and IMDb's trailers only: ani.zip's, else
+    /// arm-server's. It is never written to the title, whose streams and ratings go by its
+    /// AniList id.
+    static func trailerIMDbID(metaID: String) async -> String? {
+        guard AniListSettings.isEnabled, let id = AniListMetaBuilder.aniListID(from: metaID) else { return nil }
+        if let imdbID = await aniZipMappings(entryID: id, finished: false)?.mappings?.imdbID {
+            return imdbID
+        }
+        return await armIMDbID(aniListID: id)
+    }
+
     /// The IMDb id arm-server has for an AniList entry. Kept a week.
     static func armIMDbID(aniListID: Int) async -> String? {
         guard let url = URL(string: "https://arm.haglund.dev/api/v2/ids?source=anilist&id=\(aniListID)"),
