@@ -10,6 +10,7 @@ enum AniListQueries {
     bannerImage
     description(asHtml: false)
     startDate { year month day }
+    trailer { id site }
     """
 
     /// What a card in a relations row needs.
@@ -28,7 +29,6 @@ enum AniListQueries {
     nextAiringEpisode { episode airingAt }
     airingSchedule(perPage: 50) { nodes { episode airingAt } }
     streamingEpisodes { title thumbnail }
-    trailer { id site }
     studios(isMain: true) { nodes { name isAnimationStudio } }
     relations { edges { relationType node { \(relationNodeFields) } } }
     """
