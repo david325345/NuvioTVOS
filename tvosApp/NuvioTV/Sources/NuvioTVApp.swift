@@ -11416,9 +11416,13 @@ private struct TVHeroView: View {
     }
 
     var body: some View {
+        // An AniList title's name under its logo: the logo shrinks and the description gives
+        // up a line, so the name never has to be cut short in the hero's fixed height.
+        let nameBelow = meta.logoUrl == nil ? nil : AniListMetaBuilder.nameUnderLogo(meta)
         VStack(alignment: .leading, spacing: 18) {
             if let logoUrl = meta.logoUrl {
-                CachedHeroLogo(url: logoUrl, title: meta.name, nameBelow: AniListMetaBuilder.nameUnderLogo(meta))
+                CachedHeroLogo(url: logoUrl, title: meta.name, nameBelow: nameBelow, logoMaxHeight: nameBelow == nil ? 136 : 100)
+                    .layoutPriority(nameBelow == nil ? 0 : 1)
             } else {
                 Text(meta.name)
                     .font(.appFont(size: 54, weight: .bold))
@@ -11439,7 +11443,7 @@ private struct TVHeroView: View {
                     .font(.appFont(size: 24, weight: .regular))
                     .foregroundColor(.white)
                     .lineSpacing(3)
-                    .lineLimit(4)
+                    .lineLimit(nameBelow == nil ? 4 : 3)
                     .frame(maxWidth: 900, alignment: .leading)
                     .padding(.top, 4)
             }
@@ -12395,8 +12399,9 @@ private struct TVGridHeroSlideshowView: View {
             Group {
                 if let logoURL = item.logoUrl, !logoURL.isEmpty {
                     let nameBelow = AniListMetaBuilder.nameUnderLogo(item)
-                    CachedHeroLogo(url: logoURL, title: item.name, nameBelow: nameBelow, logoMaxHeight: 110)
-                        .frame(maxWidth: 540, maxHeight: nameBelow == nil ? 110 : 190, alignment: .bottomLeading)
+                    CachedHeroLogo(url: logoURL, title: item.name, nameBelow: nameBelow, logoMaxHeight: nameBelow == nil ? 110 : 84)
+                        .frame(maxWidth: 540, maxHeight: nameBelow == nil ? 110 : nil, alignment: .bottomLeading)
+                        .layoutPriority(nameBelow == nil ? 0 : 1)
                 } else {
                     Text(item.name)
                         .font(.appFont(size: 48, weight: .bold))
@@ -12780,10 +12785,14 @@ private struct CachedHeroLogo: View {
                     .frame(maxWidth: 520, maxHeight: logoMaxHeight, alignment: .bottomLeading)
 
                     if let nameBelow, !nameBelow.isEmpty {
+                        // Whole, on up to two lines; a very long name gets a smaller font
+                        // rather than an ellipsis.
                         Text(nameBelow)
                             .font(.appFont(size: 28, weight: .semibold))
                             .foregroundColor(.white.opacity(0.92))
                             .lineLimit(2)
+                            .minimumScaleFactor(0.75)
+                            .fixedSize(horizontal: false, vertical: true)
                             .shadow(color: .black.opacity(0.6), radius: 6, y: 3)
                             .frame(maxWidth: 620, alignment: .leading)
                     }
