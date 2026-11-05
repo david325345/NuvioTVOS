@@ -261,6 +261,27 @@ enum AniListMetaBuilder {
         return (date?.year ?? 9999) * 10_000 + (date?.month ?? 12) * 100 + (date?.day ?? 31)
     }
 
+    // MARK: Episode labels
+
+    /// An episode's label: "E5" for an AniList title's first entry (AniList numbers each entry
+    /// on its own, so a first season says nothing), "S2 E5" from a second entry on (One Title),
+    /// and "S1 E5" for any other title. `separator` goes between the season and the episode.
+    static func episodeCode(id: String, season: Int, episode: Int, separator: String = " ") -> String {
+        if isAniListID(id), season <= 1 { return "E\(episode)" }
+        return "S\(season)\(separator)E\(episode)"
+    }
+
+    static func episodeCode(_ video: NuvioVideo, separator: String = " ") -> String {
+        episodeCode(id: video.id, season: video.season, episode: video.episode, separator: separator)
+    }
+
+    /// The player's episode line ("S1, E5 • Title") as "E5 • Title" for an AniList title's
+    /// first entry. Only what is shown changes: the line handed to the player stays as it is.
+    static func playerEpisodeLine(_ line: String, titleID: String?) -> String {
+        guard let titleID, isAniListID(titleID), line.hasPrefix("S1, E") else { return line }
+        return String(line.dropFirst("S1, ".count))
+    }
+
     // MARK: Episodes
 
     /// The episodes of one entry: its count from AniList (or what has aired so far), air dates

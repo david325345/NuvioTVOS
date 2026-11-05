@@ -5379,7 +5379,7 @@ private struct AniListOptionsSheet: View {
 
                         SettingsToggleRow(
                             title: L10n.string("settings_anilist_episode_details", fallback: "Episode Titles and Pictures"),
-                            subtitle: L10n.string("settings_anilist_episode_details_subtitle", fallback: "From api.ani.zip, where AniList has none, with backgrounds and logos from TheTVDB (TMDB's for films it lacks)"),
+                            subtitle: L10n.string("settings_anilist_episode_details_subtitle", fallback: "From api.ani.zip, where AniList has none, with backgrounds and logos from TheTVDB, TMDB or Metahub"),
                             isOn: $episodeDetails,
                             accentColor: accentColor,
                             isAvailable: enabled

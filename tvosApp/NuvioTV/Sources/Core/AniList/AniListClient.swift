@@ -112,6 +112,35 @@ actor AniListClient {
         cache.removeAll()
     }
 
+    /// How long whether a picture exists is remembered.
+    private static let imageCheckTTL: TimeInterval = 7 * 24 * 3600
+
+    /// Whether a picture answers at `url`. Metahub answers 404 for a title it has no logo of,
+    /// and a missing logo must leave the title's name in its place. Kept a week; a network
+    /// failure is not kept.
+    func imageExists(_ url: URL) async -> Bool {
+        let key = Self.cacheKey(for: Data("exists \(url.absoluteString)".utf8))
+        if let saved = cache.read(key: key, maxAge: Self.imageCheckTTL) {
+            return saved == Data([1])
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "HEAD"
+        guard let head = try? await session.data(for: request) else { return false }
+        var response = head.1
+        if (response as? HTTPURLResponse)?.statusCode == 405 {
+            // No HEAD there: ask for the first byte.
+            var get = URLRequest(url: url)
+            get.setValue("bytes=0-0", forHTTPHeaderField: "Range")
+            guard let firstByte = try? await session.data(for: get) else { return false }
+            response = firstByte.1
+        }
+        let http = response as? HTTPURLResponse
+        let type = http?.value(forHTTPHeaderField: "Content-Type")?.lowercased() ?? ""
+        let exists = (200..<300).contains(http?.statusCode ?? 0) && (type.isEmpty || type.hasPrefix("image/"))
+        cache.write(Data([exists ? 1 : 0]), key: key)
+        return exists
+    }
+
     private func send(body: Data, key: String, notesStatus: Bool) async throws -> Answer {
         do {
             try await waitForSlot()

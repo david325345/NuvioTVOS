@@ -298,10 +298,11 @@ enum AniListService {
             episodes[tab.id] = AniListMetaBuilder.episodes(of: tab, season: index + 1, aniZip: aniZip[tab.id]?.episodes ?? [:])
         }
 
-        var artwork = AniListMetaBuilder.Artwork(tabs: tabs, aniZip: aniZip)
-        if tabs.count == 1, AniListMetaBuilder.isMovie(tabs[0]) {
-            artwork = await Self.fillingFromTmdb(artwork, film: aniZip[tabs[0].id])
-        }
+        let artwork = await Self.fillingArtwork(
+            AniListMetaBuilder.Artwork(tabs: tabs, aniZip: aniZip),
+            mappings: tabs.compactMap { aniZip[$0.id]?.mappings }.first,
+            isFilm: tabs.count == 1 && AniListMetaBuilder.isMovie(tabs[0])
+        )
 
         guard let meta = AniListMetaBuilder.meta(tabs: tabs, episodes: episodes, language: language, artwork: artwork) else {
             throw DetailsError.notFound
@@ -338,28 +339,52 @@ enum AniListService {
         return try? decoder.decode(AniZipMappingsResponse.self, from: data)
     }
 
-    /// A film TheTVDB has no background or logo of takes TMDB's, found by the TMDB id ani.zip
-    /// gives (never by its name). Needs TMDB in Settings with its artwork on.
-    private static func fillingFromTmdb(_ artwork: AniListMetaBuilder.Artwork, film: AniZipMappingsResponse?) async -> AniListMetaBuilder.Artwork {
-        guard artwork.background == nil || artwork.logo == nil,
-              let tmdbID = film?.mappings?.themoviedbID,
-              let found = await TmdbDetailsService.artwork(tmdbId: tmdbID, mediaType: "movie") else { return artwork }
-        return AniListMetaBuilder.Artwork(
-            background: artwork.background ?? found.background,
-            logo: artwork.logo ?? found.logo
-        )
+    /// What TheTVDB lacks, from the next source that has it, found by the ids ani.zip gives
+    /// (never by name): TMDB (with TMDB on in Settings, its key and artwork), then Metahub by
+    /// IMDb id, where Cinemeta's titles take theirs. Metahub is asked only for pictures it
+    /// answers for, so a title without a logo keeps its name.
+    private static func fillingArtwork(
+        _ start: AniListMetaBuilder.Artwork,
+        mappings: AniZipMappings?,
+        isFilm: Bool
+    ) async -> AniListMetaBuilder.Artwork {
+        var artwork = start
+        guard artwork.background == nil || artwork.logo == nil, let mappings else { return artwork }
+        if let tmdbID = mappings.themoviedbID,
+           let found = await TmdbDetailsService.artwork(tmdbId: tmdbID, mediaType: isFilm ? "movie" : "tv") {
+            artwork.background = artwork.background ?? found.background
+            artwork.logo = artwork.logo ?? found.logo
+        }
+        guard let imdbID = mappings.imdbID, let metahub = metahubArtwork(imdbID: imdbID) else { return artwork }
+        if artwork.logo == nil, await AniListClient.shared.imageExists(metahub.logo) {
+            artwork.logo = metahub.logo.absoluteString
+        }
+        if artwork.background == nil, await AniListClient.shared.imageExists(metahub.background) {
+            artwork.background = metahub.background.absoluteString
+        }
+        return artwork
     }
 
-    /// The background and logo for Home's hero while an AniList card is focused, from ani.zip
-    /// (and TMDB for a film) only, so moving along a row costs no AniList requests.
+    /// Metahub's logo and background of an IMDb title, as Cinemeta gives them.
+    static func metahubArtwork(imdbID: String) -> (logo: URL, background: URL)? {
+        let id = imdbID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard id.hasPrefix("tt"), id.count > 2, id.dropFirst(2).allSatisfy(\.isNumber),
+              let logo = URL(string: "https://images.metahub.space/logo/medium/\(id)/img"),
+              let background = URL(string: "https://images.metahub.space/background/medium/\(id)/img") else { return nil }
+        return (logo, background)
+    }
+
+    /// The background and logo for Home's hero while an AniList card is focused, from ani.zip,
+    /// TMDB and Metahub only, so moving along a row costs no AniList requests.
     static func heroArtwork(for card: NuvioMeta) async -> AniListMetaBuilder.Artwork? {
         guard AniListSettings.isEnabled, AniListSettings.usesEpisodeDetails,
               let entryID = AniListMetaBuilder.aniListID(from: card.id) else { return nil }
         let response = await aniZipMappings(entryID: entryID, finished: card.status == AniListMetaBuilder.status("FINISHED"))
-        var artwork = AniListMetaBuilder.Artwork(background: response?.fanart, logo: response?.clearLogo)
-        if card.type == "movie" {
-            artwork = await fillingFromTmdb(artwork, film: response)
-        }
+        let artwork = await fillingArtwork(
+            AniListMetaBuilder.Artwork(background: response?.fanart, logo: response?.clearLogo),
+            mappings: response?.mappings,
+            isFilm: card.type == "movie"
+        )
         return artwork == .empty ? nil : artwork
     }
 
