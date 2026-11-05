@@ -133,6 +133,11 @@ enum AniListQueries {
     mutation ($animeId: Int) { ToggleFavourite(animeId: $animeId) { anime(perPage: 1) { nodes { id } } } }
     """
 
+    /// An entry's score, for a title shown without its details: Continue Watching keeps no ratings.
+    static let score = """
+    query ($id: Int) { Media(id: $id, type: ANIME) { id averageScore } }
+    """
+
     /// An entry's earlier seasons, for its pictures when it has none of its own.
     static let prequels = """
     query ($id: Int) {

@@ -521,6 +521,22 @@ enum AniListService {
         return artwork == .empty ? nil : artwork
     }
 
+    /// AniList's score of a title shown without its details, like an entry of Continue Watching,
+    /// which keeps no ratings. The card's own when it has it, else one small request kept a day.
+    static func ratings(for meta: NuvioMeta) async -> [NuvioExternalRating] {
+        guard AniListSettings.isEnabled, let id = AniListMetaBuilder.aniListID(from: meta.id) else { return [] }
+        let carried = (meta.externalRatings ?? []).filter { $0.source == AniListMetaBuilder.ratingSource }
+        guard carried.isEmpty else { return carried }
+        guard let data = try? await AniListClient.shared.query(
+                AniListQueries.score, variables: ["id": id], ttl: scoreTTL, notesStatus: false
+              ),
+              let media = try? decoder.decode(AniListMediaResponse.self, from: data).data?.Media,
+              let rating = AniListMetaBuilder.rating(media) else { return [] }
+        return [rating]
+    }
+
+    static let scoreTTL: TimeInterval = 24 * 3600
+
     /// Characters with their Japanese voice actors, and AniList's recommendations.
     static func extras(metaID: String) async -> (people: [TmdbPersonMetadata], recommendations: [RelatedTitle]) {
         guard AniListSettings.isEnabled, let id = AniListMetaBuilder.aniListID(from: metaID),

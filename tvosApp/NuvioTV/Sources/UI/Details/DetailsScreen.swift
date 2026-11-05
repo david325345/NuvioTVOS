@@ -5453,12 +5453,13 @@ private struct TvDetailsLogo: View {
                                 image
                                     .resizable()
                                     .scaledToFit()
-                                    .frame(maxHeight: 92, alignment: alignment)
+                                    .frame(maxHeight: 84, alignment: alignment)
                                 Text(nameBelow)
                                     .font(.appFont(size: 26, weight: .semibold))
                                     .foregroundColor(.white.opacity(0.92))
                                     .lineLimit(2)
-                                    .minimumScaleFactor(0.8)
+                                    .minimumScaleFactor(0.75)
+                                    .fixedSize(horizontal: false, vertical: true)
                                     .shadow(color: .black.opacity(0.65), radius: 10, y: 4)
                                     .multilineTextAlignment(alignment == .center ? .center : .leading)
                             }

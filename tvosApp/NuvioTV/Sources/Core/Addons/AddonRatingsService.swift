@@ -770,10 +770,13 @@ enum AddonRatingsService {
         let combined = await HomeHeroRatingsCache.shared.load(key: key) {
             async let addonRatingsTask = fetchRatings(for: meta, defaults: defaultsStore.value)
             async let mdbRatingsTask = MdbListDetailsService.fetchRatings(for: meta)
-            let (addonRatings, mdbRatings) = await (addonRatingsTask, mdbRatingsTask)
+            // An AniList title's own score: Continue Watching keeps no ratings, and MDBList
+            // and the add-ons don't know anilist: ids.
+            async let aniListRatingsTask = AniListService.ratings(for: meta)
+            let (addonRatings, mdbRatings, aniListRatings) = await (addonRatingsTask, mdbRatingsTask, aniListRatingsTask)
 
             var seen = Set<String>()
-            return (mdbRatings + addonRatings).filter { seen.insert($0.source.lowercased()).inserted }
+            return (aniListRatings + mdbRatings + addonRatings).filter { seen.insert($0.source.lowercased()).inserted }
         }
         return combined
     }
