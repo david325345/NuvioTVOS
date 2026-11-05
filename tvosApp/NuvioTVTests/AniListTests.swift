@@ -401,6 +401,21 @@ final class AniListTests: XCTestCase {
         XCTAssertEqual(AniListMetaBuilder.applying(.empty, to: card), card)
     }
 
+    // MARK: Episode labels
+
+    func testAniListEpisodesAreLabelledWithoutTheFirstSeason() {
+        XCTAssertEqual(AniListMetaBuilder.episodeCode(id: "anilist:101:1", season: 1, episode: 1), "E1")
+        XCTAssertEqual(AniListMetaBuilder.episodeCode(id: "anilist:102:5", season: 2, episode: 5), "S2 E5")
+        XCTAssertEqual(AniListMetaBuilder.episodeCode(id: "tt0903747:1:1", season: 1, episode: 1), "S1 E1")
+        XCTAssertEqual(AniListMetaBuilder.episodeCode(id: "anilist:101", season: 1, episode: 3, separator: " · "), "E3")
+        XCTAssertEqual(AniListMetaBuilder.episodeCode(id: "tt0903747", season: 5, episode: 14, separator: " · "), "S5 · E14")
+
+        XCTAssertEqual(AniListMetaBuilder.playerEpisodeLine("S1, E1 • Episode 1", titleID: "anilist:101"), "E1 • Episode 1")
+        XCTAssertEqual(AniListMetaBuilder.playerEpisodeLine("S2, E1 • Episode 1", titleID: "anilist:101"), "S2, E1 • Episode 1")
+        XCTAssertEqual(AniListMetaBuilder.playerEpisodeLine("S1, E1 • Pilot", titleID: "tt0903747"), "S1, E1 • Pilot")
+        XCTAssertEqual(AniListMetaBuilder.playerEpisodeLine("S1, E1 • Pilot", titleID: nil), "S1, E1 • Pilot")
+    }
+
     // MARK: Search
 
     @MainActor

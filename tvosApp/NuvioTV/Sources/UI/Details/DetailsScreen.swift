@@ -7558,7 +7558,7 @@ enum TvDetailsPlayTargetBuilder {
                 : L10n.string("action_resume", fallback: "Resume")
             return TvDetailsPlayTarget(
                 episode: target,
-                label: "\(verb) S\(target.season) E\(target.episode)",
+                label: "\(verb) \(AniListMetaBuilder.episodeCode(target))",
                 isPlayable: true
             )
         }
@@ -7581,7 +7581,7 @@ enum TvDetailsPlayTargetBuilder {
                     : L10n.string("details_upcoming", fallback: "Upcoming")
                 return TvDetailsPlayTarget(
                     episode: next,
-                    label: "\(verb) S\(next.season) E\(next.episode)",
+                    label: "\(verb) \(AniListMetaBuilder.episodeCode(next))",
                     isPlayable: EpisodeReleasePolicy.hasAired(next.released)
                 )
             }
@@ -7590,7 +7590,7 @@ enum TvDetailsPlayTargetBuilder {
             }) {
                 return TvDetailsPlayTarget(
                     episode: firstUnwatched,
-                    label: "\(L10n.string("details_next", fallback: "Next")) S\(firstUnwatched.season) E\(firstUnwatched.episode)",
+                    label: "\(L10n.string("details_next", fallback: "Next")) \(AniListMetaBuilder.episodeCode(firstUnwatched))",
                     isPlayable: true
                 )
             }
@@ -7599,7 +7599,7 @@ enum TvDetailsPlayTargetBuilder {
         let first = episodes.first(where: { $0.season > 0 }) ?? episodes.first
         return TvDetailsPlayTarget(
             episode: first,
-            label: first.map { "\(L10n.string("action_play", fallback: "Play")) S\($0.season) E\($0.episode)" }
+            label: first.map { "\(L10n.string("action_play", fallback: "Play")) \(AniListMetaBuilder.episodeCode($0))" }
                 ?? L10n.string("action_play", fallback: "Play"),
             isPlayable: true
         )
