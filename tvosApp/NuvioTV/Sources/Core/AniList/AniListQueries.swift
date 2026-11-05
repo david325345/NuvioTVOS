@@ -80,6 +80,75 @@ enum AniListQueries {
     }
     """
 
+    // MARK: The viewer's account (asked with their token)
+
+    static let viewer = """
+    query { Viewer { id name avatar { large } } }
+    """
+
+    /// The viewer's lists with these statuses, last changed first.
+    static let lists = """
+    query ($userId: Int, $statuses: [MediaListStatus]) {
+      MediaListCollection(userId: $userId, type: ANIME, status_in: $statuses, sort: [UPDATED_TIME_DESC]) {
+        lists { name status isCustomList entries { id mediaId status progress updatedAt media { \(cardFields) } } }
+      }
+    }
+    """
+
+    /// The viewer's entries of these anime, with their episode counts and whether they're favourites.
+    static let entryStates = """
+    query ($userId: Int, $ids: [Int], $perPage: Int) {
+      Page(perPage: $perPage) {
+        mediaList(userId: $userId, mediaId_in: $ids, type: ANIME) {
+          id mediaId status progress repeat score(format: POINT_100)
+          startedAt { year month day }
+          media { id episodes isFavourite }
+        }
+      }
+    }
+    """
+
+    /// Episode counts and favourites of anime the viewer may not have on a list yet.
+    static let mediaStates = """
+    query ($ids: [Int], $perPage: Int) {
+      Page(perPage: $perPage) { media(id_in: $ids, type: ANIME) { id episodes isFavourite } }
+    }
+    """
+
+    /// Changes one entry of the viewer's list. Variables left out stay as they are.
+    static let saveEntry = """
+    mutation ($mediaId: Int, $status: MediaListStatus, $progress: Int, $repeat: Int, $scoreRaw: Int, $startedAt: FuzzyDateInput, $completedAt: FuzzyDateInput) {
+      SaveMediaListEntry(mediaId: $mediaId, status: $status, progress: $progress, repeat: $repeat, scoreRaw: $scoreRaw, startedAt: $startedAt, completedAt: $completedAt) {
+        id mediaId status progress repeat score(format: POINT_100)
+        startedAt { year month day }
+      }
+    }
+    """
+
+    static let deleteEntry = """
+    mutation ($id: Int) { DeleteMediaListEntry(id: $id) { deleted } }
+    """
+
+    static let toggleFavourite = """
+    mutation ($animeId: Int) { ToggleFavourite(animeId: $animeId) { anime(perPage: 1) { nodes { id } } } }
+    """
+
+    /// The entries of a franchise by id, with their relations and airing dates, to find which
+    /// entry and episode an episode of a Cinemeta series is.
+    static let franchise = """
+    query ($ids: [Int], $perPage: Int) {
+      Page(perPage: $perPage) {
+        media(id_in: $ids, type: ANIME) {
+          id format status episodes seasonYear
+          title { romaji english native }
+          startDate { year month day } endDate { year month day }
+          airingSchedule(perPage: 50) { nodes { episode airingAt } }
+          relations { edges { relationType node { id type format } } }
+        }
+      }
+    }
+    """
+
     /// All Home rows in a single request.
     static func homeRows(_ rows: [AniListHomeRow]) -> String {
         let pages = rows.map { row in

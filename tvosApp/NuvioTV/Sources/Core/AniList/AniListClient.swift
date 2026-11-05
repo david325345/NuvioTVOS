@@ -67,19 +67,45 @@ actor AniListClient {
 
     /// `query`, telling whether the answer was saved earlier. `notesStatus: false` leaves the
     /// status in Settings alone (Test Connection).
-    func answer(_ query: String, variables: [String: Any?] = [:], ttl: TimeInterval, notesStatus: Bool = true) async throws -> Answer {
+    ///
+    /// `token` asks as the viewer's AniList account; its answers are saved apart from anyone
+    /// else's. `saves: false` is for changes (mutations) and answers that must be current: the
+    /// answer is neither read from disk nor kept, and an old one never stands in for it.
+    func answer(
+        _ query: String,
+        variables: [String: Any?] = [:],
+        ttl: TimeInterval,
+        notesStatus: Bool = true,
+        token: String? = nil,
+        saves: Bool = true
+    ) async throws -> Answer {
         let body = try Self.body(query: query, variables: variables)
-        let key = Self.cacheKey(for: body)
-        if let fresh = cache.read(key: key, maxAge: ttl) {
+        var keyed = body
+        if let token {
+            keyed.append(Data("|viewer:\(Self.cacheKey(for: Data(token.utf8)))".utf8))
+        }
+        let key = Self.cacheKey(for: keyed)
+        if saves, let fresh = cache.read(key: key, maxAge: ttl) {
             return Answer(data: fresh, isSaved: true)
         }
         if let running = inFlight[key] {
             return try await running.value
         }
-        let task = Task { try await self.send(body: body, key: key, notesStatus: notesStatus) }
+        let task = Task { try await self.send(body: body, key: key, notesStatus: notesStatus, token: token, saves: saves) }
         inFlight[key] = task
         defer { inFlight[key] = nil }
         return try await task.value
+    }
+
+    /// Forgets the saved answers of one query, so the next ask reaches AniList (a list after
+    /// the viewer changed it).
+    func forget(_ query: String, variables: [String: Any?] = [:], token: String? = nil) {
+        guard let body = try? Self.body(query: query, variables: variables) else { return }
+        var keyed = body
+        if let token {
+            keyed.append(Data("|viewer:\(Self.cacheKey(for: Data(token.utf8)))".utf8))
+        }
+        cache.remove(key: Self.cacheKey(for: keyed))
     }
 
     /// The answer on disk and how old it is, without asking AniList.
@@ -141,12 +167,12 @@ actor AniListClient {
         return exists
     }
 
-    private func send(body: Data, key: String, notesStatus: Bool) async throws -> Answer {
+    private func send(body: Data, key: String, notesStatus: Bool, token: String? = nil, saves: Bool = true) async throws -> Answer {
         do {
             try await waitForSlot()
         } catch {
             if notesStatus { noteFailure("Waiting for AniList's rate limit") }
-            if let stale = cache.read(key: key, maxAge: .infinity) { return Answer(data: stale, isSaved: true) }
+            if saves, let stale = cache.read(key: key, maxAge: .infinity) { return Answer(data: stale, isSaved: true) }
             throw error
         }
         sentAt.append(Date())
@@ -156,6 +182,9 @@ actor AniListClient {
         request.httpBody = body
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let token {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
 
         do {
             let (data, response) = try await session.data(for: request)
@@ -175,14 +204,14 @@ actor AniListClient {
                 throw ClientError.answeredWithError(message)
             }
             if notesStatus { status.lastSuccess = Date() }
-            cache.write(data, key: key)
+            if saves { cache.write(data, key: key) }
             return Answer(data: data, isSaved: false)
         } catch {
             // Bad answers are noted above with their body; this is the network failing.
             if notesStatus, !(error is ClientError) {
                 noteFailure(error.localizedDescription)
             }
-            if let stale = cache.read(key: key, maxAge: .infinity) { return Answer(data: stale, isSaved: true) }
+            if saves, let stale = cache.read(key: key, maxAge: .infinity) { return Answer(data: stale, isSaved: true) }
             throw error
         }
     }
@@ -325,6 +354,10 @@ struct AniListDiskCache {
 
     func removeAll() {
         try? FileManager.default.removeItem(at: directory)
+    }
+
+    func remove(key: String) {
+        try? FileManager.default.removeItem(at: directory.appendingPathComponent(key))
     }
 
     /// Drops every saved answer written by another build than `build`, then notes `build`.

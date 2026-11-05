@@ -33,6 +33,8 @@ struct AniListMedia: Decodable, Hashable {
     var characters: AniListCharacterConnection? = nil
     var recommendations: AniListRecommendationConnection? = nil
     var tags: [AniListTag]? = nil
+    /// The viewer's favourite (asked with their token).
+    var isFavourite: Bool? = nil
 
     static func == (lhs: AniListMedia, rhs: AniListMedia) -> Bool { lhs.id == rhs.id }
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
@@ -169,6 +171,65 @@ struct AniZipEpisode: Decodable, Hashable {
     var overview: String? = nil
     var summary: String? = nil
     var airDateUtc: String? = nil
+    /// The day it aired ("2016-01-14"); ani.zip writes it both ways.
+    var airdate: String? = nil
+    var airDate: String? = nil
+    /// TheTVDB's season and episode of this AniList episode, and its absolute number.
+    var seasonNumber: Int? = nil
+    var episodeNumber: Int? = nil
+    var absoluteEpisodeNumber: Int? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case title, image, overview, summary, airDateUtc, airdate, airDate
+        case seasonNumber, episodeNumber, absoluteEpisodeNumber
+    }
+
+    init(
+        title: [String: String?]? = nil, image: String? = nil, overview: String? = nil, summary: String? = nil,
+        airDateUtc: String? = nil, airdate: String? = nil, airDate: String? = nil,
+        seasonNumber: Int? = nil, episodeNumber: Int? = nil, absoluteEpisodeNumber: Int? = nil
+    ) {
+        self.title = title
+        self.image = image
+        self.overview = overview
+        self.summary = summary
+        self.airDateUtc = airDateUtc
+        self.airdate = airdate
+        self.airDate = airDate
+        self.seasonNumber = seasonNumber
+        self.episodeNumber = episodeNumber
+        self.absoluteEpisodeNumber = absoluteEpisodeNumber
+    }
+
+    /// Each field on its own: one written differently (a number as text) costs only that field,
+    /// not every episode of the title.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        func text(_ key: CodingKeys) -> String? { try? container.decodeIfPresent(String.self, forKey: key) }
+        func number(_ key: CodingKeys) -> Int? {
+            if let value = try? container.decodeIfPresent(Int.self, forKey: key) { return value }
+            return text(key).flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        }
+        title = try? container.decodeIfPresent([String: String?].self, forKey: .title)
+        image = text(.image)
+        overview = text(.overview)
+        summary = text(.summary)
+        airDateUtc = text(.airDateUtc)
+        airdate = text(.airdate)
+        airDate = text(.airDate)
+        seasonNumber = number(.seasonNumber)
+        episodeNumber = number(.episodeNumber)
+        absoluteEpisodeNumber = number(.absoluteEpisodeNumber)
+    }
+
+    /// The day it aired, as "yyyy-MM-dd".
+    var airDay: String? {
+        for value in [airdate, airDate, airDateUtc] {
+            guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), value.count >= 10 else { continue }
+            return String(value.prefix(10))
+        }
+        return nil
+    }
 
     var englishTitle: String? {
         guard let title else { return nil }
@@ -260,4 +321,89 @@ struct AniZipMappingsResponse: Decodable {
 
     /// TheTVDB's title logo.
     var clearLogo: String? { image("Clearlogo") }
+}
+
+// MARK: The viewer's account
+
+struct AniListViewer: Decodable, Equatable {
+    let id: Int
+    let name: String
+    var avatar: AniListImage? = nil
+}
+
+/// `{ "data": { "Viewer": … } }`
+struct AniListViewerResponse: Decodable {
+    struct DataField: Decodable {
+        let Viewer: AniListViewer?
+    }
+    let data: DataField?
+}
+
+/// One anime on the viewer's list: its status (CURRENT, PLANNING, COMPLETED, DROPPED, PAUSED,
+/// REPEATING), how many episodes they have watched, how many times they rewatched it, and
+/// their score out of 100. AniList keeps nothing finer: no positions, no per-episode history.
+struct AniListListEntry: Decodable, Equatable {
+    let id: Int
+    let mediaId: Int
+    var status: String? = nil
+    var progress: Int? = nil
+    var repeatCount: Int? = nil
+    var score: Double? = nil
+    var startedAt: AniListDate? = nil
+    var updatedAt: Int? = nil
+    var media: AniListMedia? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case id, mediaId, status, progress, score, startedAt, updatedAt, media
+        case repeatCount = "repeat"
+    }
+
+    init(id: Int, mediaId: Int, status: String? = nil, progress: Int? = nil, repeatCount: Int? = nil,
+         score: Double? = nil, startedAt: AniListDate? = nil, updatedAt: Int? = nil, media: AniListMedia? = nil) {
+        self.id = id
+        self.mediaId = mediaId
+        self.status = status
+        self.progress = progress
+        self.repeatCount = repeatCount
+        self.score = score
+        self.startedAt = startedAt
+        self.updatedAt = updatedAt
+        self.media = media
+    }
+}
+
+/// `{ "data": { "Page": { "mediaList": [...] } } }`
+struct AniListEntryPageResponse: Decodable {
+    struct PageField: Decodable {
+        var mediaList: [AniListListEntry]? = nil
+    }
+    struct DataField: Decodable {
+        let Page: PageField?
+    }
+    let data: DataField?
+}
+
+/// `{ "data": { "SaveMediaListEntry": … } }`
+struct AniListSavedEntryResponse: Decodable {
+    struct DataField: Decodable {
+        let SaveMediaListEntry: AniListListEntry?
+    }
+    let data: DataField?
+}
+
+/// `{ "data": { "MediaListCollection": { "lists": [...] } } }`
+struct AniListListCollectionResponse: Decodable {
+    struct List: Decodable {
+        var name: String? = nil
+        var status: String? = nil
+        var isCustomList: Bool? = nil
+        var entries: [AniListListEntry]? = nil
+    }
+    struct Collection: Decodable {
+        var lists: [List]? = nil
+    }
+    struct DataField: Decodable {
+        let MediaListCollection: Collection?
+    }
+    let data: DataField?
 }

@@ -416,6 +416,7 @@ enum SettingsKey {
         tmdbUseMoreLikeThis, tmdbUseCollections, tmdbApplyToHome,
         aniListEnabled, aniListTitleLanguage, aniListSeasonMode, aniListHomeRows, aniListSearch,
         aniListHideCinemetaDuplicates, aniListEpisodeDetails, aniListAdult,
+        aniListClientID, aniListScrobble, aniListScrobbleCinemeta, aniListListRows,
         mdbListEnabled, mdbListApiKey, mdbListUseImdb, mdbListUseTmdb,
         mdbListUseTomatoes, mdbListUseMetacritic, mdbListUseTrakt,
         mdbListUseLetterboxd, mdbListUseAudience,
@@ -4396,6 +4397,26 @@ private func layoutVisibleHomeCatalogRows() -> [TVHomeCatalogOrder.SnapshotRow] 
         }
     }
 
+    if AniListSettings.showsListRows {
+        // The viewer's AniList lists, when logged in.
+        let existingIDs = Set(merged.map(\.id))
+        for row in AniListAccount.listRows where !existingIDs.contains(AniListService.listRowID(row.id)) {
+            let key = AniListService.listSettingsKey(row.id)
+            guard !deletedKeys.contains(AniListService.listRowID(row.id)), !deletedKeys.contains(key) else { continue }
+            merged.append(
+                TVHomeCatalogOrder.SnapshotRow(
+                    id: AniListService.listRowID(row.id),
+                    title: AniListService.listDisplayTitle(row.id, title: row.title),
+                    addonName: AniListService.addonName,
+                    addonId: AniListService.addonID,
+                    contentType: AniListService.homeContentType,
+                    catalogId: row.id,
+                    settingsKey: key
+                )
+            )
+        }
+    }
+
     let orderKeys = TVHomeCatalogOrder.effectiveOrderKeys()
     if !orderKeys.isEmpty {
         var indexByKey: [String: Int] = [:]
@@ -5311,10 +5332,19 @@ private struct AniListOptionsSheet: View {
     @AppStorage(SettingsKey.aniListHideCinemetaDuplicates) private var hideCinemetaDuplicates = false
     @AppStorage(SettingsKey.aniListEpisodeDetails) private var episodeDetails = true
     @AppStorage(SettingsKey.aniListAdult) private var adult = false
+    @AppStorage(SettingsKey.aniListClientID) private var clientID = ""
+    @AppStorage(SettingsKey.aniListScrobble) private var scrobble = true
+    @AppStorage(SettingsKey.aniListScrobbleCinemeta) private var scrobbleCinemeta = true
+    @AppStorage(SettingsKey.aniListListRows) private var listRows = true
     @State private var cacheCleared = false
     @State private var statusText = ""
     @State private var homeStatusText = ""
     @State private var searchStatusText = ""
+    @State private var accountStatusText = ""
+    @State private var accountName: String?
+    @State private var tokenDraft = ""
+    @State private var loginMessage: String?
+    @State private var loggingIn = false
     @State private var testResult: String?
     @State private var testing = false
 
@@ -5424,6 +5454,87 @@ private struct AniListOptionsSheet: View {
                     }
 
                     SettingsGroup(
+                        title: L10n.string("settings_anilist_section_account", fallback: "Account"),
+                        subtitle: L10n.string("settings_anilist_section_account_subtitle", fallback: "Your AniList lists on Home, and what you watch written to them")
+                    ) {
+                        if let accountName {
+                            SettingsActionRow(
+                                title: L10n.format("settings_anilist_logged_in", fallback: "Logged in as %@", accountName),
+                                subtitle: L10n.string("settings_anilist_logged_in_subtitle", fallback: "The token lasts a year; log in again when AniList stops taking it"),
+                                value: L10n.string("settings_anilist_log_out", fallback: "Log Out"),
+                                accentColor: accentColor
+                            ) {
+                                AniListAccount.logOut()
+                                accountName = nil
+                                Task { await refreshStatus() }
+                            }
+
+                            SettingsToggleRow(
+                                title: L10n.string("settings_anilist_scrobble", fallback: "Write Watched Episodes"),
+                                subtitle: L10n.string("settings_anilist_scrobble_subtitle", fallback: "After an episode is watched to the end, or marked in details. Progress only goes forward"),
+                                isOn: $scrobble,
+                                accentColor: accentColor
+                            )
+
+                            SettingsToggleRow(
+                                title: L10n.string("settings_anilist_scrobble_cinemeta", fallback: "Also Anime from Cinemeta"),
+                                subtitle: L10n.string("settings_anilist_scrobble_cinemeta_subtitle", fallback: "Found on AniList by TMDB/IMDb id and air date, never by name"),
+                                isOn: $scrobbleCinemeta,
+                                accentColor: accentColor,
+                                isAvailable: scrobble
+                            )
+
+                            SettingsToggleRow(
+                                title: L10n.string("settings_anilist_list_rows", fallback: "My Lists on Home"),
+                                subtitle: L10n.string("settings_anilist_list_rows_subtitle", fallback: "Watching, Planning and Paused, like other rows in Layout"),
+                                isOn: $listRows,
+                                accentColor: accentColor,
+                                isAvailable: homeRows
+                            )
+                        } else {
+                            SettingsTextFieldRow(
+                                title: L10n.string("settings_anilist_client_id", fallback: "Client ID"),
+                                subtitle: L10n.string(
+                                    "settings_anilist_client_id_subtitle",
+                                    fallback: "anilist.co → Settings → Developer → Create New Client, with the Redirect URL https://anilist.co/api/v2/oauth/pin"
+                                ),
+                                placeholder: "12345",
+                                text: $clientID
+                            )
+
+                            if let url = AniListAccount.authorizeURL(clientID: clientID) {
+                                SettingsQRCodeCard(
+                                    title: L10n.string("settings_anilist_allow", fallback: "Allow access on your phone, then copy the token"),
+                                    link: url.absoluteString
+                                )
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 8)
+
+                                SettingsNativeTextFieldRow(
+                                    title: L10n.string("settings_anilist_token", fallback: "Token"),
+                                    subtitle: L10n.string("settings_anilist_token_subtitle", fallback: "Paste it with the keyboard on your iPhone"),
+                                    placeholder: L10n.string("settings_anilist_token_placeholder", fallback: "Paste token"),
+                                    text: $tokenDraft,
+                                    isSecure: true,
+                                    status: loginMessage,
+                                    onCommit: logIn
+                                )
+
+                                SettingsActionRow(
+                                    title: L10n.string("settings_anilist_log_in", fallback: "Log In"),
+                                    subtitle: loginMessage ?? L10n.string("settings_anilist_log_in_subtitle", fallback: "Checks the token with AniList and keeps it on this Apple TV, for this profile"),
+                                    value: loggingIn ? "…" : L10n.string("settings_anilist_log_in", fallback: "Log In"),
+                                    accentColor: accentColor
+                                ) {
+                                    logIn()
+                                }
+                            }
+                        }
+                    }
+                    .opacity(enabled ? 1 : 0.46)
+                    .disabled(!enabled)
+
+                    SettingsGroup(
                         title: L10n.string("settings_anilist_section_status", fallback: "Status"),
                         subtitle: L10n.string("settings_anilist_section_status_subtitle", fallback: "The last answer from AniList, and what Home and Search last did with it")
                     ) {
@@ -5448,6 +5559,15 @@ private struct AniListOptionsSheet: View {
                         SettingsActionRow(
                             title: L10n.string("settings_anilist_status_search", fallback: "Search"),
                             subtitle: searchStatusText,
+                            value: L10n.string("settings_anilist_status_refresh", fallback: "Refresh"),
+                            accentColor: accentColor
+                        ) {
+                            Task { await refreshStatus() }
+                        }
+
+                        SettingsActionRow(
+                            title: L10n.string("settings_anilist_status_account", fallback: "Your List"),
+                            subtitle: accountStatusText,
                             value: L10n.string("settings_anilist_status_refresh", fallback: "Refresh"),
                             accentColor: accentColor
                         ) {
@@ -5502,6 +5622,7 @@ private struct AniListOptionsSheet: View {
         .onChange(of: hideCinemetaDuplicates) { _, _ in AniListSettings.notifyHomeChanged() }
         .onChange(of: titleLanguage) { _, _ in AniListSettings.notifyHomeChanged() }
         .onChange(of: adult) { _, _ in AniListSettings.notifyHomeChanged() }
+        .onChange(of: listRows) { _, _ in AniListSettings.notifyHomeChanged() }
     }
 
     @MainActor
@@ -5509,6 +5630,27 @@ private struct AniListOptionsSheet: View {
         statusText = await AniListService.statusText()
         homeStatusText = AniListService.homeStatusText()
         searchStatusText = AniListService.searchStatusText()
+        accountStatusText = AniListSettings.isEnabled ? AniListDiagnostics.text(.account) : "Off"
+        accountName = AniListAccount.login?.viewerName
+    }
+
+    private func logIn() {
+        guard !loggingIn else { return }
+        loggingIn = true
+        loginMessage = nil
+        let pasted = tokenDraft
+        Task { @MainActor in
+            do {
+                let login = try await AniListAccount.logIn(pasted: pasted)
+                tokenDraft = ""
+                loginMessage = nil
+                accountName = login.viewerName
+            } catch {
+                loginMessage = error.localizedDescription
+            }
+            loggingIn = false
+            await refreshStatus()
+        }
     }
 
     private func labelBinding<Option: RawRepresentable>(

@@ -56,13 +56,64 @@ enum AniListService {
         )
     }
 
-    /// The AniList rows that Layout doesn't hide, in one request.
+    /// The viewer's lists first (when logged in), then the AniList rows that Layout doesn't hide.
     static func homeCatalogs() async -> [NuvioCatalog] {
         guard AniListSettings.isEnabled else { return [] }
         guard AniListSettings.showsHomeRows else {
             AniListDiagnostics.note(.home, "Off: AniList Rows on Home is off")
             return []
         }
+        async let lists = listCatalogs()
+        let rows = await browseCatalogs()
+        return await lists + rows
+    }
+
+    static func listSettingsKey(_ rowID: String) -> String {
+        TVHomeCatalogOrder.catalogSettingsKey(addonId: addonID, contentType: homeContentType, catalogId: rowID)
+    }
+
+    static func listRowID(_ rowID: String) -> String {
+        "addon_\(addonID)_\(homeContentType)_\(rowID)"
+    }
+
+    static func listDisplayTitle(_ rowID: String, title: String) -> String {
+        let showType = ProfileSettings.current.object(forKey: SettingsKey.homeCatalogShowType) as? Bool ?? true
+        return TVHomeCatalogOrder.catalogDisplayTitle(
+            "My \(title)",
+            contentType: homeContentType,
+            showType: showType,
+            addonName: addonName,
+            customTitle: TVHomeCatalogOrder.customCatalogTitles()[listSettingsKey(rowID)]
+        )
+    }
+
+    /// The viewer's Watching, Planning and Paused lists, one request (kept five minutes).
+    static func listCatalogs() async -> [NuvioCatalog] {
+        guard AniListSettings.showsListRows else { return [] }
+        let disabled = TVHomeCatalogOrder.disabledCatalogKeys()
+        let rows = AniListAccount.listRows.filter { !disabled.contains(listSettingsKey($0.id)) }
+        guard !rows.isEmpty, let byRow = await AniListAccount.listEntries() else { return [] }
+        let language = AniListSettings.titleLanguage
+        return rows.compactMap { row in
+            let items = (byRow[row.id] ?? []).compactMap(\.media).map { AniListMetaBuilder.card($0, language: language) }
+            guard !items.isEmpty else { return nil }
+            let title = listDisplayTitle(row.id, title: row.title)
+            return NuvioCatalog(
+                id: listRowID(row.id),
+                name: title,
+                description: title,
+                itemIds: items.map(\.id),
+                items: items,
+                contentType: homeContentType,
+                catalogId: row.id,
+                addonId: addonID,
+                addonName: addonName
+            )
+        }
+    }
+
+    /// The AniList rows that Layout doesn't hide, in one request.
+    private static func browseCatalogs() async -> [NuvioCatalog] {
         let disabled = TVHomeCatalogOrder.disabledCatalogKeys()
         let rows = AniListHomeRow.all.filter { !disabled.contains(catalogSettingsKey($0)) }
         guard !rows.isEmpty else {
@@ -129,6 +180,15 @@ enum AniListService {
 
     /// See All for an AniList row.
     static func browse(catalogId: String, skip: Int, genre: String? = nil) async -> CatalogPage {
+        if let listRow = AniListAccount.listRows.first(where: { $0.id == catalogId }) {
+            // One of the viewer's lists: all of it at once.
+            guard skip == 0, let byRow = await AniListAccount.listEntries() else {
+                return CatalogPage(items: [], hasMore: false, page: 1)
+            }
+            let language = AniListSettings.titleLanguage
+            let items = (byRow[listRow.id] ?? []).compactMap(\.media).map { AniListMetaBuilder.card($0, language: language) }
+            return CatalogPage(items: items, hasMore: false, page: 1, nextSkip: items.count)
+        }
         guard AniListSettings.isEnabled, let row = AniListHomeRow.row(id: catalogId) else {
             return CatalogPage(items: [], hasMore: false, page: 1)
         }
@@ -333,7 +393,7 @@ enum AniListService {
 
     /// What api.ani.zip knows about one AniList entry: its episodes, TheTVDB's pictures of the
     /// series and its TMDB id. Kept a week for finished entries, a day for the rest.
-    private static func aniZipMappings(entryID: Int, finished: Bool) async -> AniZipMappingsResponse? {
+    static func aniZipMappings(entryID: Int, finished: Bool) async -> AniZipMappingsResponse? {
         guard let url = URL(string: "https://api.ani.zip/mappings?anilist_id=\(entryID)"),
               let data = try? await AniListClient.shared.get(url, ttl: finished ? finishedTTL : aniZipTTL) else { return nil }
         return try? decoder.decode(AniZipMappingsResponse.self, from: data)

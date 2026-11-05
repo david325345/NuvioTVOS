@@ -6,6 +6,8 @@ enum AniListDiagnostics {
     enum Area: Hashable {
         case home
         case search
+        /// The viewer's account: logging in, and what Nuvio last wrote to their list.
+        case account
     }
 
     struct Entry: Equatable {
