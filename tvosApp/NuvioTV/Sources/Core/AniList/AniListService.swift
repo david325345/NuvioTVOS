@@ -497,7 +497,9 @@ enum AniListService {
         if let imdbID = await aniZipMappings(entryID: id, finished: false)?.mappings?.imdbID {
             return imdbID
         }
-        return await armIMDbID(aniListID: id)
+        if let imdbID = await armIMDbID(aniListID: id) { return imdbID }
+        // A season too new for all of them: the earlier seasons' show.
+        return await AniListStreamIds.inherited(entryID: id)?.imdb
     }
 
     /// The IMDb id arm-server has for an AniList entry. Kept a week.

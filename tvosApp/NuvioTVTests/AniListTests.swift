@@ -1012,6 +1012,129 @@ final class AniListTests: XCTestCase {
         XCTAssertEqual(episode, AniListOfflineMaps.SeasonEpisode(tvdb: 262954, season: 6, episode: 5))
     }
 
+    /// Fribb writes the offset as `{"tvdb": N, "tmdb": M}`; TheTVDB's is the one that counts.
+    func testFribbsEpisodeOffsetIsTheTVDBOne() throws {
+        let fribb = #"[{"type":"TV","anilist_id":7,"tvdb_id":5,"season":{"tvdb":2,"tmdb":1},"episode_offset":{"tvdb":12,"tmdb":3}}]"#
+        let index = try AniListOfflineMaps.build(fribb: Data(fribb.utf8), anibridge: Data("{}".utf8))
+        let entry = try XCTUnwrap(index.entries[7])
+        XCTAssertEqual(entry.episodeOffset, 12)
+        XCTAssertEqual(AniListOfflineMaps.seasonEpisode(of: entry, episode: 2), AniListOfflineMaps.SeasonEpisode(tvdb: 5, season: 2, episode: 14))
+    }
+
+    private func windows(_ ranges: [(Int, Int, String, String)], tvdb: Int = 9) -> [AniListOfflineMaps.Window] {
+        var entries: [Int: AniListOfflineMaps.Entry] = [:]
+        for (id, season, source, target) in ranges {
+            var entry = entries[id] ?? AniListOfflineMaps.Entry(tvdb: tvdb, type: "TV")
+            entry.ranges = (entry.ranges ?? []) + [AniListOfflineMaps.EpisodeRange(tvdb: tvdb, season: season, source: source, target: target)]
+            entries[id] = entry
+        }
+        return AniListOfflineMaps.windows(ofTVDB: tvdb, entries: entries.map { ($0.key, $0.value) })
+    }
+
+    /// The season still airing: anibridge lists the episodes known so far (Yozakura 2nd Season
+    /// Part 2 up to S2E14), the next ones continue that window.
+    func testTheAiringWindowContinues() {
+        typealias M = AniListOfflineMaps
+        let show = windows([(1, 1, "1-12", "1-12"), (2, 2, "1-12", "1-12"), (3, 2, "1-2", "13-14")])
+        XCTAssertEqual(M.seasonLengths(show), [1: 12, 2: 14])
+        XCTAssertEqual(M.continuing(aniListID: 3, episode: 3, tvdb: 9, windows: show), M.SeasonEpisode(tvdb: 9, season: 2, episode: 15))
+        XCTAssertNil(M.continuing(aniListID: 2, episode: 13, tvdb: 9, windows: show))     // not the last window
+        XCTAssertNil(M.continuing(aniListID: 3, episode: 2, tvdb: 9, windows: show))      // still in its range
+        XCTAssertEqual(M.pastSeasonEnd(season: 2, episode: 15, windows: show).map { "\($0.aniListID)#\($0.episode)" }, "3#3")
+        // An open window has no end.
+        XCTAssertNil(M.pastSeasonEnd(season: 1, episode: 60, windows: windows([(1, 1, "1-", "1-")])))
+    }
+
+    /// IMDb and Cinemeta run several cours as one season: Seihantai tt36034547 S1E25 is TheTVDB
+    /// S2E13, the 2nd season's 13th episode.
+    func testASeasonOverflowsIntoTheNextOnes() {
+        typealias M = AniListOfflineMaps
+        func hit(_ show: [M.Window], _ season: Int, _ episode: Int) -> String? {
+            M.pastSeasonEnd(season: season, episode: episode, windows: show).map { "\($0.aniListID)#\($0.episode)" }
+        }
+        let seihantai = windows([(184951, 1, "1-12", "1-12"), (210031, 2, "1-13", "1-13")], tvdb: 457078)
+        XCTAssertEqual(hit(seihantai, 1, 13), "210031#1")
+        XCTAssertEqual(hit(seihantai, 1, 25), "210031#13")
+        XCTAssertNil(hit(seihantai, 1, 12))                     // its own episode, not past the end
+        XCTAssertEqual(hit(seihantai, 2, 14), "210031#14")      // the last season still airing
+
+        let four = windows([(1, 1, "1-10", "1-10"), (2, 2, "1-10", "1-10"), (3, 3, "1-10", "1-10"), (4, 4, "1-10", "1-10")])
+        XCTAssertEqual(hit(four, 1, 35), "4#5")                 // season 1 runs on through them all
+        XCTAssertEqual(hit(four, 2, 15), "3#5")
+        XCTAssertNil(hit(four, 2, 25))                          // a later season only into the next one
+        XCTAssertNil(hit(four, 0, 3))
+    }
+
+    func testTheTablesContinueAndOverflowSeasons() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("anilist-offline-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        typealias M = AniListOfflineMaps
+        let index = M.Index(version: M.formatVersion, builtAt: Date(), anibridgeGenerated: nil, entries: [
+            184951: M.Entry(imdb: "tt36034547", tvdb: 457078, tvdbSeason: 1, type: "TV", ranges: [M.EpisodeRange(tvdb: 457078, season: 1, source: "1-12", target: "1-12")]),
+            210031: M.Entry(imdb: "tt36034547", tvdb: 457078, tvdbSeason: 2, type: "TV", ranges: [M.EpisodeRange(tvdb: 457078, season: 2, source: "1-13", target: "1-13")]),
+        ])
+        try JSONEncoder().encode(index).write(to: directory.appendingPathComponent("index.json"))
+        let maps = M(directory: directory)
+
+        let lumped = await maps.aniListEpisode(imdb: "tt36034547", tmdbTV: nil, season: 1, episode: 25)
+        XCTAssertEqual(lumped.map { "\($0.aniListID)#\($0.episode)" }, "210031#13")
+        let airing = await maps.seasonEpisode(aniListID: 210031, episode: 14)
+        XCTAssertEqual(airing, M.SeasonEpisode(tvdb: 457078, season: 2, episode: 14))
+        let finished = await maps.seasonEpisode(aniListID: 184951, episode: 13)
+        XCTAssertNil(finished)
+        let lengths = await maps.seasonLengths(tvdb: 457078)
+        XCTAssertEqual(lengths, [1: 12, 2: 13])
+    }
+
+    /// TheTVDB's numbering as Cinemeta numbers it, which Stremio add-ons go by.
+    func testEpisodesAreAskedByCinemetasNumbering() {
+        typealias Video = AniListStreamIds.CinemetaSeries.Video
+        func code(_ result: (season: Int, episode: Int)) -> String { "S\(result.season)E\(result.episode)" }
+        // IMDb runs both cours as season 1, weekly from 2026-01-02.
+        let lumped = (1...25).map { number in
+            Video(season: 1, episode: number, released: AniListMatcher.utcDay(of: 1_767_312_000 + (number - 1) * 7 * 86_400) + "T00:00:00.000Z")
+        }
+        let lengths = [1: 12, 2: 13]
+        XCTAssertEqual(code(AniListStreamIds.cinemetaNumbering((2, 13), videos: lumped, airDay: nil, tvdbLengths: lengths)), "S1E25")
+        XCTAssertEqual(code(AniListStreamIds.cinemetaNumbering((2, 1), videos: lumped, airDay: nil, tvdbLengths: lengths)), "S1E13")
+        let day25 = AniListMatcher.utcDay(of: 1_767_312_000 + 24 * 7 * 86_400)
+        XCTAssertEqual(code(AniListStreamIds.cinemetaNumbering((2, 13), videos: lumped, airDay: day25, tvdbLengths: [:])), "S1E25")
+        // Unchanged: Cinemeta lists it, lists nothing, has the season (an episode still to come),
+        // a special, or the seasons before aren't known.
+        XCTAssertEqual(code(AniListStreamIds.cinemetaNumbering((1, 5), videos: lumped, airDay: nil, tvdbLengths: lengths)), "S1E5")
+        XCTAssertEqual(code(AniListStreamIds.cinemetaNumbering((2, 13), videos: [], airDay: nil, tvdbLengths: lengths)), "S2E13")
+        let twoSeasons = [Video(season: 1, episode: 1, released: nil), Video(season: 2, episode: 1, released: nil)]
+        XCTAssertEqual(code(AniListStreamIds.cinemetaNumbering((2, 14), videos: twoSeasons, airDay: nil, tvdbLengths: lengths)), "S2E14")
+        XCTAssertEqual(code(AniListStreamIds.cinemetaNumbering((0, 3), videos: lumped, airDay: nil, tvdbLengths: lengths)), "S0E3")
+        XCTAssertEqual(code(AniListStreamIds.cinemetaNumbering((2, 13), videos: lumped, airDay: nil, tvdbLengths: [2: 13])), "S2E13")
+    }
+
+    /// A season too new for the tables starts where Cinemeta has an episode released within three
+    /// days of its start on AniList: STEEL BALL RUN 2nd STAGE (2026-09-24) is S6E2 onwards.
+    func testANewSeasonStartsWhereCinemetaHasItsFirstEpisode() {
+        typealias Video = AniListStreamIds.CinemetaSeries.Video
+        let videos = [
+            Video(season: 5, episode: 38, released: "2022-12-01T00:00:00.000Z"),
+            Video(season: 6, episode: 1, released: "2026-03-19T00:00:00.000Z"),
+            Video(season: 6, episode: 2, released: "2026-09-24T00:00:00.000Z"),
+            Video(season: 6, episode: 3, released: "2026-10-01T00:00:00.000Z"),
+            Video(season: 0, episode: 4, released: "2026-09-24T00:00:00.000Z"),
+        ]
+        func start(_ day: String) -> String? {
+            AniListStreamIds.startEpisode(in: videos, startDay: day).map { "S\($0.season)E\($0.episode)" }
+        }
+        XCTAssertEqual(start("2026-09-25"), "S6E2")
+        XCTAssertEqual(start("2026-03-17"), "S6E1")
+        XCTAssertNil(start("2026-07-01"))
+        // Released together (a batch on a streaming site): the first of them.
+        let batch = (1...6).map { Video(season: 2, episode: $0, released: "2026-04-10T07:00:00.000Z") }
+        XCTAssertEqual(AniListStreamIds.startEpisode(in: batch, startDay: "2026-04-10").map { "S\($0.season)E\($0.episode)" }, "S2E1")
+
+        XCTAssertEqual(AniListStreamIds.isoDay(AniListDate(year: 2026, month: 9, day: 5)), "2026-09-05")
+        XCTAssertNil(AniListStreamIds.isoDay(AniListDate(year: 2026, month: 9)))
+    }
+
     func testAddOnsWithoutAniListIdsAreAskedByKitsuOrIMDb() throws {
         func manifest(_ json: String) throws -> StreamAddonManifest {
             try JSONDecoder().decode(StreamAddonManifest.self, from: Data(json.utf8))

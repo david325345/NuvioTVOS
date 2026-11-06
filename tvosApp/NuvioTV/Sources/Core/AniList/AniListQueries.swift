@@ -142,7 +142,7 @@ enum AniListQueries {
     static let prequels = """
     query ($id: Int) {
       Media(id: $id, type: ANIME) {
-        id format
+        id format startDate { year month day }
         relations { edges { relationType node { id type format startDate { year month day } } } }
       }
     }
