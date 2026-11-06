@@ -597,6 +597,42 @@ final class AniListTests: XCTestCase {
         XCTAssertEqual(AniListAccount.token(fromPasted: "Bearer eyJabc.def.ghi"), "eyJabc.def.ghi")
     }
 
+    func testThePhonesLoginReachesThisAppleTV() {
+        func request(_ text: String) -> Data { Data(text.replacingOccurrences(of: "\n", with: "\r\n").utf8) }
+
+        // AniList sends the phone to the Redirect URL; the token is in the fragment, never sent.
+        XCTAssertEqual(AniListLoginServer.parse(request("GET /anilist HTTP/1.1\nHost: 192.168.1.50:47811\n\n")), .page)
+        XCTAssertEqual(AniListLoginServer.parse(request("GET /anilist?error=access_denied HTTP/1.1\n\n")), .page)
+        XCTAssertEqual(AniListLoginServer.parse(request("GET /favicon.ico HTTP/1.1\n\n")), .notFound)
+        XCTAssertEqual(AniListLoginServer.parse(Data("GET /anilist HTTP/1.1\r\nHost: x".utf8)), .incomplete)
+
+        // The page posts the token back.
+        let body = "access_token=eyJ0eXAi.eyJhdWQi.c2ln&state=abc123"
+        let post = "POST /anilist/token HTTP/1.1\nContent-Type: application/x-www-form-urlencoded\nContent-Length: \(body.utf8.count)\n\n"
+        XCTAssertEqual(AniListLoginServer.parse(request(post) + Data(body.utf8)), .token("eyJ0eXAi.eyJhdWQi.c2ln", state: "abc123"))
+        XCTAssertEqual(AniListLoginServer.parse(request(post) + Data(body.prefix(10).utf8)), .incomplete)
+        XCTAssertEqual(
+            AniListLoginServer.parse(request("POST /anilist/token HTTP/1.1\nContent-Length: 14\n\n") + Data("access_token=a".utf8)),
+            .token("a", state: nil)
+        )
+        XCTAssertEqual(AniListLoginServer.parse(request("POST /anilist/token HTTP/1.1\nContent-Length: 6\n\n") + Data("state=".utf8)), .invalid)
+        XCTAssertEqual(AniListLoginServer.parse(request("POST /anilist/token HTTP/1.1\nTransfer-Encoding: chunked\n\n")), .invalid)
+        XCTAssertEqual(AniListLoginServer.formFields("a=1%2B2&b=x+y&c"), ["a": "1+2", "b": "x y", "c": ""])
+
+        XCTAssertTrue(AniListLoginServer.page.contains("fetch('/anilist/token'"))
+        XCTAssertTrue(AniListLoginServer.page.contains("history.replaceState"))
+
+        // The QR code's address carries the state the Apple TV waits for.
+        XCTAssertEqual(
+            AniListAccount.authorizeURL(clientID: "56063", state: "abc123")?.absoluteString,
+            "https://anilist.co/api/v2/oauth/authorize?client_id=56063&response_type=token&state=abc123"
+        )
+        XCTAssertEqual(
+            AniListAccount.authorizeURL(clientID: "56063", state: "a&b")?.absoluteString,
+            "https://anilist.co/api/v2/oauth/authorize?client_id=56063&response_type=token"
+        )
+    }
+
     /// A token shaped like AniList's: an RS256 JWT with a 256-byte signature.
     private func jwt(aud: Any = "56063", sub: Any = "8395785", exp: Date = Date(timeIntervalSince1970: 1_825_000_000)) -> String {
         func part(_ data: Data) -> String {
