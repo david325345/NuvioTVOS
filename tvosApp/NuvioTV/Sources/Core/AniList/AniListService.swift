@@ -59,6 +59,8 @@ enum AniListService {
     /// The viewer's lists first (when logged in), then the AniList rows that Layout doesn't hide.
     static func homeCatalogs() async -> [NuvioCatalog] {
         guard AniListSettings.isEnabled else { return [] }
+        // The offline tables, downloaded when missing or a week old (in the background).
+        Task.detached(priority: .background) { await AniListOfflineMaps.shared.refreshIfStale() }
         guard AniListSettings.showsHomeRows else {
             AniListDiagnostics.note(.home, "Off: AniList Rows on Home is off")
             return []
@@ -422,15 +424,18 @@ enum AniListService {
         artwork.logo = await checkedLogo(aniZip?.clearLogo)
         guard !artwork.isComplete else { return artwork }
 
+        // Ids from the offline tables first, then ani.zip's, then arm-server's.
+        let offline = await AniListOfflineMaps.shared.entry(aniListID: entryID)
         let mappings = aniZip?.mappings
-        if let tmdbID = mappings?.themoviedbID,
+        let tmdbID = (isFilm ? offline?.tmdbMovie : offline?.tmdbTV) ?? mappings?.themoviedbID
+        if let tmdbID,
            let found = await TmdbDetailsService.artwork(tmdbId: tmdbID, mediaType: isFilm ? "movie" : "tv") {
             artwork.background = artwork.background ?? found.background
             if artwork.logo == nil { artwork.logo = await checkedLogo(found.logo) }
         }
         guard !artwork.isComplete else { return artwork }
 
-        var imdbID = mappings?.imdbID
+        var imdbID = offline?.imdb ?? mappings?.imdbID
         if imdbID == nil { imdbID = await armIMDbID(aniListID: entryID) }
         guard let imdbID, let metahub = metahubArtwork(imdbID: imdbID) else { return artwork }
         if artwork.logo == nil { artwork.logo = await checkedLogo(metahub.logo.absoluteString) }
@@ -476,18 +481,19 @@ enum AniListService {
         return artwork
     }
 
-    private static func prequels(of id: Int) async -> AniListMedia? {
+    static func prequels(of id: Int) async -> AniListMedia? {
         guard let data = try? await AniListClient.shared.query(
             AniListQueries.prequels, variables: ["id": id], ttl: finishedTTL, notesStatus: false
         ) else { return nil }
         return try? decoder.decode(AniListMediaResponse.self, from: data).data?.Media
     }
 
-    /// The IMDb id of an AniList title, for Trailerio's and IMDb's trailers only: ani.zip's, else
-    /// arm-server's. It is never written to the title, whose streams and ratings go by its
+    /// The IMDb id of an AniList title, for Trailerio's and IMDb's trailers only: the offline
+    /// tables', else ani.zip's, else arm-server's. It is never written to the title, whose streams and ratings go by its
     /// AniList id.
     static func trailerIMDbID(metaID: String) async -> String? {
         guard AniListSettings.isEnabled, let id = AniListMetaBuilder.aniListID(from: metaID) else { return nil }
+        if let imdbID = await AniListOfflineMaps.shared.entry(aniListID: id)?.imdb { return imdbID }
         if let imdbID = await aniZipMappings(entryID: id, finished: false)?.mappings?.imdbID {
             return imdbID
         }

@@ -314,11 +314,18 @@ final class StreamsRepository: ObservableObject {
         let manifestsByURL = await Self.loadManifestsConcurrently(urls: enabledURLs)
         guard !Task.isCancelled else { return }
 
+        // An AniList title: add-ons that don't take anilist: ids are asked by Kitsu or IMDb.
+        let alternatives = await Self.aniListAlternatives(
+            for: videoId, type: type, resource: "stream", manifests: enabledURLs.compactMap { manifestsByURL[$0] })
+        guard !Task.isCancelled else { return }
+
         // Preserve configured order; only include stream-capable, id-compatible add-ons.
         var targets: [StreamAddonTarget] = []
         for url in enabledURLs {
             guard let manifest = manifestsByURL[url] else { continue }
-            guard manifest.supportsResource("stream", type: type, id: videoId) else { continue }
+            guard let requestId = AniListStreamIds.requestID(
+                for: manifest, resource: "stream", type: type, videoId: videoId, alternatives: alternatives
+            ) else { continue }
             let displayName = manifest.displayName
                 ?? CinemetaCatalogRepository.streamAddonName(for: url)
             targets.append(
@@ -326,7 +333,8 @@ final class StreamsRepository: ObservableObject {
                     addonId: Self.stableAddonId(manifest: manifest, manifestURL: url),
                     displayName: displayName,
                     manifestURL: url,
-                    logo: manifest.logo
+                    logo: manifest.logo,
+                    requestId: requestId
                 )
             )
         }
@@ -365,7 +373,7 @@ final class StreamsRepository: ObservableObject {
         await withTaskGroup(of: GroupUpdate.self) { group in
             for target in targets {
                 group.addTask {
-                    await Self.fetchAddonGroup(target: target, type: type, videoId: videoId)
+                    await Self.fetchAddonGroup(target: target, type: type, videoId: target.requestId)
                 }
             }
 
@@ -435,6 +443,26 @@ final class StreamsRepository: ObservableObject {
         let displayName: String
         let manifestURL: URL
         let logo: String?
+        /// The id this add-on is asked by: the title's own, or for an AniList title an add-on
+        /// doesn't take, its Kitsu or IMDb id.
+        let requestId: String
+    }
+
+    /// Kitsu / IMDb ids of an AniList title, looked up only when some add-on doesn't take its
+    /// anilist: id but offers `resource`.
+    nonisolated static func aniListAlternatives(
+        for videoId: String,
+        type: String,
+        resource: String,
+        manifests: [StreamAddonManifest]
+    ) async -> [String] {
+        guard AniListMetaBuilder.isAniListID(videoId) else { return [] }
+        let someoneNeeds = manifests.contains { manifest in
+            !manifest.supportsResource(resource, type: type, id: videoId)
+                && (manifest.resources ?? []).contains { $0.name.caseInsensitiveCompare(resource) == .orderedSame }
+        }
+        guard someoneNeeds else { return [] }
+        return await AniListStreamIds.alternatives(for: videoId)
     }
 
     private struct GroupUpdate {
@@ -649,21 +677,25 @@ final class StreamsRepository: ObservableObject {
 
         let manifests = await Self.loadManifestsConcurrently(urls: manifestURLs)
         guard !Task.isCancelled else { return [] }
-        let providers = Self.compatibleExternalSubtitleProviders(
-            manifestURLs: manifestURLs, manifests: manifests, type: subtitleType, id: videoId)
+        // An AniList title: subtitle add-ons that don't take anilist: ids are asked by Kitsu or IMDb.
+        let alternatives = await Self.aniListAlternatives(
+            for: videoId, type: subtitleType, resource: "subtitles", manifests: manifestURLs.compactMap { manifests[$0] })
+        guard !Task.isCancelled else { return [] }
+        let providers = Self.externalSubtitleProviders(
+            manifestURLs: manifestURLs, manifests: manifests, type: subtitleType, id: videoId, alternatives: alternatives)
         for provider in providers {
             if let baseURL = AddonTransportUrls.buildResourceURL(
                 manifestURL: provider.manifestURL,
                 resource: "subtitles",
                 type: subtitleType,
-                id: videoId
+                id: provider.id
             ) {
                 endpoints.append((provider.name, baseURL))
             }
             if let extraURL = AddonTransportUrls.buildSubtitleURL(
                 manifestURL: provider.manifestURL,
                 type: subtitleType,
-                id: videoId,
+                id: provider.id,
                 videoHash: videoHash,
                 videoSize: videoSize,
                 filename: filename
@@ -702,10 +734,25 @@ final class StreamsRepository: ObservableObject {
         type: String,
         id: String
     ) -> [(name: String, manifestURL: URL)] {
+        externalSubtitleProviders(manifestURLs: manifestURLs, manifests: manifests, type: type, id: id, alternatives: [])
+            .map { ($0.name, $0.manifestURL) }
+    }
+
+    /// Subtitle add-ons for `id`, each with the id it is asked by (an AniList title's Kitsu or
+    /// IMDb id for one that doesn't take anilist: ids).
+    nonisolated static func externalSubtitleProviders(
+        manifestURLs: [URL],
+        manifests: [URL: StreamAddonManifest],
+        type: String,
+        id: String,
+        alternatives: [String]
+    ) -> [(name: String, manifestURL: URL, id: String)] {
         manifestURLs.compactMap { url in
             guard let manifest = manifests[url],
-                  manifest.supportsResource("subtitles", type: type, id: id) else { return nil }
-            return (manifest.displayName ?? CinemetaCatalogRepository.streamAddonName(for: url), url)
+                  let requestId = AniListStreamIds.requestID(
+                    for: manifest, resource: "subtitles", type: type, videoId: id, alternatives: alternatives
+                  ) else { return nil }
+            return (manifest.displayName ?? CinemetaCatalogRepository.streamAddonName(for: url), url, requestId)
         }
     }
 

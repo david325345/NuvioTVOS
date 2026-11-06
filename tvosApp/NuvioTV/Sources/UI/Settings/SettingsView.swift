@@ -416,7 +416,7 @@ enum SettingsKey {
         tmdbUseMoreLikeThis, tmdbUseCollections, tmdbApplyToHome,
         aniListEnabled, aniListTitleLanguage, aniListSeasonMode, aniListHomeRows, aniListSearch,
         aniListHideCinemetaDuplicates, aniListEpisodeDetails, aniListAdult,
-        aniListClientID, aniListScrobble, aniListScrobbleCinemeta, aniListListRows,
+        aniListClientID, aniListScrobble, aniListScrobbleCinemeta, aniListListRows, aniListOtherAddons,
         mdbListEnabled, mdbListApiKey, mdbListUseImdb, mdbListUseTmdb,
         mdbListUseTomatoes, mdbListUseMetacritic, mdbListUseTrakt,
         mdbListUseLetterboxd, mdbListUseAudience,
@@ -5336,6 +5336,9 @@ private struct AniListOptionsSheet: View {
     @AppStorage(SettingsKey.aniListScrobble) private var scrobble = true
     @AppStorage(SettingsKey.aniListScrobbleCinemeta) private var scrobbleCinemeta = true
     @AppStorage(SettingsKey.aniListListRows) private var listRows = true
+    @AppStorage(SettingsKey.aniListOtherAddons) private var otherAddons = true
+    @State private var offlineStatusText = ""
+    @State private var updatingOffline = false
     @State private var cacheCleared = false
     @State private var statusText = ""
     @State private var homeStatusText = ""
@@ -5386,6 +5389,8 @@ private struct AniListOptionsSheet: View {
                     titlesGroup
 
                     homeSearchGroup
+
+                    addonsGroup
 
                     accountGroup
 
@@ -5488,6 +5493,50 @@ private struct AniListOptionsSheet: View {
                 accentColor: accentColor,
                 isAvailable: enabled && search
             )
+        }
+    }
+
+    // Split out of `body` so the compiler can check each part in time.
+    @ViewBuilder
+    private var addonsGroup: some View {
+        SettingsGroup(
+            title: L10n.string("settings_anilist_section_addons", fallback: "Add-ons and Offline Tables"),
+            subtitle: L10n.string("settings_anilist_section_addons_subtitle", fallback: "Which ids add-ons are asked by, converted on this Apple TV")
+        ) {
+            SettingsToggleRow(
+                title: L10n.string("settings_anilist_other_addons", fallback: "Ask Other Add-ons"),
+                subtitle: L10n.string(
+                    "settings_anilist_other_addons_subtitle",
+                    fallback: "Add-ons without anilist ids get kitsu:ID:episode, or the IMDb id with TheTVDB's season and episode. An episode that can't be placed isn't asked by IMDb"
+                ),
+                isOn: $otherAddons,
+                accentColor: accentColor,
+                isAvailable: enabled
+            )
+
+            SettingsActionRow(
+                title: L10n.string("settings_anilist_offline_tables", fallback: "Offline Tables"),
+                subtitle: offlineStatusText.isEmpty
+                    ? L10n.string("settings_anilist_offline_tables_subtitle", fallback: "Fribb's anime-lists and anibridge from GitHub, weekly: ids, seasons and episodes without asking online")
+                    : offlineStatusText,
+                value: updatingOffline ? "…" : L10n.string("settings_anilist_offline_update", fallback: "Update"),
+                accentColor: accentColor
+            ) {
+                updateOfflineTables()
+            }
+            .disabled(!enabled)
+        }
+        .opacity(enabled ? 1 : 0.46)
+    }
+
+    private func updateOfflineTables() {
+        guard !updatingOffline else { return }
+        updatingOffline = true
+        offlineStatusText = L10n.string("settings_anilist_offline_downloading", fallback: "Downloading…")
+        Task { @MainActor in
+            await AniListOfflineMaps.shared.refreshNow()
+            offlineStatusText = await AniListOfflineMaps.shared.statusText()
+            updatingOffline = false
         }
     }
 
@@ -5745,6 +5794,9 @@ private struct AniListOptionsSheet: View {
         searchStatusText = AniListService.searchStatusText()
         accountStatusText = AniListSettings.isEnabled ? AniListDiagnostics.text(.account) : "Off"
         accountName = AniListAccount.login?.viewerName
+        if AniListSettings.isEnabled, !updatingOffline {
+            offlineStatusText = await AniListOfflineMaps.shared.statusText()
+        }
     }
 
     private func logIn() {

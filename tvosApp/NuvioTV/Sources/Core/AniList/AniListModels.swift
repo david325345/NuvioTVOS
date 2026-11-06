@@ -255,25 +255,32 @@ struct AniZipImage: Decodable, Hashable {
 struct AniZipMappings: Decodable, Hashable {
     var themoviedbID: Int? = nil
     var imdbID: String? = nil
+    var kitsuID: Int? = nil
 
     enum CodingKeys: String, CodingKey {
         case themoviedbID = "themoviedb_id"
         case imdbID = "imdb_id"
+        case kitsuID = "kitsu_id"
     }
 
-    init(themoviedbID: Int? = nil, imdbID: String? = nil) {
+    init(themoviedbID: Int? = nil, imdbID: String? = nil, kitsuID: Int? = nil) {
         self.themoviedbID = themoviedbID
         self.imdbID = imdbID
+        self.kitsuID = kitsuID
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         // A number, or the same number as text.
-        if let number = try? container.decode(Int.self, forKey: .themoviedbID) {
-            themoviedbID = number
-        } else if let text = try? container.decode(String.self, forKey: .themoviedbID) {
-            themoviedbID = Int(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        func number(_ key: CodingKeys) -> Int? {
+            if let value = try? container.decode(Int.self, forKey: key) { return value }
+            if let text = try? container.decode(String.self, forKey: key) {
+                return Int(text.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+            return nil
         }
+        themoviedbID = number(.themoviedbID)
+        kitsuID = number(.kitsuID)
         // Only a whole IMDb id ("tt" and digits) is kept.
         if let text = try? container.decode(String.self, forKey: .imdbID) {
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
