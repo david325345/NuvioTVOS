@@ -7516,10 +7516,8 @@ private struct TvDetailsPersonCard: View {
                         }
                     }
 
-                Text(person.name)
-                    .font(.system(size: 24, weight: .medium))
-                    .foregroundColor(isFocused ? .white : .white.opacity(0.74))
-                    .lineLimit(1)
+                MarqueeText(person.name, font: .system(size: 24, weight: .medium),
+                            color: isFocused ? .white : .white.opacity(0.74), isActive: isFocused, alignment: .center)
                     .frame(width: 210)
 
                 if let role = person.role,
@@ -8585,10 +8583,7 @@ private struct TvEpisodeCard: View {
                             }
                         }
 
-                    Text(video.title)
-                        .font(.system(size: 30, weight: .bold))
-                        .foregroundColor(.white)
-                        .lineLimit(1)
+                    MarqueeText(video.title, font: .system(size: 30, weight: .bold), color: .white, isActive: isFocused)
 
                     if let overview = video.overview, !overview.isEmpty {
                         Text(overview)
@@ -8807,10 +8802,7 @@ private struct TvEpisodeCard: View {
 
     private var info: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(video.title)
-                .font(.system(size: 30, weight: .bold))
-                .foregroundColor(.white)
-                .lineLimit(1)
+            MarqueeText(video.title, font: .system(size: 30, weight: .bold), color: .white, isActive: isFocused)
 
             if let overview = video.overview, !overview.isEmpty {
                 Text(overview)

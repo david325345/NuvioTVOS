@@ -478,11 +478,13 @@ struct PosterCard: View {
             .shadow(color: .black.opacity(shadowOpacity), radius: shadowRadius)
 
             if showsPosterTitle {
-                Text(meta.name)
-                    .font(.system(size: effectiveHomeLayout == "Compact" ? 18 : 20, weight: showsFocusedAppearance ? .semibold : .medium))
-                    .foregroundColor(titleColor)
-                    .lineLimit(1)
-                    .frame(width: cardWidth, alignment: .leading)
+                MarqueeText(
+                    meta.name,
+                    font: .system(size: effectiveHomeLayout == "Compact" ? 18 : 20, weight: showsFocusedAppearance ? .semibold : .medium),
+                    color: titleColor,
+                    isActive: showsFocusedAppearance
+                )
+                .frame(width: cardWidth, alignment: .leading)
             }
         }
         .frame(width: layoutWidth, height: totalCardHeight, alignment: .topLeading)
@@ -525,11 +527,8 @@ struct PosterCard: View {
                 if continueEpisodeText != nil {
                     continueLandscapeSummary
                 } else if continueProgress != nil || continueRemainingText != nil {
-                    Text(meta.name)
-                        .font(.system(size: 28, weight: .semibold))
-                        .foregroundColor(.white)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.82)
+                    MarqueeText(meta.name, font: .system(size: 28, weight: .semibold), color: .white,
+                                isActive: showsFocusedAppearance, minimumScaleFactor: 0.82)
                         .frame(maxWidth: cardWidth * 0.82, alignment: .leading)
                         .padding(EdgeInsets(top: 22, leading: 22, bottom: 54, trailing: 22))
                 } else if let logoURL = landscapeLogoURL {
@@ -556,24 +555,16 @@ struct PosterCard: View {
     private var continueLandscapeSummary: some View {
         VStack(alignment: .leading, spacing: 3) {
             if let continueEpisodeText {
-                Text(continueEpisodeText)
-                    .font(.system(size: 25, weight: .medium))
-                    .foregroundColor(.white)
-                    .lineLimit(1)
+                MarqueeText(continueEpisodeText, font: .system(size: 25, weight: .medium), color: .white,
+                            isActive: showsFocusedAppearance)
             }
 
-            Text(meta.name)
-                .font(.system(size: 28, weight: .semibold))
-                .foregroundColor(.white)
-                .lineLimit(1)
-                .minimumScaleFactor(0.82)
+            MarqueeText(meta.name, font: .system(size: 28, weight: .semibold), color: .white,
+                        isActive: showsFocusedAppearance, minimumScaleFactor: 0.82)
 
             if let continueEpisodeTitleText, !continueEpisodeTitleText.isEmpty {
-                Text(continueEpisodeTitleText)
-                    .font(.system(size: 23, weight: .medium))
-                    .foregroundColor(.white.opacity(0.66))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
+                MarqueeText(continueEpisodeTitleText, font: .system(size: 23, weight: .medium), color: .white.opacity(0.66),
+                            isActive: showsFocusedAppearance, minimumScaleFactor: 0.82)
             }
         }
         .frame(maxWidth: cardWidth * 0.70, alignment: .leading)
@@ -1587,10 +1578,9 @@ struct PosterGridCard: View {
 
             if posterLabels || forceShowLabels {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(meta.name)
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundColor(showsFocusedAppearance ? .white : .white.opacity(0.78))
-                        .lineLimit(1)
+                    MarqueeText(meta.name, font: .system(size: 20, weight: .semibold),
+                                color: showsFocusedAppearance ? .white : .white.opacity(0.78),
+                                isActive: showsFocusedAppearance)
                     Text(subtitle)
                         .font(.system(size: 16, weight: .medium))
                         .foregroundColor(.white.opacity(0.45))
