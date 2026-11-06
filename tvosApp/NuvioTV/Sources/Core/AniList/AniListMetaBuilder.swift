@@ -305,6 +305,15 @@ enum AniListMetaBuilder {
         episodeCode(id: video.id, season: video.season, episode: video.episode, separator: separator)
     }
 
+    /// "Season 2 · Episode 4" over the stream list, or "Episode 4" for an AniList title's first
+    /// entry (AniList numbers each season on its own).
+    static func episodeHeading(_ video: NuvioVideo) -> String {
+        if isAniListID(video.id), video.season <= 1 {
+            return L10n.format("details_episode_number", fallback: "Episode %d", video.episode)
+        }
+        return L10n.format("details_season_episode", fallback: "Season %1$d · Episode %2$d", video.season, video.episode)
+    }
+
     /// The player's episode line ("S1, E5 • Title") as "E5 • Title" for an AniList title's
     /// first entry. Only what is shown changes: the line handed to the player stays as it is.
     static func playerEpisodeLine(_ line: String, titleID: String?) -> String {

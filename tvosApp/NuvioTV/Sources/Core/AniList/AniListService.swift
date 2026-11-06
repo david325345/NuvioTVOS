@@ -493,7 +493,7 @@ enum AniListService {
     /// AniList id.
     static func trailerIMDbID(metaID: String) async -> String? {
         guard AniListSettings.isEnabled, let id = AniListMetaBuilder.aniListID(from: metaID) else { return nil }
-        if let imdbID = await AniListOfflineMaps.shared.entry(aniListID: id)?.imdb { return imdbID }
+        if let imdbID = await AniListOfflineMaps.shared.imdb(aniListID: id) { return imdbID }
         if let imdbID = await aniZipMappings(entryID: id, finished: false)?.mappings?.imdbID {
             return imdbID
         }
@@ -538,12 +538,23 @@ enum AniListService {
         return artwork == .empty ? nil : artwork
     }
 
-    /// AniList's score of a title shown without its details, like an entry of Continue Watching,
-    /// which keeps no ratings. The card's own when it has it, else one small request kept a day.
+    /// AniList's score of a title, next to the other ratings:
+    /// - an AniList title: the card's own when it has it (Continue Watching keeps no ratings);
+    /// - a Cinemeta/TMDB anime the offline tables know: the film, or the first season (the
+    ///   franchise's main entry; one IMDb title stands for every season).
+    /// One small request, kept a day.
     static func ratings(for meta: NuvioMeta) async -> [NuvioExternalRating] {
-        guard AniListSettings.isEnabled, let id = AniListMetaBuilder.aniListID(from: meta.id) else { return [] }
-        let carried = (meta.externalRatings ?? []).filter { $0.source == AniListMetaBuilder.ratingSource }
-        guard carried.isEmpty else { return carried }
+        guard AniListSettings.isEnabled else { return [] }
+        let id: Int
+        if let own = AniListMetaBuilder.aniListID(from: meta.id) {
+            let carried = (meta.externalRatings ?? []).filter { $0.source == AniListMetaBuilder.ratingSource }
+            guard carried.isEmpty else { return carried }
+            id = own
+        } else if let mapped = await mappedEntry(for: meta) {
+            id = mapped
+        } else {
+            return []
+        }
         guard let data = try? await AniListClient.shared.query(
                 AniListQueries.score, variables: ["id": id], ttl: scoreTTL, notesStatus: false
               ),
@@ -553,6 +564,31 @@ enum AniListService {
     }
 
     static let scoreTTL: TimeInterval = 24 * 3600
+
+    /// The AniList entry a Cinemeta/TMDB title stands for, by the offline tables only (no
+    /// request): the film, or the entry with TheTVDB's first episode, or the only entry.
+    static func mappedEntry(for meta: NuvioMeta) async -> Int? {
+        guard !AniListMetaBuilder.isAniListID(meta.id) else { return nil }
+        let imdb = NuvioMeta.canonicalImdbID(from: meta.imdbId ?? meta.id)
+        let tmdb = meta.tmdbId ?? (meta.id.hasPrefix("tmdb:") ? Int(meta.id.dropFirst(5).prefix { $0 != ":" }) : nil)
+        guard imdb != nil || tmdb != nil else { return nil }
+        let maps = AniListOfflineMaps.shared
+        guard meta.isSeries else { return await maps.film(imdb: imdb, tmdbMovie: tmdb) }
+        if let first = await maps.aniListEpisode(imdb: imdb, tmdbTV: tmdb, season: 1, episode: 1) {
+            return first.aniListID
+        }
+        let all = await maps.aniListIDs(tmdbTV: tmdb, imdb: imdb)
+        return all.count == 1 ? all.first : nil
+    }
+
+    /// The title MDBList and the rating add-ons are asked about: an AniList title by the IMDb id
+    /// it maps to (their ratings are the whole show's), anything else as it is. nil = an AniList
+    /// title nothing maps.
+    static func ratingsMeta(for meta: NuvioMeta) async -> NuvioMeta? {
+        guard AniListMetaBuilder.isAniListID(meta.id) else { return meta }
+        guard let imdb = await trailerIMDbID(metaID: meta.id) else { return nil }
+        return NuvioMeta(id: imdb, name: meta.name, imdbId: imdb, type: meta.isSeries ? "series" : "movie")
+    }
 
     /// Characters with their Japanese voice actors, and AniList's recommendations.
     static func extras(metaID: String) async -> (people: [TmdbPersonMetadata], recommendations: [RelatedTitle]) {

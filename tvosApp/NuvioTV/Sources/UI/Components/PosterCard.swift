@@ -192,6 +192,9 @@ struct PosterCard: View {
     var continueIsUpNext: Bool = false
     var continueUpNextBadgeText: String? = nil
     var collectionOrigin: CollectionOriginPresentation? = nil
+    /// Continue Watching: AniList's mark on an AniList title (as in Search) when no collection
+    /// mark is shown.
+    var showsAniListOrigin: Bool = false
     var showsWatchedBadge: Bool = true
     var shouldRequestInitialFocus: Bool = false
     var onInitialFocusRequested: (() -> Void)? = nil
@@ -443,8 +446,8 @@ struct PosterCard: View {
                 continueBadge
             }
             .overlay(alignment: .bottomTrailing) {
-                if let collectionOrigin, !continueIsUpNext {
-                    CollectionOriginBadge(origin: collectionOrigin)
+                if let origin = shownOrigin {
+                    CollectionOriginBadge(origin: origin)
                         .padding(.trailing, 22)
                         // The progress bar occupies the bottom 16...24 points.
                         // Leave a 10-point gap above it, or use the bottom inset
@@ -594,6 +597,14 @@ struct PosterCard: View {
             return nil
         }
         return URL(string: raw)
+    }
+
+    /// The mark in the bottom corner: the collection a title was started from (not on Up Next),
+    /// else AniList's on an AniList title where asked.
+    private var shownOrigin: CollectionOriginPresentation? {
+        if let collectionOrigin, !continueIsUpNext { return collectionOrigin }
+        if showsAniListOrigin, AniListMetaBuilder.isAniListID(meta.id) { return AniListService.searchBadge }
+        return nil
     }
 
     @ViewBuilder
