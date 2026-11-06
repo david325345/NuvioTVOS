@@ -309,7 +309,8 @@ enum AniListMetaBuilder {
     /// entry (AniList numbers each season on its own).
     static func episodeHeading(_ video: NuvioVideo) -> String {
         if isAniListID(video.id), video.season <= 1 {
-            return L10n.format("details_episode_number", fallback: "Episode %d", video.episode)
+            // "Episode %d" in every language ("details_episode_number" is the upper-case label).
+            return L10n.format("jellyfin_episode_fallback_title", fallback: "Episode %d", video.episode)
         }
         return L10n.format("details_season_episode", fallback: "Season %1$d · Episode %2$d", video.season, video.episode)
     }

@@ -21,7 +21,8 @@ actor AniListOfflineMaps {
     static let maxAge: TimeInterval = 7 * 24 * 3600
     /// After a failed download, how long before trying again.
     static let retryAfter: TimeInterval = 6 * 3600
-    static let formatVersion = 1
+    /// 2: Fribb's episode offset is `{"tvdb": N, "tmdb": M}`, version 1 read it as nothing.
+    static let formatVersion = 2
 
     /// What the tables know of one AniList entry.
     struct Entry: Codable, Equatable, Sendable {
@@ -129,9 +130,29 @@ actor AniListOfflineMaps {
 
     /// TheTVDB's season and episode of episode `episode` of AniList entry `aniListID`: by
     /// anibridge's ranges, else by Fribb's default season and offset. nil when neither knows.
+    ///
+    /// Past the end of its ranges: when the entry is the last window of its show (the season still
+    /// airing; anibridge lists the episodes known so far), the episode continues from that window.
     func seasonEpisode(aniListID: Int, episode: Int) async -> SeasonEpisode? {
-        guard let entry = await entry(aniListID: aniListID) else { return nil }
-        return Self.seasonEpisode(of: entry, episode: episode)
+        guard let index = await ready(), let entry = index.entries[aniListID] else { return nil }
+        if let found = Self.seasonEpisode(of: entry, episode: episode) { return found }
+        guard !entry.isFilm else { return nil }
+        for tvdb in Set((entry.ranges ?? []).map(\.tvdb)).sorted() {
+            if let found = Self.continuing(aniListID: aniListID, episode: episode, tvdb: tvdb, windows: windows(ofTVDB: tvdb, in: index)) {
+                return found
+            }
+        }
+        return nil
+    }
+
+    /// TheTVDB's regular seasons of `tvdb` and their lengths, where every window is closed.
+    func seasonLengths(tvdb: Int) async -> [Int: Int] {
+        guard let index = await ready() else { return [:] }
+        return Self.seasonLengths(windows(ofTVDB: tvdb, in: index))
+    }
+
+    private func windows(ofTVDB tvdb: Int, in index: Index) -> [Window] {
+        Self.windows(ofTVDB: tvdb, entries: (byTVDB[tvdb] ?? []).compactMap { id in index.entries[id].map { (id, $0) } })
     }
 
     /// The AniList entry and episode of TheTVDB season `season` episode `episode` of the show IMDb
@@ -150,6 +171,15 @@ actor AniListOfflineMaps {
                 if let number = Self.aniListEpisode(of: entry, tvdb: tvdb, season: season, episode: episode),
                    !found.contains(where: { $0 == (id, number) }) {
                     found.append((id, number))
+                }
+            }
+        }
+        if found.isEmpty {
+            // Past the end of the season: the show's last, airing window, or IMDb's season of several cours.
+            for tvdb in shows.sorted() {
+                if let hit = Self.pastSeasonEnd(season: season, episode: episode, windows: windows(ofTVDB: tvdb, in: index)),
+                   !found.contains(where: { $0 == (hit.aniListID, hit.episode) }) {
+                    found.append((hit.aniListID, hit.episode))
                 }
             }
         }
@@ -293,7 +323,11 @@ actor AniListOfflineMaps {
             if let season = item["season"] as? [String: Any] {
                 entry.tvdbSeason = entry.tvdbSeason ?? int(season["tvdb"])
             }
-            entry.episodeOffset = entry.episodeOffset ?? int(item["episode_offset"])
+            if let offsets = item["episode_offset"] as? [String: Any] {
+                entry.episodeOffset = entry.episodeOffset ?? int(offsets["tvdb"])
+            } else {
+                entry.episodeOffset = entry.episodeOffset ?? int(item["episode_offset"])
+            }
             entry.type = entry.type ?? (item["type"] as? String)
             entries[id] = entry
         }
@@ -450,6 +484,89 @@ actor AniListOfflineMaps {
         guard !entry.isFilm, entry.tvdb == tvdb, entry.tvdbSeason == season else { return nil }
         let number = episode - (entry.episodeOffset ?? 0)
         return number >= 1 ? number : nil
+    }
+
+    // MARK: Windows of a show (static, for tests)
+
+    /// One AniList entry's episodes in one regular TheTVDB season: AniList's `source`, TheTVDB's `target`.
+    struct Window: Equatable {
+        let aniListID: Int
+        let season: Int
+        let source: [Segment]
+        let target: [Segment]
+
+        var targetFirst: Int { target.first?.from ?? 0 }
+        /// nil = open (still airing, every later episode is in it).
+        var targetLast: Int? { target.last?.to }
+        var sourceLast: Int? { source.last?.to }
+    }
+
+    /// The windows of TheTVDB show `tvdb` in its regular seasons, by season and first episode.
+    static func windows(ofTVDB tvdb: Int, entries: [(Int, Entry)]) -> [Window] {
+        var result: [Window] = []
+        for (id, entry) in entries {
+            for range in entry.ranges ?? [] where range.tvdb == tvdb && range.season >= 1 {
+                guard let source = segments(range.source), let target = segments(range.target) else { continue }
+                result.append(Window(aniListID: id, season: range.season, source: source, target: target))
+            }
+        }
+        return result.sorted { ($0.season, $0.targetFirst, $0.aniListID) < ($1.season, $1.targetFirst, $1.aniListID) }
+    }
+
+    /// Season → episodes, for the seasons whose windows are all closed.
+    static func seasonLengths(_ windows: [Window]) -> [Int: Int] {
+        var lengths: [Int: Int] = [:]
+        for season in Set(windows.map(\.season)) {
+            let ends = windows.filter { $0.season == season }.map(\.targetLast)
+            guard !ends.contains(where: { $0 == nil }), let end = ends.compactMap({ $0 }).max() else { continue }
+            lengths[season] = end
+        }
+        return lengths
+    }
+
+    /// AniList episode `episode` of entry `aniListID` past the end of its window, when that window is
+    /// the show's last one (the season still airing): it continues from where the window ends
+    /// (Yozakura 2nd Season Part 2: anibridge ends at S2E14, its next episode is S2E15).
+    static func continuing(aniListID: Int, episode: Int, tvdb: Int, windows: [Window]) -> SeasonEpisode? {
+        guard let last = windows.last, last.aniListID == aniListID,
+              let sourceLast = last.sourceLast, let targetLast = last.targetLast, episode > sourceLast else { return nil }
+        return SeasonEpisode(tvdb: tvdb, season: last.season, episode: targetLast + (episode - sourceLast))
+    }
+
+    /// The AniList entry and episode of TheTVDB `season` `episode`, past the season's last window:
+    /// - the show's last window (the season still airing): that window's entry, continued;
+    /// - a finished season (more windows follow): IMDb and Cinemeta run several cours as one season
+    ///   (Seihantai tt36034547 S1E25 = TheTVDB S2E13 = the 2nd season's 13th episode), so the
+    ///   episodes past its end are the next seasons'. From season 1 on through the later seasons;
+    ///   from a later season only into the one right after (beyond that it is another numbering).
+    static func pastSeasonEnd(season: Int, episode: Int, windows: [Window]) -> (aniListID: Int, episode: Int)? {
+        guard season >= 1 else { return nil }
+        let inSeason = windows.filter { $0.season == season }
+        guard let lastInSeason = inSeason.last else { return nil }
+        let lengths = seasonLengths(windows)
+        guard let end = lengths[season], episode > end else { return nil }
+        if lastInSeason == windows.last {
+            guard let sourceLast = lastInSeason.sourceLast, let targetLast = lastInSeason.targetLast else { return nil }
+            return (lastInSeason.aniListID, sourceLast + (episode - targetLast))
+        }
+        var left = episode - end
+        let later = Array(Set(windows.map(\.season).filter { $0 > season })).sorted()
+        for (step, next) in later.enumerated() {
+            if season >= 2, step > 0 { return nil }
+            let nextWindows = windows.filter { $0.season == next }
+            for window in nextWindows {
+                if let at = position(of: left, in: window.target), let number = number(at: at, in: window.source) {
+                    return (window.aniListID, number)
+                }
+            }
+            guard let nextEnd = lengths[next], left > nextEnd else { return nil }
+            if let lastNext = nextWindows.last, lastNext == windows.last,
+               let sourceLast = lastNext.sourceLast, let targetLast = lastNext.targetLast {
+                return (lastNext.aniListID, sourceLast + (left - targetLast))
+            }
+            left -= nextEnd
+        }
+        return nil
     }
 
     // MARK: Settings
