@@ -18,8 +18,19 @@ enum AniListStreamIds {
     /// The ids to try, best first, for an add-on that doesn't take `videoId`. [] for ids that
     /// aren't AniList's, or with the setting off.
     static func alternatives(for videoId: String) async -> [String] {
-        guard AniListSettings.isEnabled, AniListSettings.asksOtherAddons,
-              let entryID = AniListMetaBuilder.aniListID(from: videoId) else { return [] }
+        guard AniListSettings.asksOtherAddons else { return [] }
+        return await ids(for: videoId)
+    }
+
+    /// The IMDb episode id (`tt…:season:episode`) of an AniList episode, for its ratings from the
+    /// rating add-ons. nil for other ids, a film, or an episode nothing places.
+    static func imdbEpisodeID(for videoId: String) async -> String? {
+        guard AniListAccount.episodeNumber(in: videoId) != nil else { return nil }
+        return await ids(for: videoId).first { $0.hasPrefix("tt") && $0.contains(":") }
+    }
+
+    private static func ids(for videoId: String) async -> [String] {
+        guard AniListSettings.isEnabled, let entryID = AniListMetaBuilder.aniListID(from: videoId) else { return [] }
         if let cached = lock.withLock({ known[videoId] }) { return cached }
         let ids = await find(entryID: entryID, episode: AniListAccount.episodeNumber(in: videoId))
         if !ids.isEmpty { lock.withLock { known[videoId] = ids } }
@@ -29,7 +40,7 @@ enum AniListStreamIds {
     private static func find(entryID: Int, episode: Int?) async -> [String] {
         let offline = await AniListOfflineMaps.shared.entry(aniListID: entryID)
         var kitsu = offline?.kitsu
-        var imdb = offline?.imdb
+        var imdb = await AniListOfflineMaps.shared.imdb(aniListID: entryID)
         var numbering: (season: Int, episode: Int)? = nil
         if let episode, let found = await AniListOfflineMaps.shared.seasonEpisode(aniListID: entryID, episode: episode) {
             numbering = (found.season, found.episode)
@@ -59,10 +70,10 @@ enum AniListStreamIds {
             return ids
         }
 
+        // A season too new for the tables and ani.zip: the earlier seasons' IMDb id.
+        if imdb == nil { imdb = await earlierSeasonsIMDb(of: entryID) }
         if numbering == nil {
-            // A season too new for the tables and ani.zip: its IMDb id (or the earlier seasons'),
-            // and the episode Cinemeta lists for the day it aired.
-            if imdb == nil { imdb = await earlierSeasonsIMDb(of: entryID) }
+            // And the episode Cinemeta lists for the day it aired.
             if let imdb {
                 var day = airDay
                 if day == nil { day = await aniListAirDay(entryID: entryID, episode: episode) }
@@ -83,7 +94,7 @@ enum AniListStreamIds {
         for _ in 0..<3 {
             guard let media = await AniListService.prequels(of: current),
                   let previous = AniListMetaBuilder.previousSeason(of: media) else { return nil }
-            if let imdb = await AniListOfflineMaps.shared.entry(aniListID: previous)?.imdb { return imdb }
+            if let imdb = await AniListOfflineMaps.shared.imdb(aniListID: previous) { return imdb }
             if let imdb = await AniListService.aniZipMappings(entryID: previous, finished: true)?.mappings?.imdbID { return imdb }
             current = previous
         }

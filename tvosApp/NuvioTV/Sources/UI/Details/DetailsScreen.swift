@@ -9368,7 +9368,7 @@ private struct TvStreamPickerOverlay: View {
 
             if let episode {
                 VStack(spacing: 12) {
-                    Text(L10n.format("details_season_episode", fallback: "Season %1$d · Episode %2$d", episode.season, episode.episode))
+                    Text(AniListMetaBuilder.episodeHeading(episode))
                         .font(.system(size: 36, weight: .semibold))
                         .foregroundColor(.white)
                         .multilineTextAlignment(.center)

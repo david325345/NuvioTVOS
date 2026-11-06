@@ -2043,6 +2043,12 @@ enum MdbListDetailsService {
         }
     }
 
+    /// `fetchRatings(for:)`, or nothing without a title to ask about.
+    static func fetchRatings(forOptional meta: NuvioMeta?) async -> [NuvioExternalRating] {
+        guard let meta else { return [] }
+        return await fetchRatings(for: meta)
+    }
+
     private static func extractImdbID(from meta: NuvioMeta) -> String? {
         let candidates = [meta.imdbId, meta.id].compactMap { $0 }
         for candidate in candidates {

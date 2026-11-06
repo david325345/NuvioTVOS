@@ -746,10 +746,16 @@ class DetailsViewModel: ObservableObject {
 
                 // 4. External Ratings (MDBList & Add-ons)
                 group.addTask {
-                    async let mdbTask = MdbListDetailsService.fetchRatings(for: meta)
-                    async let addonTask = AddonRatingsService.fetchRatings(for: meta)
-                    let (mdbRatings, addonRatings) = await (mdbTask, addonTask)
-                    let combinedRatings = mdbRatings + addonRatings
+                    // AniList's score first (an AniList title's own, or a Cinemeta anime's);
+                    // MDBList and the add-ons ask about an AniList title by its IMDb id.
+                    async let aniListTask = AniListService.ratings(for: meta)
+                    let asked = await AniListService.ratingsMeta(for: meta)
+                    async let mdbTask = MdbListDetailsService.fetchRatings(forOptional: asked)
+                    async let addonTask = AddonRatingsService.fetchRatings(forOptional: asked)
+                    let (aniListRatings, mdbRatings, addonRatings) = await (aniListTask, mdbTask, addonTask)
+                    var seen = Set<String>()
+                    let combinedRatings = (aniListRatings + mdbRatings + addonRatings)
+                        .filter { seen.insert($0.source.lowercased()).inserted }
                     await MainActor.run { [weak self] in
                         self?.applyMdbRatings(combinedRatings, for: meta.id, generation: generation)
                     }

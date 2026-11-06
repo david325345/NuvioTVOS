@@ -503,6 +503,11 @@ final class AniListTests: XCTestCase {
         XCTAssertEqual(AniListMetaBuilder.episodeCode(id: "anilist:101", season: 1, episode: 3, separator: " · "), "E3")
         XCTAssertEqual(AniListMetaBuilder.episodeCode(id: "tt0903747", season: 5, episode: 14, separator: " · "), "S5 · E14")
 
+        // Over the stream list.
+        XCTAssertEqual(AniListMetaBuilder.episodeHeading(NuvioVideo(id: "anilist:101:4", title: "", season: 1, episode: 4)), "Episode 4")
+        XCTAssertEqual(AniListMetaBuilder.episodeHeading(NuvioVideo(id: "anilist:102:4", title: "", season: 2, episode: 4)), "Season 2 · Episode 4")
+        XCTAssertEqual(AniListMetaBuilder.episodeHeading(NuvioVideo(id: "tt1:1:4", title: "", season: 1, episode: 4)), "Season 1 · Episode 4")
+
         XCTAssertEqual(AniListMetaBuilder.playerEpisodeLine("S1, E1 • Episode 1", titleID: "anilist:101"), "E1 • Episode 1")
         XCTAssertEqual(AniListMetaBuilder.playerEpisodeLine("S2, E1 • Episode 1", titleID: "anilist:101"), "S2, E1 • Episode 1")
         XCTAssertEqual(AniListMetaBuilder.playerEpisodeLine("S1, E1 • Pilot", titleID: "tt0903747"), "S1, E1 • Pilot")
@@ -979,6 +984,32 @@ final class AniListTests: XCTestCase {
         XCTAssertEqual(shows, [150672, 166531])
         let status = await maps.status
         XCTAssertEqual(status, .ready(titles: index.entries.count, builtAt: index.builtAt))
+    }
+
+    /// STEEL BALL RUN 2nd STAGE: anibridge knows it only as TheTVDB's JoJo season 6; the IMDb id
+    /// comes from the other JoJo entries of that TheTVDB show.
+    func testANewSeasonTakesTheIMDbIdOfItsTheTVDBShow() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("anilist-offline-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        typealias Entry = AniListOfflineMaps.Entry
+        let index = AniListOfflineMaps.Index(version: AniListOfflineMaps.formatVersion, builtAt: Date(), anibridgeGenerated: nil, entries: [
+            131942: Entry(imdb: "tt2359704", tvdb: 262954, tvdbSeason: 5, type: "ONA"),
+            190327: Entry(imdb: "tt2359704", tvdb: 262954, tvdbSeason: 6, type: "ONA"),
+            210482: Entry(type: "ONA", ranges: [AniListOfflineMaps.EpisodeRange(tvdb: 262954, season: 6, source: "1-11", target: "2-12")]),
+            999: Entry(type: "ONA"),
+        ])
+        try JSONEncoder().encode(index).write(to: directory.appendingPathComponent("index.json"))
+        let maps = AniListOfflineMaps(directory: directory)
+
+        let imdb = await maps.imdb(aniListID: 210482)
+        XCTAssertEqual(imdb, "tt2359704")
+        let own = await maps.imdb(aniListID: 190327)
+        XCTAssertEqual(own, "tt2359704")
+        let unknown = await maps.imdb(aniListID: 999)
+        XCTAssertNil(unknown)
+        let episode = await maps.seasonEpisode(aniListID: 210482, episode: 4)
+        XCTAssertEqual(episode, AniListOfflineMaps.SeasonEpisode(tvdb: 262954, season: 6, episode: 5))
     }
 
     func testAddOnsWithoutAniListIdsAreAskedByKitsuOrIMDb() throws {

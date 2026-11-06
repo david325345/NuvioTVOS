@@ -108,6 +108,25 @@ actor AniListOfflineMaps {
         await ready()?.entries[aniListID]
     }
 
+    /// The IMDb id of an AniList entry: its own, else the one the other entries of its TheTVDB
+    /// show carry (a new season the tables know only by TheTVDB's numbering: STEEL BALL RUN 2nd
+    /// STAGE is season 6 of TheTVDB's JoJo, which IMDb has as one title).
+    func imdb(aniListID: Int) async -> String? {
+        guard let index = await ready(), let entry = index.entries[aniListID] else { return nil }
+        if let imdb = entry.imdb { return imdb }
+        guard !entry.isFilm else { return nil }
+        var shows = Set(entry.ranges?.map(\.tvdb) ?? [])
+        if let tvdb = entry.tvdb { shows.insert(tvdb) }
+        var counts: [String: Int] = [:]
+        for show in shows {
+            for id in byTVDB[show] ?? [] where id != aniListID {
+                guard let other = index.entries[id], !other.isFilm, let imdb = other.imdb else { continue }
+                counts[imdb, default: 0] += 1
+            }
+        }
+        return counts.max { $0.value != $1.value ? $0.value < $1.value : $0.key > $1.key }?.key
+    }
+
     /// TheTVDB's season and episode of episode `episode` of AniList entry `aniListID`: by
     /// anibridge's ranges, else by Fribb's default season and offset. nil when neither knows.
     func seasonEpisode(aniListID: Int, episode: Int) async -> SeasonEpisode? {

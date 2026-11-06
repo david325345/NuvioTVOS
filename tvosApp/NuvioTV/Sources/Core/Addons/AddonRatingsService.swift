@@ -458,6 +458,15 @@ enum AddonRatingsService {
         }
     }
 
+    /// `fetchRatings(for:)`, or nothing without a title to ask about.
+    static func fetchRatings(
+        forOptional meta: NuvioMeta?,
+        defaults: UserDefaults = ProfileSettings.current
+    ) async -> [NuvioExternalRating] {
+        guard let meta else { return [] }
+        return await fetchRatings(for: meta, defaults: defaults)
+    }
+
     static func fetchRatingsForEpisode(
         episodeId: String,
         seriesType: String = "series",
@@ -478,11 +487,24 @@ enum AddonRatingsService {
             return []
         }
 
+        // An AniList episode is asked by the IMDb episode it maps to (TheTVDB's numbering), and
+        // kept under its own id.
+        let askedId: String
+        if AniListMetaBuilder.isAniListID(cleanId) {
+            guard let mapped = await AniListStreamIds.imdbEpisodeID(for: cleanId) else {
+                await AddonEpisodeRatingsCache.shared.setRatings([], for: cleanId)
+                return []
+            }
+            askedId = mapped
+        } else {
+            askedId = cleanId
+        }
+
         let manifests = await loadManifestsConcurrently(urls: urls)
         var eligible: [(url: URL, manifest: AddonRatingsManifest)] = []
         for url in urls {
             guard let manifest = manifests[url],
-                  manifest.supportsRatings(type: seriesType, id: cleanId),
+                  manifest.supportsRatings(type: seriesType, id: askedId),
                   let sources = manifest.ratingSources,
                   sources.contains(where: { ($0.episodes == true) && isSourceEnabled($0.source, defaults: defaults) && !builtInProviders.contains($0.source.lowercased()) })
             else { continue }
@@ -503,7 +525,7 @@ enum AddonRatingsService {
                             manifestURL: item.url,
                             manifest: item.manifest,
                             type: seriesType,
-                            id: cleanId,
+                            id: askedId,
                             session: session,
                             defaults: defaults,
                             episodesOnly: true
@@ -666,6 +688,7 @@ enum AddonRatingsService {
             HeroRatingSourceOption(id: "letterboxd", displayName: "Letterboxd", addonName: nil),
             HeroRatingSourceOption(id: "audience", displayName: "Audience Score", addonName: nil),
             HeroRatingSourceOption(id: "myanimelist", displayName: "MyAnimeList", addonName: nil),
+            HeroRatingSourceOption(id: AniListMetaBuilder.ratingSource, displayName: "AniList", addonName: nil),
             HeroRatingSourceOption(id: "tvdb", displayName: "TVDB", addonName: nil)
         ]
     }
@@ -700,6 +723,7 @@ enum AddonRatingsService {
         case "letterboxd": return "Letterboxd"
         case "audience": return "Audience"
         case "myanimelist", "mal": return "MAL"
+        case AniListMetaBuilder.ratingSource: return "AniList"
         case "tvdb": return "TVDB"
         default: return customName ?? sourceId.capitalized
         }
@@ -743,6 +767,7 @@ enum AddonRatingsService {
         case "letterboxd": return "Letterboxd 4.2"
         case "audience": return "Audience 95%"
         case "myanimelist", "mal": return "MAL 8.7"
+        case AniListMetaBuilder.ratingSource: return "AniList 84%"
         case "tvdb": return "TVDB 8.8"
         case "csfd": return "ČSFD 86%"
         case "douban": return "Douban 8.4"
@@ -768,11 +793,13 @@ enum AddonRatingsService {
         // same title at once; they share one request.
         let defaultsStore = SendableDefaultsStore(value: defaults)
         let combined = await HomeHeroRatingsCache.shared.load(key: key) {
-            async let addonRatingsTask = fetchRatings(for: meta, defaults: defaultsStore.value)
-            async let mdbRatingsTask = MdbListDetailsService.fetchRatings(for: meta)
-            // An AniList title's own score: Continue Watching keeps no ratings, and MDBList
-            // and the add-ons don't know anilist: ids.
+            // AniList's score first (an AniList title's own, which Continue Watching doesn't
+            // keep, or a Cinemeta anime's); MDBList and the add-ons ask about an AniList title
+            // by the IMDb id it maps to.
             async let aniListRatingsTask = AniListService.ratings(for: meta)
+            let asked = await AniListService.ratingsMeta(for: meta)
+            async let addonRatingsTask = fetchRatings(forOptional: asked, defaults: defaultsStore.value)
+            async let mdbRatingsTask = MdbListDetailsService.fetchRatings(forOptional: asked)
             let (addonRatings, mdbRatings, aniListRatings) = await (addonRatingsTask, mdbRatingsTask, aniListRatingsTask)
 
             var seen = Set<String>()
@@ -783,7 +810,9 @@ enum AddonRatingsService {
 
     /// Cache key shared by the hero and Details for one title.
     static func homeHeroRatingsKey(for meta: NuvioMeta) -> String {
-        NuvioMeta.canonicalImdbID(from: meta.imdbId ?? meta.id) ?? meta.id
+        // An AniList season has its own AniList score, though IMDb has one title for the show.
+        if AniListMetaBuilder.isAniListID(meta.id) { return meta.id.lowercased() }
+        return NuvioMeta.canonicalImdbID(from: meta.imdbId ?? meta.id) ?? meta.id
     }
 
     /// Ratings already fetched for this title, read synchronously so a view
