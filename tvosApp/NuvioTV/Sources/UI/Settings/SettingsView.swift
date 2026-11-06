@@ -191,6 +191,8 @@ enum SettingsKey {
     static let calendarHideSpoilers = "nuvio.tv.settings.calendar.hideSpoilers"
     static let calendarCheckAvailability = "nuvio.tv.settings.calendar.checkAvailability"
     static let calendarTvmazeTimes = "nuvio.tv.settings.calendar.tvmazeTimes"
+    static let calendarAniList = "nuvio.tv.settings.calendar.aniList"
+    static let calendarAniListPlanning = "nuvio.tv.settings.calendar.aniListPlanning"
     static let hideUnreleased = "nuvio.tv.settings.layout.hideUnreleased"
     static let showFullDates = "nuvio.tv.settings.layout.showFullDates"
     static let detailsActionsBelowInfo = "nuvio.tv.settings.layout.detailsActionsBelowInfo"
@@ -399,7 +401,7 @@ enum SettingsKey {
         homeLayout, sidebarClockFormat, gridRows, catalogAutoRefreshInterval, homeCatalogShowType, heroEnabled, heroCatalogs, fullscreenHeroBackdrop, homeHeroRatingSource, posterLabels, catalogAddonNames, landscapePosters, customPosterURLPattern, customPosterEnabledScreens, discoverLocation,
         searchStyle, preferAddonArtworkInSearch,
         continueWatchingVisible, continueWatchingLandscape, continueWatchingSort, upNextFromFurthestEpisode, showUnairedNextUp,
-        showCalendarTab, homeCalendarToday, calendarFilter, calendarHideSpoilers, calendarCheckAvailability, calendarTvmazeTimes,
+        showCalendarTab, homeCalendarToday, calendarFilter, calendarHideSpoilers, calendarCheckAvailability, calendarTvmazeTimes, calendarAniList, calendarAniListPlanning,
         cardCornerRadius, cardSize, liquidGlassCards,
         hideUnreleased, showFullDates, detailsActionsBelowInfo,
         detailsSectionOrder, detailsSectionDisabled,
