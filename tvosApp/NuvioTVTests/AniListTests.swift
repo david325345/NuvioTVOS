@@ -842,4 +842,189 @@ final class AniListTests: XCTestCase {
         XCTAssertEqual(episode.airDay, "2026-07-03")
         XCTAssertEqual(episode.englishTitle, "Again")
     }
+
+    // MARK: Offline tables
+
+    /// Shaped like Fribb's mini file and anibridge's mappings (real ids and ranges).
+    private func offlineSample() throws -> AniListOfflineMaps.Index {
+        let fribb = """
+        [
+          {"type":"TV","anidb_id":17449,"anilist_id":150672,"imdb_id":["tt21030032"],"kitsu_id":46170,"mal_id":52034,"themoviedb_id":{"tv":203737},"tvdb_id":421069,"season":{"tvdb":1,"tmdb":1}},
+          {"type":"TV","anidb_id":18086,"anilist_id":166531,"imdb_id":["tt21030032"],"kitsu_id":47759,"mal_id":55791,"themoviedb_id":{"tv":203737},"tvdb_id":421069,"season":{"tvdb":2,"tmdb":1}},
+          {"type":"MOVIE","anidb_id":1,"anilist_id":129201,"imdb_id":["tt16360006"],"kitsu_id":44985,"themoviedb_id":{"movie":706510}},
+          {"type":"TV","anidb_id":2,"anilist_id":5000,"tvdb_id":72025,"season":{"tvdb":3},"episode_offset":12,"kitsu_id":"77"},
+          {"type":"TV","anidb_id":3,"mal_id":9}
+        ]
+        """
+        let anibridge = """
+        {
+          "$meta": {"schema_version":"3.0.3","generated_on":"2026-11-06T08:50:08Z"},
+          "anilist:150672": {"anidb:17449:R":{"1-11":"1-11"},"tvdb_show:421069:s1":{"1-11":"1-11"}},
+          "anilist:166531": {"tmdb_show:203737:s1":{"1-13":"12-24"},"tvdb_show:421069:s2":{"1-13":"1-13"}},
+          "anilist:185874": {"mal:60636":{"1-":"1-"},"tmdb_show:30984:s2":{"1-":"41-"},"tvdb_show:74796:s17":{"1-":"41-"}},
+          "anilist:146065": {"tvdb_show:371310:s0":{"1":"2"},"tvdb_show:371310:s2":{"2-13":"1-12"}},
+          "anilist:21": {"tvdb_show:81797:s0":{"542":"39"},"tvdb_show:81797:s15":{"517-541":"1-25","543-579":"26-62"},"tvdb_show:81797:s22":{"1086-1155":"1-70"}},
+          "anilist:280": {"tvdb_show:307695:s1":{"1-51":"1-102|-2"}},
+          "anilist:400": {"tvdb_show:75911:s1":{"1-24":"1-15,17-22,24-26"}},
+          "anilist:177191": {"tmdb_movie:1287324":{"1-2":"1|2"},"imdb_movie:tt9584920":{"1-2":"1-2"}}
+        }
+        """
+        return try AniListOfflineMaps.build(fribb: Data(fribb.utf8), anibridge: Data(anibridge.utf8), now: Date(timeIntervalSince1970: 1_790_000_000))
+    }
+
+    func testTheOfflineIndexJoinsFribbAndAnibridge() throws {
+        let index = try offlineSample()
+        XCTAssertEqual(index.anibridgeGenerated, "2026-11-06T08:50:08Z")
+        let oshi2 = try XCTUnwrap(index.entries[166531])
+        XCTAssertEqual(oshi2.kitsu, 47759)
+        XCTAssertEqual(oshi2.imdb, "tt21030032")
+        XCTAssertEqual(oshi2.tmdbTV, 203737)
+        XCTAssertEqual(oshi2.tvdbSeason, 2)
+        // TheTVDB's ranges only; TMDB's numbering (here S1E12–24) is not what add-ons go by.
+        XCTAssertEqual(oshi2.ranges, [AniListOfflineMaps.EpisodeRange(tvdb: 421069, season: 2, source: "1-13", target: "1-13")])
+
+        // Only in anibridge (newer than Fribb): its ids and ranges still count.
+        let bleach = try XCTUnwrap(index.entries[185874])
+        XCTAssertEqual(bleach.mal, 60636)
+        XCTAssertEqual(bleach.tvdb, 74796)
+        XCTAssertEqual(bleach.tmdbTV, 30984)
+
+        XCTAssertEqual(index.entries[129201]?.tmdbMovie, 706510)
+        XCTAssertTrue(index.entries[129201]?.isFilm == true)
+        XCTAssertTrue(index.entries[177191]?.isFilm == true)
+        XCTAssertEqual(index.entries[177191]?.imdb, "tt9584920")
+        XCTAssertEqual(index.entries[5000]?.kitsu, 77)
+        XCTAssertNil(index.entries[0])
+
+        // Regular seasons before specials.
+        XCTAssertEqual(index.entries[21]?.ranges?.map(\.season), [15, 15, 22, 0])
+    }
+
+    func testAniListEpisodesBecomeTheTVDBNumbers() throws {
+        let index = try offlineSample()
+        func numbers(_ id: Int, _ episode: Int) -> String? {
+            guard let entry = index.entries[id], let found = AniListOfflineMaps.seasonEpisode(of: entry, episode: episode) else { return nil }
+            return "\(found.tvdb) S\(found.season)E\(found.episode)"
+        }
+        XCTAssertEqual(numbers(166531, 1), "421069 S2E1")
+        XCTAssertEqual(numbers(185874, 1), "74796 S17E41")      // a cour still airing
+        XCTAssertEqual(numbers(185874, 9), "74796 S17E49")
+        XCTAssertEqual(numbers(146065, 1), "371310 S0E2")       // episode 0 is a special
+        XCTAssertEqual(numbers(146065, 2), "371310 S2E1")
+        XCTAssertEqual(numbers(21, 1100), "81797 S22E15")       // absolute numbering
+        XCTAssertEqual(numbers(21, 543), "81797 S15E26")
+        XCTAssertEqual(numbers(21, 542), "81797 S0E39")
+        XCTAssertEqual(numbers(400, 16), "75911 S1E17")         // skipped TheTVDB episodes
+        XCTAssertEqual(numbers(400, 22), "75911 S1E24")
+        XCTAssertNil(numbers(280, 3))                            // two TheTVDB episodes each: unplaceable
+        XCTAssertNil(numbers(166531, 14))                        // past the end of the range
+        XCTAssertEqual(numbers(5000, 2), "72025 S3E14")         // Fribb's season and offset
+        XCTAssertNil(numbers(129201, 1))                         // a film has no episodes
+
+        // And back.
+        let oshi2 = try XCTUnwrap(index.entries[166531])
+        XCTAssertEqual(AniListOfflineMaps.aniListEpisode(of: oshi2, tvdb: 421069, season: 2, episode: 5), 5)
+        XCTAssertNil(AniListOfflineMaps.aniListEpisode(of: oshi2, tvdb: 421069, season: 1, episode: 5))
+        let onePiece = try XCTUnwrap(index.entries[21])
+        XCTAssertEqual(AniListOfflineMaps.aniListEpisode(of: onePiece, tvdb: 81797, season: 22, episode: 15), 1100)
+        XCTAssertEqual(AniListOfflineMaps.aniListEpisode(of: try XCTUnwrap(index.entries[5000]), tvdb: 72025, season: 3, episode: 14), 2)
+    }
+
+    func testEpisodeRangeSpecs() {
+        typealias M = AniListOfflineMaps
+        XCTAssertEqual(M.segments("1-13"), [M.Segment(from: 1, to: 13)])
+        XCTAssertEqual(M.segments("41-"), [M.Segment(from: 41, to: nil)])
+        XCTAssertEqual(M.segments("542"), [M.Segment(from: 542, to: 542)])
+        XCTAssertEqual(M.segments("1-15,17-22"), [M.Segment(from: 1, to: 15), M.Segment(from: 17, to: 22)])
+        XCTAssertNil(M.segments("1-102|-2"))
+        XCTAssertNil(M.segments("5-3"))
+        XCTAssertNil(M.segments("x"))
+        let runs = M.segments("1-15,17-22,24-")!
+        XCTAssertEqual(M.position(of: 17, in: runs), 15)
+        XCTAssertNil(M.position(of: 16, in: runs))
+        XCTAssertEqual(M.position(of: 30, in: runs), 27)
+        XCTAssertEqual(M.number(at: 15, in: runs), 17)
+        XCTAssertEqual(M.number(at: 27, in: runs), 30)
+        XCTAssertNil(M.number(at: 40, in: M.segments("1-13")!))
+    }
+
+    func testTheOfflineTablesAnswerFromTheCache() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("anilist-offline-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var index = try offlineSample()
+        index.builtAt = Date()
+        try JSONEncoder().encode(index).write(to: directory.appendingPathComponent("index.json"))
+        let maps = AniListOfflineMaps(directory: directory)
+
+        let found = await maps.seasonEpisode(aniListID: 166531, episode: 3)
+        XCTAssertEqual(found, AniListOfflineMaps.SeasonEpisode(tvdb: 421069, season: 2, episode: 3))
+        let entry = await maps.entry(aniListID: 150672)
+        XCTAssertEqual(entry?.kitsu, 46170)
+
+        // A Cinemeta episode back to its AniList entry, by IMDb or TMDB.
+        let season2 = await maps.aniListEpisode(imdb: "tt21030032", tmdbTV: nil, season: 2, episode: 4)
+        XCTAssertEqual(season2?.aniListID, 166531)
+        XCTAssertEqual(season2?.episode, 4)
+        let season1 = await maps.aniListEpisode(imdb: nil, tmdbTV: 203737, season: 1, episode: 11)
+        XCTAssertEqual(season1?.aniListID, 150672)
+        let beyond = await maps.aniListEpisode(imdb: "tt21030032", tmdbTV: nil, season: 3, episode: 1)
+        XCTAssertNil(beyond)
+
+        let film = await maps.film(imdb: "tt16360006", tmdbMovie: nil)
+        XCTAssertEqual(film, 129201)
+        let byTMDB = await maps.film(imdb: nil, tmdbMovie: 706510)
+        XCTAssertEqual(byTMDB, 129201)
+        let shows = await maps.aniListIDs(tmdbTV: 203737, imdb: nil)
+        XCTAssertEqual(shows, [150672, 166531])
+        let status = await maps.status
+        XCTAssertEqual(status, .ready(titles: index.entries.count, builtAt: index.builtAt))
+    }
+
+    func testAddOnsWithoutAniListIdsAreAskedByKitsuOrIMDb() throws {
+        func manifest(_ json: String) throws -> StreamAddonManifest {
+            try JSONDecoder().decode(StreamAddonManifest.self, from: Data(json.utf8))
+        }
+        let torrentio = try manifest(#"{"id":"torrentio","resources":["stream"],"types":["movie","series"],"idPrefixes":["tt","kitsu"]}"#)
+        let imdbOnly = try manifest(#"{"id":"imdb","resources":["stream"],"types":["movie","series"],"idPrefixes":["tt"]}"#)
+        let indexer = try manifest(#"{"id":"indexer","resources":["stream"],"types":["movie","series"],"idPrefixes":["anilist","tt"]}"#)
+        let catalogOnly = try manifest(#"{"id":"catalog","resources":["catalog","meta"],"types":["series"],"idPrefixes":["tt"]}"#)
+        let video = "anilist:166531:1"
+        let alternatives = ["kitsu:47759:1", "tt21030032:2:1"]
+
+        func id(_ manifest: StreamAddonManifest) -> String? {
+            AniListStreamIds.requestID(for: manifest, resource: "stream", type: "series", videoId: video, alternatives: alternatives)
+        }
+        XCTAssertEqual(id(indexer), video)
+        XCTAssertEqual(id(torrentio), "kitsu:47759:1")
+        XCTAssertEqual(id(imdbOnly), "tt21030032:2:1")
+        XCTAssertNil(id(catalogOnly))
+        XCTAssertNil(AniListStreamIds.requestID(for: imdbOnly, resource: "stream", type: "series", videoId: video, alternatives: []))
+    }
+
+    func testANewSeasonIsPlacedByItsAirDayOnCinemeta() {
+        typealias Video = AniListStreamIds.CinemetaSeries.Video
+        let videos = [
+            Video(season: 1, episode: 12, released: "2026-06-25T15:00:00.000Z"),
+            Video(season: 2, episode: 1, released: "2026-07-09T15:00:00.000Z"),
+            Video(season: 2, episode: 2, released: "2026-07-16T15:00:00.000Z"),
+            Video(season: 0, episode: 3, released: "2026-07-16T10:00:00.000Z"),
+        ]
+        func place(_ list: [Video], _ day: String) -> String? {
+            AniListStreamIds.episode(in: list, airDay: day).map { "S\($0.season)E\($0.episode)" }
+        }
+        XCTAssertEqual(place(videos, "2026-07-09"), "S2E1")
+        XCTAssertEqual(place(videos, "2026-07-10"), "S2E1")   // a day off
+        XCTAssertEqual(place(videos, "2026-07-16"), "S2E2")   // specials don't count
+        XCTAssertNil(place(videos, "2026-08-01"))
+        let twoThatDay = videos + [Video(season: 2, episode: 3, released: "2026-07-16T16:00:00.000Z")]
+        XCTAssertNil(place(twoThatDay, "2026-07-16"))
+    }
+
+    func testOnlyCinemetaNumberingIsMatchedOffline() {
+        XCTAssertTrue(AniListMatcher.isCinemetaNumbering("tt21030032:2:5", season: 2, episode: 5))
+        XCTAssertFalse(AniListMatcher.isCinemetaNumbering("tt21030032:1:17", season: 2, episode: 5))
+        XCTAssertFalse(AniListMatcher.isCinemetaNumbering("tmdb:203737:2:5", season: 2, episode: 5))
+        XCTAssertFalse(AniListMatcher.isCinemetaNumbering(nil, season: 2, episode: 5))
+    }
 }

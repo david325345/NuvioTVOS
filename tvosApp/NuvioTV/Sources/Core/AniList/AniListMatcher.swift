@@ -3,6 +3,7 @@ import Foundation
 /// Which AniList entry and episode an episode of a Cinemeta series (or a Cinemeta film) is,
 /// found the way the calendar finds broadcast times, with nothing downloaded ahead:
 ///
+/// 0. The offline tables (Fribb, anibridge) first, with no request at all.
 /// 1. arm-server turns the title's TMDB or IMDb id into the AniList entries of the show. No
 ///    answer from arm means it isn't anime, and nothing is written.
 /// 2. Entries newer than arm knows (its ids come from a database that stopped in 2026) are
@@ -37,16 +38,19 @@ enum AniListMatcher {
     private static let lock = NSLock()
     private static var matches: [String: Match] = [:]
 
-    static func match(meta: NuvioMeta, season: Int?, episode: Int?, released: String?) async -> Match? {
+    static func match(meta: NuvioMeta, season: Int?, episode: Int?, released: String?, videoID: String? = nil) async -> Match? {
         let key = "\(meta.id)|\(season ?? -1)|\(episode ?? -1)"
         if let known = lock.withLock({ matches[key] }) { return known }
-        guard let found = await findMatch(meta: meta, season: season, episode: episode, released: released) else { return nil }
+        guard let found = await findMatch(meta: meta, season: season, episode: episode, released: released, videoID: videoID) else { return nil }
         lock.withLock { matches[key] = found }
         return found
     }
 
-    private static func findMatch(meta: NuvioMeta, season: Int?, episode: Int?, released: String?) async -> Match? {
+    private static func findMatch(meta: NuvioMeta, season: Int?, episode: Int?, released: String?, videoID: String?) async -> Match? {
         let imdb = NuvioMeta.canonicalImdbID(from: meta.imdbId ?? "") ?? NuvioMeta.canonicalImdbID(from: meta.id)
+        if let found = await offlineMatch(meta: meta, imdb: imdb, season: season, episode: episode, videoID: videoID) {
+            return found
+        }
         guard let known = await armEntries(imdbID: imdb, tmdbID: meta.tmdbId), !known.isEmpty else { return nil }
         let language = AniListSettings.titleLanguage
 
@@ -66,6 +70,28 @@ enum AniListMatcher {
         guard let picked = pick(from: candidates, airDay: day(of: released), season: season, episode: episode),
               let entry = entries.first(where: { $0.id == picked.entryID }) else { return nil }
         return Match(entryID: picked.entryID, episode: picked.episode, entryTitle: AniListMetaBuilder.title(entry.title, language: language))
+    }
+
+    /// From the offline tables, with no request: a film by its IMDb or TMDB id; an episode by
+    /// TheTVDB's numbering, which Cinemeta follows. Only when the episode's own id is Cinemeta's
+    /// `tt…:season:episode` with the same numbers: with TMDB's episode list shown instead, the
+    /// numbers may be TMDB's, and the air-day match below sorts those out.
+    private static func offlineMatch(meta: NuvioMeta, imdb: String?, season: Int?, episode: Int?, videoID: String?) async -> Match? {
+        if !meta.isSeries {
+            guard let id = await AniListOfflineMaps.shared.film(imdb: imdb, tmdbMovie: meta.tmdbId) else { return nil }
+            return Match(entryID: id, episode: 1, entryTitle: meta.name)
+        }
+        guard let season, season >= 0, let episode, episode > 0, isCinemetaNumbering(videoID, season: season, episode: episode),
+              let found = await AniListOfflineMaps.shared.aniListEpisode(imdb: imdb, tmdbTV: meta.tmdbId, season: season, episode: episode)
+        else { return nil }
+        return Match(entryID: found.aniListID, episode: found.episode, entryTitle: meta.name)
+    }
+
+    /// `tt…:season:episode` with these numbers.
+    static func isCinemetaNumbering(_ videoID: String?, season: Int, episode: Int) -> Bool {
+        guard let parts = videoID?.split(separator: ":"), parts.count == 3,
+              NuvioMeta.canonicalImdbID(from: String(parts[0])) != nil else { return false }
+        return Int(parts[1]) == season && Int(parts[2]) == episode
     }
 
     /// The AniList episode a Cinemeta episode is: the one that aired that day (a day either
@@ -192,7 +218,7 @@ enum AniListMatcher {
         return Int((b.timeIntervalSince(a) / 86_400).rounded())
     }
 
-    private static func utcDay(of seconds: Int) -> String {
+    static func utcDay(of seconds: Int) -> String {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -242,7 +268,8 @@ enum AniListScrobbler {
             meta: meta,
             season: video?.season ?? season,
             episode: video?.episode ?? episode,
-            released: video?.released
+            released: video?.released,
+            videoID: video?.id
         ) else { return nil }
         return Target(entryID: match.entryID, episode: match.episode, label: "\(match.entryTitle) E\(match.episode)")
     }

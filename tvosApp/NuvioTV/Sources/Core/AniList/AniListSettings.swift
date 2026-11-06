@@ -13,6 +13,7 @@ extension SettingsKey {
     static let aniListScrobble = "nuvio.tv.settings.integrations.aniListScrobble"
     static let aniListScrobbleCinemeta = "nuvio.tv.settings.integrations.aniListScrobbleCinemeta"
     static let aniListListRows = "nuvio.tv.settings.integrations.aniListListRows"
+    static let aniListOtherAddons = "nuvio.tv.settings.integrations.aniListOtherAddons"
 }
 
 /// Settings → Integrations → AniList. Anime from AniList keep their `anilist:` ids everywhere,
@@ -96,6 +97,11 @@ enum AniListSettings {
     /// Also for anime from Cinemeta, found on AniList by their TMDB/IMDb id and air dates.
     static var scrobblesCinemeta: Bool {
         scrobbles && bool(SettingsKey.aniListScrobbleCinemeta, default: true)
+    }
+
+    /// Ask add-ons that don't take anilist: ids by the title's Kitsu or IMDb id.
+    static var asksOtherAddons: Bool {
+        bool(SettingsKey.aniListOtherAddons, default: true)
     }
 
     /// The viewer's lists (Watching, Planning, Paused) as Home rows.
