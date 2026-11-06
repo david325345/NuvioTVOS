@@ -155,10 +155,20 @@ enum AniListAccount {
     // MARK: Logging in
 
     /// The page that asks the viewer to allow their API client; AniList then shows the token.
-    static func authorizeURL(clientID: String) -> URL? {
+    static func authorizeURL(clientID: String, state: String? = nil) -> URL? {
         let id = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !id.isEmpty, id.allSatisfy(\.isNumber) else { return nil }
-        return URL(string: "https://anilist.co/api/v2/oauth/authorize?client_id=\(id)&response_type=token")
+        var link = "https://anilist.co/api/v2/oauth/authorize?client_id=\(id)&response_type=token"
+        if let state, !state.isEmpty, state.allSatisfy({ $0.isLetter || $0.isNumber }) {
+            link += "&state=\(state)"
+        }
+        return URL(string: link)
+    }
+
+    /// The Apple TV's Redirect URL at the last login from the phone, to tell when it changed.
+    static var lastLoginRedirect: String? {
+        get { UserDefaults.standard.string(forKey: "anilist.lastLoginRedirect") }
+        set { UserDefaults.standard.set(newValue, forKey: "anilist.lastLoginRedirect") }
     }
 
     /// The token in what the viewer pasted: the token itself, or the whole address of AniList's

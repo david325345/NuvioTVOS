@@ -5345,6 +5345,9 @@ private struct AniListOptionsSheet: View {
     @State private var tokenDraft = ""
     @State private var loginMessage: String?
     @State private var loggingIn = false
+    /// The `state` the QR code's address carries, so the Apple TV takes only its own login.
+    @State private var phoneLoginState = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+    @State private var phoneLogin: AniListLoginServer.State?
     @State private var testResult: String?
     @State private var testing = false
 
@@ -5547,24 +5550,51 @@ private struct AniListOptionsSheet: View {
         SettingsTextFieldRow(
             title: L10n.string("settings_anilist_client_id", fallback: "Client ID"),
             subtitle: L10n.string(
-                "settings_anilist_client_id_subtitle",
-                fallback: "anilist.co → Settings → Developer → Create New Client, with the Redirect URL https://anilist.co/api/v2/oauth/pin"
+                "settings_anilist_client_id_subtitle_phone",
+                fallback: "anilist.co → Settings → Developer → Create New Client, with the Redirect URL below"
             ),
             placeholder: "12345",
             text: $clientID
         )
 
-        if let url = AniListAccount.authorizeURL(clientID: clientID) {
+        SettingsInfoRow(
+            title: L10n.string("settings_anilist_redirect", fallback: "Redirect URL"),
+            value: phoneRedirect ?? L10n.string("settings_anilist_redirect_none", fallback: "Connect this Apple TV to your home network")
+        )
+
+        if let previous = AniListAccount.lastLoginRedirect, let phoneRedirect, previous != phoneRedirect {
+            SettingsInfoRow(
+                title: L10n.string("settings_anilist_redirect_changed", fallback: "Address Changed"),
+                value: L10n.format(
+                    "settings_anilist_redirect_changed_value",
+                    fallback: "It was %@ at the last login: update the Redirect URL of your AniList client",
+                    previous
+                ),
+                isDiagnostic: true
+            )
+        }
+
+        if let url = AniListAccount.authorizeURL(clientID: clientID, state: phoneLoginState) {
             SettingsQRCodeCard(
-                title: L10n.string("settings_anilist_allow", fallback: "Allow access on your phone, then copy the token"),
+                title: L10n.string("settings_anilist_allow_phone", fallback: "Scan, then Authorize: this Apple TV logs in by itself"),
                 link: url.absoluteString
             )
             .frame(maxWidth: .infinity)
             .padding(.vertical, 8)
+            .task(id: clientID) { await runPhoneLogin() }
+
+            SettingsInfoRow(
+                title: L10n.string("settings_anilist_phone_login", fallback: "From Your Phone"),
+                value: phoneLoginText,
+                isDiagnostic: true
+            )
 
             SettingsNativeTextFieldRow(
-                title: L10n.string("settings_anilist_token", fallback: "Token"),
-                subtitle: L10n.string("settings_anilist_token_subtitle", fallback: "Paste it with the keyboard on your iPhone, in one go. The number after the dots is its length: about 1,000"),
+                title: L10n.string("settings_anilist_token_paste", fallback: "Or Paste the Token"),
+                subtitle: L10n.string(
+                    "settings_anilist_token_paste_subtitle",
+                    fallback: "From a client whose Redirect URL is https://anilist.co/api/v2/oauth/pin. The number after the dots is its length: about 1,000"
+                ),
                 placeholder: L10n.string("settings_anilist_token_placeholder", fallback: "Paste token"),
                 text: $tokenDraft,
                 hidesText: true,
@@ -5581,6 +5611,49 @@ private struct AniListOptionsSheet: View {
                 logIn()
             }
         }
+    }
+
+    /// This Apple TV's Redirect URL in the home network.
+    private var phoneRedirect: String? {
+        AniListLoginServer.redirectURL()?.absoluteString
+    }
+
+    private var phoneLoginText: String {
+        switch phoneLogin {
+        case nil:
+            return L10n.string("settings_anilist_phone_starting", fallback: "Starting…")
+        case .stopped?:
+            return L10n.string("settings_anilist_phone_stopped", fallback: "Stopped after ten minutes. Open this page again to log in from your phone")
+        case .waiting?:
+            return L10n.string("settings_anilist_phone_waiting", fallback: "Waiting for your phone, on the same Wi-Fi as this Apple TV")
+        case .loggingIn?:
+            return L10n.string("settings_anilist_phone_logging_in", fallback: "Logging in…")
+        case .loggedIn(let name)?:
+            return L10n.format("settings_anilist_logged_in", fallback: "Logged in as %@", name)
+        case .failed(let message)?:
+            return message
+        }
+    }
+
+    /// Listens for the phone while the QR code is on screen, ten minutes at most.
+    private func runPhoneLogin() async {
+        phoneLogin = nil
+        let redirect = phoneRedirect
+        let session = UUID()
+        AniListLoginServer.shared.start(session: session, expectedState: phoneLoginState) { state in
+            Task { @MainActor in
+                phoneLogin = state
+                if case .loggedIn(let name) = state {
+                    AniListAccount.lastLoginRedirect = redirect
+                    accountName = name
+                    tokenDraft = ""
+                    loginMessage = nil
+                    await refreshStatus()
+                }
+            }
+        }
+        try? await Task.sleep(nanoseconds: UInt64(AniListLoginServer.lifetime * 1_000_000_000))
+        AniListLoginServer.shared.stop(session: session)
     }
 
     // Split out of `body` so the compiler can check each part in time.
