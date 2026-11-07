@@ -474,12 +474,35 @@ enum AddonRatingsService {
         return await fetchRatings(for: meta, defaults: defaults)
     }
 
+    /// The add-ons' ratings of an episode, and an anime episode's MyAnimeList score
+    /// (Settings → Integrations → AniList → MAL Episode Ratings).
     static func fetchRatingsForEpisode(
         episodeId: String,
         seriesType: String = "series",
         manifestURLs: [URL]? = nil,
         session: URLSession = .shared,
         defaults: UserDefaults = ProfileSettings.current
+    ) async -> [NuvioExternalRating] {
+        let cleanId = episodeId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanId.isEmpty else { return [] }
+        async let malRating = MALEpisodeRatings.rating(forEpisodeID: cleanId)
+        let ratings = await addonRatingsForEpisode(
+            episodeId: cleanId,
+            seriesType: seriesType,
+            manifestURLs: manifestURLs,
+            session: session,
+            defaults: defaults
+        )
+        guard let mal = await malRating else { return ratings }
+        return ratings + [mal]
+    }
+
+    private static func addonRatingsForEpisode(
+        episodeId: String,
+        seriesType: String,
+        manifestURLs: [URL]?,
+        session: URLSession,
+        defaults: UserDefaults
     ) async -> [NuvioExternalRating] {
         let cleanId = episodeId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanId.isEmpty else { return [] }
@@ -552,12 +575,39 @@ enum AddonRatingsService {
         return ratings
     }
 
+    /// `fetchRatingsForEpisode` for a season's cards: MyAnimeList's scores come a page of 100
+    /// episodes per request.
     static func fetchRatingsForEpisodes(
         episodeIds: [String],
         seriesType: String = "series",
         manifestURLs: [URL]? = nil,
         session: URLSession = .shared,
         defaults: UserDefaults = ProfileSettings.current
+    ) async -> [String: [NuvioExternalRating]] {
+        guard !episodeIds.isEmpty else { return [:] }
+        let cleanIds = episodeIds
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        async let malRatings = MALEpisodeRatings.ratings(forEpisodeIDs: cleanIds)
+        var results = await addonRatingsForEpisodes(
+            episodeIds: cleanIds,
+            seriesType: seriesType,
+            manifestURLs: manifestURLs,
+            session: session,
+            defaults: defaults
+        )
+        for (id, rating) in await malRatings {
+            results[id, default: []].append(rating)
+        }
+        return results
+    }
+
+    private static func addonRatingsForEpisodes(
+        episodeIds: [String],
+        seriesType: String,
+        manifestURLs: [URL]?,
+        session: URLSession,
+        defaults: UserDefaults
     ) async -> [String: [NuvioExternalRating]] {
         guard !episodeIds.isEmpty else { return [:] }
 
@@ -588,7 +638,7 @@ enum AddonRatingsService {
         await withTaskGroup(of: (String, [NuvioExternalRating]).self) { group in
             for id in missing {
                 group.addTask {
-                    let ratings = await fetchRatingsForEpisode(
+                    let ratings = await addonRatingsForEpisode(
                         episodeId: id,
                         seriesType: seriesType,
                         manifestURLs: manifestURLs,
