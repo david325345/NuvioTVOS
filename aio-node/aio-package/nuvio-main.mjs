@@ -138,12 +138,23 @@ async function waitUntilReady() {
   return false;
 }
 
+// Inside Nuvio, Node runs in the app's own process: process.exit() would
+// close Nuvio. AIOStreams stops instead, and Nuvio shows it.
+const embedded = process.env.NUVIO_EMBEDDED === '1';
+if (embedded) {
+  process.exit = (code) => {
+    log(`AIOStreams asked to exit (${code ?? 0}); Nuvio keeps running`);
+    writeState({ status: 'stopped', exitCode: code ?? 0 });
+    return undefined;
+  };
+}
+
 process.on('uncaughtException', (error) => log(`uncaught: ${error && error.stack ? error.stack : error}`));
 process.on('unhandledRejection', (error) => log(`unhandled rejection: ${error && error.stack ? error.stack : error}`));
 
 if (!aioRoot) {
   log('AIO_ROOT is not set');
-  process.exit(1);
+  throw new Error('AIO_ROOT is not set');
 }
 writeState({ status: 'starting', pid: process.pid, node: process.version, port: aioPort, lanPort });
 process.chdir(aioRoot);
@@ -154,7 +165,7 @@ try {
 } catch (error) {
   log(`AIOStreams failed to load: ${error && error.stack ? error.stack : error}`);
   writeState({ status: 'failed', error: String(error && error.message ? error.message : error) });
-  process.exit(1);
+  throw error;
 }
 const ready = await waitUntilReady();
 const seconds = ((Date.now() - started) / 1000).toFixed(1);

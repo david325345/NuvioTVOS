@@ -16,8 +16,7 @@ import { pathToFileURL } from 'node:url';
 
 const [packagePath, installDir] = process.argv.slice(2);
 if (!packagePath || !installDir) {
-  console.error('[nuvio] usage: bootstrap.mjs <aio.tar.gz> <install dir>');
-  process.exit(1);
+  throw new Error('[nuvio] usage: bootstrap.mjs <aio.tar.gz> <install dir>');
 }
 
 function packageId(file) {
