@@ -496,6 +496,24 @@ enum AniListService {
         return artwork
     }
 
+    /// IMDb ids of an AniList season's earlier seasons, the nearest first, back to the first:
+    /// a trailer to show when the season has none (Top Shelf). Unlike add-on ids, a different
+    /// TheTVDB show is fine here.
+    static func earlierSeasonIMDbIDs(metaID: String, limit: Int = 5) async -> [String] {
+        guard AniListSettings.opensTitles, let id = AniListMetaBuilder.aniListID(from: metaID),
+              var current = await prequels(of: id) else { return [] }
+        var found: [String] = []
+        for _ in 0..<limit {
+            guard let previous = AniListMetaBuilder.previousSeason(of: current) else { break }
+            if let imdb = await AniListOfflineMaps.shared.imdb(aniListID: previous), !found.contains(imdb) {
+                found.append(imdb)
+            }
+            guard let next = await prequels(of: previous) else { break }
+            current = next
+        }
+        return found
+    }
+
     static func prequels(of id: Int) async -> AniListMedia? {
         guard let data = try? await AniListClient.shared.query(
             AniListQueries.prequels, variables: ["id": id], ttl: finishedTTL, notesStatus: false

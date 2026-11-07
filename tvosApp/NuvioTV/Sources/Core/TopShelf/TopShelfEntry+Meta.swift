@@ -182,10 +182,12 @@ enum TopShelfAniListBridge {
         var imdb = entry.imdbId
         if imdb == nil { imdb = await AniListService.trailerIMDbID(metaID: entry.contentId) }
         let logo = artwork?.logo ?? entry.logoURL
+        let earlier = card.isSeries ? await AniListService.earlierSeasonIMDbIDs(metaID: entry.contentId) : []
         return entry.with(
             backdropURL: artwork?.background ?? entry.backdropURL,
             logoURL: logo,
             imdbId: imdb,
-            logoCaption: logo == nil ? nil : AniListMetaBuilder.nameUnderLogo(card))
+            logoCaption: logo == nil ? nil : AniListMetaBuilder.nameUnderLogo(card),
+            trailerFallbackIMDbIds: earlier.filter { $0 != imdb })
     }
 }

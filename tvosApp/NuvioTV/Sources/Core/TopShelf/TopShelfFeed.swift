@@ -165,6 +165,9 @@ public struct TopShelfEntry: Codable, Equatable, Sendable {
     /// The full name drawn under the logo in the carousel: an AniList season shows the series'
     /// logo, so its own name says which one it is.
     public let logoCaption: String?
+    /// IMDb ids to ask Trailerio after `imdbId` when it has no trailer: an AniList season's
+    /// earlier seasons, back to the first.
+    public let trailerFallbackIMDbIds: [String]?
 
     public init(contentId: String, contentType: String, title: String,
                 subtitle: String?, imageURL: String?, backdropURL: String? = nil,
@@ -176,7 +179,7 @@ public struct TopShelfEntry: Codable, Equatable, Sendable {
                 carouselArtworkFileName: String? = nil, airDate: String? = nil,
                 imdbId: String? = nil, tmdbId: Int? = nil, imdbRating: Double? = nil,
                 homeOrder: Int? = nil, customPosterURL: String? = nil, customLandscapeURL: String? = nil,
-                logoCaption: String? = nil) {
+                logoCaption: String? = nil, trailerFallbackIMDbIds: [String]? = nil) {
         self.contentId = contentId
         self.contentType = contentType
         self.title = title
@@ -203,10 +206,14 @@ public struct TopShelfEntry: Codable, Equatable, Sendable {
         self.customPosterURL = customPosterURL
         self.customLandscapeURL = customLandscapeURL
         self.logoCaption = logoCaption
+        self.trailerFallbackIMDbIds = trailerFallbackIMDbIds
     }
 
     /// The same entry with other artwork and ids (the app's `TopShelfFeedStore.entryEnricher`).
-    public func with(backdropURL: String?, logoURL: String?, imdbId: String?, logoCaption: String?) -> TopShelfEntry {
+    public func with(
+        backdropURL: String?, logoURL: String?, imdbId: String?, logoCaption: String?,
+        trailerFallbackIMDbIds: [String]? = nil
+    ) -> TopShelfEntry {
         TopShelfEntry(
             contentId: contentId, contentType: contentType, title: title, subtitle: subtitle,
             imageURL: imageURL, backdropURL: backdropURL, progress: progress, action: action ?? .resume,
@@ -215,7 +222,7 @@ public struct TopShelfEntry: Codable, Equatable, Sendable {
             directors: directors, carouselArtworkFileName: carouselArtworkFileName, airDate: airDate,
             imdbId: imdbId, tmdbId: tmdbId, imdbRating: imdbRating, homeOrder: homeOrder,
             customPosterURL: customPosterURL, customLandscapeURL: customLandscapeURL,
-            logoCaption: logoCaption)
+            logoCaption: logoCaption, trailerFallbackIMDbIds: trailerFallbackIMDbIds ?? self.trailerFallbackIMDbIds)
     }
 
     /// Artwork the card is rendered from: the backdrop, else the poster.
@@ -346,6 +353,7 @@ public enum TopShelfRatingsStore {
 
     static let fileName = "ratings.json"
     static let maximumAge: TimeInterval = 24 * 60 * 60
+    static let emptyMaximumAge: TimeInterval = 30 * 60
 
     static func read(in directory: URL) -> [String: Record] {
         guard let data = try? Data(contentsOf: directory.appendingPathComponent(fileName)),
@@ -362,7 +370,8 @@ public enum TopShelfRatingsStore {
 
     static func isFresh(_ record: Record?, now: Date = Date()) -> Bool {
         guard let record else { return false }
-        return now.timeIntervalSince(record.fetchedAt) < maximumAge
+        // No rating at all is usually a refused or slow answer: asked again soon.
+        return now.timeIntervalSince(record.fetchedAt) < (record.badges.isEmpty ? emptyMaximumAge : maximumAge)
     }
 }
 

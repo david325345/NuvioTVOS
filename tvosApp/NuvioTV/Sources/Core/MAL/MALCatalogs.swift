@@ -204,11 +204,30 @@ enum MALCatalogs {
             aniList.merge(await aniListIDs(mal: missing)) { known, _ in known }
         }
         let language = AniListSettings.titleLanguage
+        // AniList's own cards where it answers: banner, AniList score and trailer as in AniList's
+        // catalogs; Tenrai's otherwise.
+        let media = await aniListMedia(ids: Array(Set(aniList.values)))
         var seen = Set<Int>()
         return anime.compactMap { item in
             guard let id = aniList[item.malID], seen.insert(id).inserted else { return nil }
+            if let found = media[id] {
+                return AniListMetaBuilder.card(found, language: language)
+            }
             return card(item, aniListID: id, language: language)
         }
+    }
+
+    /// AniList's media of these entries, 50 a request, kept six hours.
+    static func aniListMedia(ids: [Int]) async -> [Int: AniListMedia] {
+        let query = "query ($ids: [Int]) { Page(perPage: 50) { media(id_in: $ids, type: ANIME) { \(AniListQueries.cardFields) } } }"
+        var found: [Int: AniListMedia] = [:]
+        for start in stride(from: 0, to: ids.count, by: 50) {
+            let chunk = Array(ids.sorted()[start..<min(start + 50, ids.count)])
+            guard let data = try? await AniListClient.shared.query(query, variables: ["ids": chunk], ttl: 6 * 3600, notesStatus: false),
+                  let page = try? JSONDecoder().decode(AniListPageResponse.self, from: data).data?.Page else { continue }
+            for media in page.media ?? [] { found[media.id] = media }
+        }
+        return found
     }
 
     static func card(_ item: TenraiAnime, aniListID: Int, language: AniListSettings.TitleLanguage) -> NuvioMeta {
