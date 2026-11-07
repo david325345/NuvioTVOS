@@ -180,17 +180,29 @@ public enum TopShelfTrailerResolver {
         now: Date = Date()
     ) async -> [String: TopShelfTrailerLink] {
         let saved = container.map(TopShelfTrailerStore.read(in:)) ?? [:]
-        var lookups: [(contentId: String, url: URL)] = []
+        var lookups: [(contentId: String, urls: [URL])] = []
         var seen = Set<String>()
         for entry in entries where seen.insert(entry.contentId).inserted {
-            guard TopShelfTrailerStore.needsLookup(saved[entry.contentId], now: now),
-                  let url = lookupURL(for: entry) else { continue }
-            lookups.append((entry.contentId, url))
+            let urls = lookupURLs(for: entry)
+            guard TopShelfTrailerStore.needsLookup(saved[entry.contentId], now: now), !urls.isEmpty else { continue }
+            lookups.append((entry.contentId, urls))
         }
 
         let results = await withTaskGroup(of: (String, Lookup).self) { group -> [String: Lookup] in
             for lookup in lookups {
-                group.addTask { (lookup.contentId, await self.lookup(lookup.url)) }
+                group.addTask {
+                    // The title's own trailer, else an earlier season's.
+                    var failed = false
+                    for url in lookup.urls {
+                        let result = await self.lookup(url)
+                        switch result {
+                        case .found: return (lookup.contentId, result)
+                        case .failed: failed = true
+                        case .missing: break
+                        }
+                    }
+                    return (lookup.contentId, failed ? .failed : .missing)
+                }
             }
             var results: [String: Lookup] = [:]
             for await (contentId, result) in group {
@@ -219,10 +231,17 @@ public enum TopShelfTrailerResolver {
     /// Trailerio's page for the title, by its IMDb id. Nil for titles without
     /// one (Kitsu, TMDB-only add-on ids).
     static func lookupURL(for entry: TopShelfEntry) -> URL? {
+        lookupURLs(for: entry).first
+    }
+
+    /// The title's page, then its earlier seasons' (`TopShelfEntry.trailerFallbackIMDbIds`).
+    static func lookupURLs(for entry: TopShelfEntry) -> [URL] {
         let candidates = [entry.imdbId, entry.contentId.split(separator: ":").first.map(String.init)]
-        guard let imdbID = candidates.lazy.compactMap({ $0.flatMap(canonicalIMDbID) }).first else { return nil }
+            + (entry.trailerFallbackIMDbIds ?? []).map { Optional($0) }
+        var seen = Set<String>()
+        let ids = candidates.compactMap { $0.flatMap(canonicalIMDbID) }.filter { seen.insert($0).inserted }
         let kind = isSeries(entry.contentType) ? "series" : "movie"
-        return URL(string: "https://trailerio.cc/meta/\(kind)/\(imdbID).json")
+        return ids.prefix(4).compactMap { URL(string: "https://trailerio.cc/meta/\(kind)/\($0).json") }
     }
 
     /// The playable links of a Trailerio response, in its order. Nil when it

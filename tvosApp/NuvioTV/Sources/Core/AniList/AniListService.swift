@@ -118,7 +118,7 @@ enum AniListService {
     }
 
     /// Rows asked together: AniList refuses a query that asks too much at once.
-    static let rowsPerRequest = 6
+    static let rowsPerRequest = 3
 
     /// The AniList rows that Layout doesn't hide, a few per request.
     private static func browseCatalogs() async -> [NuvioCatalog] {
@@ -132,8 +132,8 @@ enum AniListService {
         var pages: [String: AniListPage] = [:]
         var lastAnswer: AniListClient.Answer?
         var failure: String?
-        for start in stride(from: 0, to: rows.count, by: rowsPerRequest) {
-            let chunk = Array(rows[start..<min(start + rowsPerRequest, rows.count)])
+        var failedRows: [String] = []
+        func ask(_ chunk: [AniListHomeRow]) async -> Bool {
             do {
                 let answer = try await AniListClient.shared.answer(
                     AniListQueries.homeRows(chunk), variables: homeVariables(for: chunk), ttl: catalogTTL
@@ -141,8 +141,24 @@ enum AniListService {
                 lastAnswer = answer
                 let decoded = try decoder.decode(AniListAliasedPagesResponse.self, from: answer.data).data ?? [:]
                 pages.merge(decoded) { _, new in new }
+                return true
             } catch {
                 failure = AniListDiagnostics.describe(error)
+                return false
+            }
+        }
+        for start in stride(from: 0, to: rows.count, by: rowsPerRequest) {
+            let chunk = Array(rows[start..<min(start + rowsPerRequest, rows.count)])
+            let answered = await ask(chunk)
+            if answered { continue }
+            if chunk.count == 1 {
+                failedRows.append(chunk[0].title)
+                continue
+            }
+            // One row AniList refuses doesn't take the others with it.
+            for row in chunk {
+                let alone = await ask([row])
+                if !alone { failedRows.append(row.title) }
             }
         }
         if pages.isEmpty, let failure {
@@ -172,11 +188,12 @@ enum AniListService {
         }
         let titles = catalogs.reduce(0) { $0 + ($1.items?.count ?? 0) }
         let source = lastAnswer.map { AniListDiagnostics.source($0) } ?? "no answer"
+        let refused = failedRows.isEmpty ? "" : " · not answered: \(failedRows.joined(separator: ", ")) (\(failure ?? "?"))"
         AniListDiagnostics.note(
             .home,
             catalogs.isEmpty
-                ? "AniList answered with no titles · \(source)"
-                : "\(catalogs.count) of \(rows.count) rows, \(titles) titles · \(source)"
+                ? "AniList answered with no titles · \(source)\(refused)"
+                : "\(catalogs.count) of \(rows.count) rows, \(titles) titles · \(source)\(refused)"
         )
         return catalogs
     }
@@ -494,6 +511,24 @@ enum AniListService {
             currentID = previousID
         }
         return artwork
+    }
+
+    /// IMDb ids of an AniList season's earlier seasons, the nearest first, back to the first:
+    /// a trailer to show when the season has none (Top Shelf). Unlike add-on ids, a different
+    /// TheTVDB show is fine here.
+    static func earlierSeasonIMDbIDs(metaID: String, limit: Int = 5) async -> [String] {
+        guard AniListSettings.opensTitles, let id = AniListMetaBuilder.aniListID(from: metaID),
+              var current = await prequels(of: id) else { return [] }
+        var found: [String] = []
+        for _ in 0..<limit {
+            guard let previous = AniListMetaBuilder.previousSeason(of: current) else { break }
+            if let imdb = await AniListOfflineMaps.shared.imdb(aniListID: previous), !found.contains(imdb) {
+                found.append(imdb)
+            }
+            guard let next = await prequels(of: previous) else { break }
+            current = next
+        }
+        return found
     }
 
     static func prequels(of id: Int) async -> AniListMedia? {

@@ -87,4 +87,31 @@ final class MALTests: XCTestCase {
         let planned = MALAccount.ListStatus(status: "plan_to_watch", watched: 0, episodes: 0)
         XCTAssertEqual(MALAccount.progress(planned, watched: 1), ["num_watched_episodes": "1", "status": "watching"])
     }
+
+    func testTheDetailsButtonSaysWhereTheTitleIs() {
+        XCTAssertEqual(MALAccount.buttonTitle(nil), "MAL")
+        XCTAssertEqual(MALAccount.buttonTitle(.init(status: nil, watched: 0, episodes: 12)), "Add")
+        XCTAssertEqual(MALAccount.buttonTitle(.init(status: "watching", watched: 5, episodes: 12)), "Watching 5/12")
+        XCTAssertEqual(MALAccount.buttonTitle(.init(status: "on_hold", watched: 3, episodes: 0)), "On-Hold 3")
+        XCTAssertEqual(MALAccount.buttonTitle(.init(status: "plan_to_watch", watched: 0, episodes: 12)), "Plan to Watch")
+    }
+
+    func testTopShelfTriesEarlierSeasonsForATrailer() {
+        let entry = TopShelfEntry(
+            contentId: "anilist:3", contentType: "series", title: "Season 3", subtitle: nil, imageURL: nil,
+            progress: nil, imdbId: "tt0000003", trailerFallbackIMDbIds: ["tt0000002", "tt0000001", "tt0000003"]
+        )
+        XCTAssertEqual(TopShelfTrailerResolver.lookupURLs(for: entry).map(\.lastPathComponent), [
+            "tt0000003.json", "tt0000002.json", "tt0000001.json",
+        ])
+        XCTAssertEqual(TopShelfTrailerResolver.lookupURL(for: entry)?.lastPathComponent, "tt0000003.json")
+    }
+
+    func testAnEmptyTopShelfRatingIsAskedAgainSoon() {
+        let now = Date()
+        let empty = TopShelfRatingsStore.Record(badges: [], fetchedAt: now.addingTimeInterval(-40 * 60))
+        XCTAssertFalse(TopShelfRatingsStore.isFresh(empty, now: now))
+        let fresh = TopShelfRatingsStore.Record(badges: [], fetchedAt: now.addingTimeInterval(-10 * 60))
+        XCTAssertTrue(TopShelfRatingsStore.isFresh(fresh, now: now))
+    }
 }

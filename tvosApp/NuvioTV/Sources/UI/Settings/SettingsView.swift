@@ -419,7 +419,7 @@ enum SettingsKey {
         aniListEnabled, aniListTitleLanguage, aniListSeasonMode, aniListHomeRows, aniListSearch,
         aniListHideCinemetaDuplicates, aniListEpisodeDetails, aniListAdult,
         aniListClientID, aniListScrobble, aniListScrobbleCinemeta, aniListListRows, aniListOtherAddons, aniListCatalogs,
-        malEnabled, malClientID, malEpisodeRatings, malScrobble, malAdult, malCatalogs,
+        malEnabled, malClientID, malEpisodeRatings, malScrobble, malAdult, malCatalogs, malDetailsButton, aniListDetailsButton,
         mdbListEnabled, mdbListApiKey, mdbListUseImdb, mdbListUseTmdb,
         mdbListUseTomatoes, mdbListUseMetacritic, mdbListUseTrakt,
         mdbListUseLetterboxd, mdbListUseAudience,
@@ -4304,9 +4304,10 @@ private func layoutVisibleHomeCatalogRows() -> [TVHomeCatalogOrder.SnapshotRow] 
             if row.settingsKey?.hasPrefix("simkl_") == true { return false }
             if ["addon_simkl_movie_plantowatch", "addon_simkl_series_plantowatch", "simkl_plantowatch_movie", "simkl_plantowatch_series"].contains(row.id) { return false }
         }
-        if !AniListSettings.showsHomeRows {
-            if row.addonId == AniListService.addonID { return false }
-            if row.settingsKey?.hasPrefix(AniListService.addonID + "_") == true { return false }
+        if row.addonId == AniListService.addonID || row.settingsKey?.hasPrefix(AniListService.addonID + "_") == true {
+            // Only the catalogs chosen in AniList Catalogs and MAL Catalogs.
+            let catalogID = AniListSettings.homeCatalogID(rowID: row.id, catalogId: row.catalogId)
+            if !AniListSettings.showsHomeRow(catalogId: catalogID) { return false }
         }
         return true
     }
@@ -5428,12 +5429,16 @@ private struct MALOptionsSheet: View {
     @AppStorage(SettingsKey.malEpisodeRatings) private var episodeRatings = true
     @AppStorage(SettingsKey.malScrobble) private var scrobble = true
     @AppStorage(SettingsKey.malAdult) private var adult = false
+    @AppStorage(SettingsKey.malDetailsButton) private var detailsButton = true
     @State private var accountName: String? = MALAccount.login?.userName
     /// The `state` and PKCE verifier of the QR code's address, so the Apple TV takes only its own login.
     @State private var loginState = UUID().uuidString.replacingOccurrences(of: "-", with: "")
     @State private var verifier = MALAccount.makeVerifier()
     @State private var phoneLogin: AniListLoginServer.State?
     @State private var showingCatalogs = false
+    /// Bumped when the Client ID is entered: the field writes it without redrawing this window,
+    /// so the QR code showed only after leaving and coming back.
+    @State private var clientIDRevision = 0
 
     var body: some View {
         ZStack {
@@ -5575,6 +5580,13 @@ private struct MALOptionsSheet: View {
                     isOn: $scrobble,
                     accentColor: accentColor
                 )
+
+                SettingsToggleRow(
+                    title: L10n.string("settings_mal_details_button", fallback: "MAL Button in Details"),
+                    subtitle: L10n.string("settings_mal_details_button_subtitle", fallback: "Your MAL status beside Play: change it, score or remove the title"),
+                    isOn: $detailsButton,
+                    accentColor: accentColor
+                )
             } else {
                 SettingsTextFieldRow(
                     title: L10n.string("settings_anilist_client_id", fallback: "Client ID"),
@@ -5583,17 +5595,25 @@ private struct MALOptionsSheet: View {
                         fallback: "myanimelist.net/apiconfig → Create ID, App Type \"other\", with the App Redirect URL below"
                     ),
                     placeholder: "0123456789abcdef",
-                    text: $clientID
+                    text: $clientID,
+                    onCommit: { clientIDRevision &+= 1 }
                 )
+                .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification).receive(on: RunLoop.main)) { _ in
+                    let stored = MALSettings.clientID
+                    if stored != clientID.trimmingCharacters(in: .whitespacesAndNewlines) || clientIDRevision == 0 {
+                        clientIDRevision &+= 1
+                    }
+                }
 
                 SettingsInfoRow(
                     title: L10n.string("settings_mal_redirect", fallback: "App Redirect URL"),
                     value: redirect?.absoluteString ?? L10n.string("settings_anilist_redirect_none", fallback: "Connect this Apple TV to your home network")
                 )
 
-                if let redirect, !clientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                let _ = clientIDRevision
+                if let redirect, !currentClientID.isEmpty,
                    let url = MALAccount.authorizeURL(
-                       clientID: clientID.trimmingCharacters(in: .whitespacesAndNewlines),
+                       clientID: currentClientID,
                        verifier: verifier, state: loginState, redirect: redirect
                    ) {
                     SettingsQRCodeCard(
@@ -5602,7 +5622,7 @@ private struct MALOptionsSheet: View {
                     )
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 8)
-                    .task(id: clientID) { await runPhoneLogin(redirect: redirect) }
+                    .task(id: currentClientID) { await runPhoneLogin(redirect: redirect) }
 
                     SettingsInfoRow(
                         title: L10n.string("settings_anilist_phone_login", fallback: "From Your Phone"),
@@ -5618,6 +5638,12 @@ private struct MALOptionsSheet: View {
 
     private var redirect: URL? {
         AniListLoginServer.redirectURL(path: AniListLoginServer.malPath)
+    }
+
+    /// The Client ID as typed, else as stored for this profile.
+    private var currentClientID: String {
+        let typed = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return typed.isEmpty ? MALSettings.clientID : typed
     }
 
     private var phoneLoginText: String {
@@ -5641,7 +5667,7 @@ private struct MALOptionsSheet: View {
         phoneLogin = nil
         let session = UUID()
         let verifier = self.verifier
-        let client = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let client = currentClientID
         AniListLoginServer.shared.start(
             session: session,
             expectedState: loginState,
@@ -5774,6 +5800,7 @@ private struct AniListOptionsSheet: View {
     @AppStorage(SettingsKey.aniListHideCinemetaDuplicates) private var hideCinemetaDuplicates = false
     @AppStorage(SettingsKey.aniListEpisodeDetails) private var episodeDetails = true
     @AppStorage(SettingsKey.malEnabled) private var malEnabled = false
+    @AppStorage(SettingsKey.aniListDetailsButton) private var detailsButton = true
     @State private var showingCatalogs = false
     @AppStorage(SettingsKey.aniListAdult) private var adult = false
     @AppStorage(SettingsKey.aniListClientID) private var clientID = ""
@@ -6049,6 +6076,13 @@ private struct AniListOptionsSheet: View {
             isOn: $scrobbleCinemeta,
             accentColor: accentColor,
             isAvailable: scrobble
+        )
+
+        SettingsToggleRow(
+            title: L10n.string("settings_anilist_details_button", fallback: "AniList Button in Details"),
+            subtitle: L10n.string("settings_anilist_details_button_subtitle", fallback: "Your list status beside Play: change it, score, favourite or remove the title"),
+            isOn: $detailsButton,
+            accentColor: accentColor
         )
     }
 

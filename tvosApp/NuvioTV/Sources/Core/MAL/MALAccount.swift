@@ -227,10 +227,56 @@ enum MALAccount {
 
     // MARK: Writing to the list
 
-    struct ListStatus: Equatable {
+    struct ListStatus: Equatable, Sendable {
         var status: String?
         var watched: Int
         var episodes: Int
+        var score: Int = 0
+    }
+
+    /// Posted after Nuvio changed the viewer's MAL list.
+    static let changedNotification = Notification.Name("nuvio.mal.listChanged")
+
+    static let statuses = ["watching", "completed", "on_hold", "dropped", "plan_to_watch"]
+
+    static func statusLabel(_ status: String?) -> String {
+        switch status {
+        case "watching": return "Watching"
+        case "completed": return "Completed"
+        case "on_hold": return "On-Hold"
+        case "dropped": return "Dropped"
+        case "plan_to_watch": return "Plan to Watch"
+        default: return "MAL"
+        }
+    }
+
+    /// The details button's title: "Watching 5/12", "Plan to Watch", "Add" when not listed.
+    static func buttonTitle(_ status: ListStatus?) -> String {
+        guard let status else { return "MAL" }
+        guard let current = status.status else { return "Add" }
+        let label = statusLabel(current)
+        if current == "plan_to_watch" || current == "completed" { return label }
+        return status.episodes > 0 ? "\(label) \(status.watched)/\(status.episodes)" : "\(label) \(status.watched)"
+    }
+
+    static func setStatus(_ status: String, mal: Int, current: ListStatus?) async {
+        var fields = ["status": status]
+        if status == "completed", let episodes = current?.episodes, episodes > 0 {
+            fields["num_watched_episodes"] = String(episodes)
+        }
+        await update(mal: mal, fields)
+    }
+
+    /// 1–10; 0 takes the score away.
+    static func setScore(_ score: Int, mal: Int) async {
+        await update(mal: mal, ["score": String(min(max(score, 0), 10))])
+    }
+
+    static func remove(mal: Int) async {
+        if await call("anime/\(mal)/my_list_status", method: "DELETE", form: [:]) != nil {
+            await lists.forget()
+            NotificationCenter.default.post(name: changedNotification, object: nil)
+        }
     }
 
     static func listStatus(mal: Int) async -> ListStatus? {
@@ -240,14 +286,18 @@ enum MALAccount {
         return ListStatus(
             status: mine?["status"] as? String,
             watched: mine?["num_episodes_watched"] as? Int ?? 0,
-            episodes: root["num_episodes"] as? Int ?? 0
+            episodes: root["num_episodes"] as? Int ?? 0,
+            score: mine?["score"] as? Int ?? 0
         )
     }
 
     @discardableResult
     static func update(mal: Int, _ fields: [String: String]) async -> Bool {
         let done = await call("anime/\(mal)/my_list_status", method: "PATCH", form: fields) != nil
-        if done { await lists.forget() }
+        if done {
+            await lists.forget()
+            NotificationCenter.default.post(name: changedNotification, object: nil)
+        }
         return done
     }
 
@@ -259,9 +309,7 @@ enum MALAccount {
             guard current.status == nil else { return }
             await update(mal: mal, ["status": "plan_to_watch"])
         } else if current.status == "plan_to_watch" {
-            if await call("anime/\(mal)/my_list_status", method: "DELETE", form: [:]) != nil {
-                await lists.forget()
-            }
+            await remove(mal: mal)
         }
     }
 

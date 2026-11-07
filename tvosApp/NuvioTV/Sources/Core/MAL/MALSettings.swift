@@ -8,6 +8,8 @@ extension SettingsKey {
     static let malAdult = "nuvio.tv.settings.integrations.malAdult"
     static let malCatalogs = "nuvio.tv.settings.integrations.malCatalogs"
     static let aniListCatalogs = "nuvio.tv.settings.integrations.aniListCatalogs"
+    static let malDetailsButton = "nuvio.tv.settings.integrations.malDetailsButton"
+    static let aniListDetailsButton = "nuvio.tv.settings.integrations.aniListDetailsButton"
 }
 
 /// Settings → Integrations → Anime Integrations → MyAnimeList. MAL titles open as the AniList
@@ -40,6 +42,11 @@ enum MALSettings {
 
     static var showsAdult: Bool {
         bool(SettingsKey.malAdult, default: false)
+    }
+
+    /// The MAL button in details (status, score, remove), when logged in.
+    static var showsDetailsButton: Bool {
+        MALAccount.isLoggedIn && bool(SettingsKey.malDetailsButton, default: true)
     }
 
     private static func bool(_ key: String, default value: Bool, in store: UserDefaults = ProfileSettings.current) -> Bool {
