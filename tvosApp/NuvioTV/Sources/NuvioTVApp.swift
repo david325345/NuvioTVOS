@@ -10467,7 +10467,9 @@ enum TVHomeCatalogOrder {
         }
         if row.addonId == AniListService.addonID
             || (row.settingsKey?.hasPrefix(AniListService.addonID + "_") ?? false) {
-            if !AniListSettings.showsHomeRows {
+            // Only the catalogs chosen in AniList Catalogs and MAL Catalogs.
+            let catalogID = AniListSettings.homeCatalogID(rowID: row.id, catalogId: row.catalogId)
+            if !AniListSettings.showsHomeRow(catalogId: catalogID) {
                 return false
             }
         }

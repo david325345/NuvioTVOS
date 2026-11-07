@@ -69,6 +69,26 @@ enum AniListSettings {
             || (MALSettings.isEnabled(in: store) && !MALCatalogs.chosen(in: store).isEmpty)
     }
 
+    /// Whether a row under AniList's add-on id belongs on Home and in Layout: chosen in AniList
+    /// Catalogs or MAL Catalogs (lists only when logged in). Rows remembered from before the
+    /// catalog windows, or switched off since, stay out; their place in the order is kept.
+    static func showsHomeRow(catalogId: String?, in store: UserDefaults = ProfileSettings.current) -> Bool {
+        guard let catalogId, !catalogId.isEmpty else { return showsHomeRows(in: store) }
+        if catalogId.hasPrefix(MALCatalogs.idPrefix) {
+            guard MALSettings.isEnabled(in: store), MALCatalogs.chosen(in: store).contains(where: { $0.id == catalogId }) else { return false }
+            return !MALCatalogs.isList(catalogId) || MALAccount.isLoggedIn
+        }
+        guard isEnabled(in: store), AniListCatalogs.chosen(in: store).contains(where: { $0.id == catalogId }) else { return false }
+        return !catalogId.hasPrefix("list-") || AniListAccount.isLoggedIn
+    }
+
+    /// The catalog id of a Home row under AniList's add-on id, from the row or its id.
+    static func homeCatalogID(rowID: String, catalogId: String?) -> String? {
+        if let catalogId, !catalogId.isEmpty { return catalogId }
+        let prefix = "addon_\(AniListService.addonID)_\(AniListService.homeContentType)_"
+        return rowID.hasPrefix(prefix) ? String(rowID.dropFirst(prefix.count)) : nil
+    }
+
     /// AniList titles open, play and convert their ids: with AniList on, or MyAnimeList on (its
     /// titles open as the AniList titles they map to).
     static var opensTitles: Bool { isEnabled || MALSettings.isEnabled }

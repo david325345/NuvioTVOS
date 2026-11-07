@@ -4304,9 +4304,10 @@ private func layoutVisibleHomeCatalogRows() -> [TVHomeCatalogOrder.SnapshotRow] 
             if row.settingsKey?.hasPrefix("simkl_") == true { return false }
             if ["addon_simkl_movie_plantowatch", "addon_simkl_series_plantowatch", "simkl_plantowatch_movie", "simkl_plantowatch_series"].contains(row.id) { return false }
         }
-        if !AniListSettings.showsHomeRows {
-            if row.addonId == AniListService.addonID { return false }
-            if row.settingsKey?.hasPrefix(AniListService.addonID + "_") == true { return false }
+        if row.addonId == AniListService.addonID || row.settingsKey?.hasPrefix(AniListService.addonID + "_") == true {
+            // Only the catalogs chosen in AniList Catalogs and MAL Catalogs.
+            let catalogID = AniListSettings.homeCatalogID(rowID: row.id, catalogId: row.catalogId)
+            if !AniListSettings.showsHomeRow(catalogId: catalogID) { return false }
         }
         return true
     }
