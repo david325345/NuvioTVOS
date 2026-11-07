@@ -284,7 +284,7 @@ enum AddonRatingsService {
 
     static let defaultRatingOrder: [String] = [
         "imdb", "tmdb", "tomatoes", "metacritic", "trakt",
-        "letterboxd", "audience", "myanimelist", "tvdb"
+        "letterboxd", "audience", "myanimelist", "anilist", "tvdb"
     ]
 
     static func savedRatingOrder(defaults: UserDefaults = ProfileSettings.current) -> [String] {
@@ -314,11 +314,18 @@ enum AddonRatingsService {
         return lower
     }
 
+    /// In the saved order; AniList's score left out while it is switched off (Settings → Rating
+    /// Providers & Order), unless `includesDisabled` (the settings list itself).
     static func sortRatings<T>(
         _ items: [T],
         by sourceGetter: (T) -> String,
-        defaults: UserDefaults = ProfileSettings.current
+        defaults: UserDefaults = ProfileSettings.current,
+        includesDisabled: Bool = false
     ) -> [T] {
+        var items = items
+        if !includesDisabled, !isSourceEnabled(AniListMetaBuilder.ratingSource, defaults: defaults) {
+            items = items.filter { normalizedSourceKey(sourceGetter($0)) != AniListMetaBuilder.ratingSource }
+        }
         let order = savedRatingOrder(defaults: defaults)
         guard !order.isEmpty else { return items }
         let orderMap = Dictionary(uniqueKeysWithValues: order.enumerated().map { ($0.element.lowercased(), $0.offset) })
