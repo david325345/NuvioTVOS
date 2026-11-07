@@ -1,7 +1,9 @@
 name: AIOStreams test build (fork experiment)
 
-# Fork only, never part of a PR: the Nuvio Test IPA of the aio-node branch,
-# with Node.js for tvOS and the original AIOStreams inside.
+# Fork only, never part of a PR: the IPA of the aio-node branch, with Node.js
+# for tvOS and the original AIOStreams inside. Its own app — "Nuvio AIO",
+# com.pyksel.nuviotvos.aio — so it installs next to Nuvio and the Nuvio Test
+# builds (plugins, AniList).
 on:
   push:
     branches: [aio-node]
@@ -42,17 +44,17 @@ jobs:
           echo "::notice::Node.js run $node_run · AIOStreams $(tr -d '\n' < tvosApp/NuvioTV/AIOPackage/nuvio-package.json) from run $aio_run"
       - name: Install Tuist
         run: brew install tuist
-      - name: Make it a separate app (Nuvio Test)
+      - name: Make it a separate app (Nuvio AIO)
         # Its own bundle ID, name and App Group, so the test build installs next to the
         # release app instead of replacing it. Only this job: the tests keep the real IDs.
         run: |
           set -euo pipefail
-          perl -pi -e 's/^let bundleID = "com\.pyksel\.nuviotvos"$/let bundleID = "com.pyksel.nuviotvos.test"/' tvosApp/Project.swift
-          grep -q '^let bundleID = "com.pyksel.nuviotvos.test"$' tvosApp/Project.swift
-          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Nuvio Test" tvosApp/NuvioTV/Info.plist
-          perl -pi -e 's/group\.com\.pyksel\.nuviotvos</group.com.pyksel.nuviotvos.test</' \
+          perl -pi -e 's/^let bundleID = "com\.pyksel\.nuviotvos"$/let bundleID = "com.pyksel.nuviotvos.aio"/' tvosApp/Project.swift
+          grep -q '^let bundleID = "com.pyksel.nuviotvos.aio"$' tvosApp/Project.swift
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Nuvio AIO" tvosApp/NuvioTV/Info.plist
+          perl -pi -e 's/group\.com\.pyksel\.nuviotvos</group.com.pyksel.nuviotvos.aio</' \
             tvosApp/NuvioTV/NuvioTV.entitlements tvosApp/TopShelf/TopShelf.entitlements
-          echo "::notice::bundle com.pyksel.nuviotvos.test · Nuvio Test · group.com.pyksel.nuviotvos.test"
+          echo "::notice::bundle com.pyksel.nuviotvos.aio · Nuvio AIO · group.com.pyksel.nuviotvos.aio"
       - name: Build unsigned IPA
         run: |
           set -o pipefail
@@ -81,7 +83,7 @@ jobs:
           <dict>
             <key>com.apple.security.application-groups</key>
             <array>
-              <string>group.com.pyksel.nuviotvos.test</string>
+              <string>group.com.pyksel.nuviotvos.aio</string>
             </array>
           </dict>
           </plist>
