@@ -36,7 +36,14 @@ jobs:
           cp build.log out/ 2>/dev/null || true
           [ -f out/aio.tar.gz ] && echo "::notice::$(tr -d '\n' < out/nuvio-package.json) · aio.tar.gz $(du -sh out/aio.tar.gz | cut -f1)"
           grep -E "^(shim|note|Native addons|files):" -A3 build.log | head -30 || true
-      - name: Smoke test (Node 24, --jitless)
+      - name: Smoke test (Node 24, --jitless, no anime database)
+        env:
+          ANIME_DB_LEVEL_OF_DETAIL: none
+        run: bash aio-node/aio-package/smoke.sh out
+      - name: Smoke test (Node 24, --jitless, anime database "required")
+        if: always()
+        env:
+          ANIME_DB_LEVEL_OF_DETAIL: required
         run: bash aio-node/aio-package/smoke.sh out
       - uses: actions/upload-artifact@v4
         if: always()

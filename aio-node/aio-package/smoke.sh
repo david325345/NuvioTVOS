@@ -72,6 +72,12 @@ const dir = fs.readdirSync(root).find((name) => !name.endsWith(".partial"));
 const template = JSON.parse(fs.readFileSync(`${root}/${dir}/resources/templates/debrid-starter.json`, "utf8"));
 const config = template.config;
 config.presets = config.presets.filter((preset) => preset.type === "torrentio");
+// No TMDB key here; on the TV Nuvio passes its own as TMDB_API_KEY.
+delete config.tmdbApiKey;
+delete config.tmdbAccessToken;
+for (const key of ["titleMatching", "yearMatching", "digitalReleaseFilter"]) {
+  if (config[key]) config[key].enabled = false;
+}
 fs.writeFileSync(process.argv[2], JSON.stringify({ config, password: "nuvio-smoke-test" }));
 ' "$RUN/install" "$RUN/config.json"
 status=$(curl -s -o "$RUN/created" -w '%{http_code}' --max-time 120 -H 'content-type: application/json' \
