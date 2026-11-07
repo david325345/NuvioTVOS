@@ -53,6 +53,10 @@ jobs:
           for framework in "$device" "$simulator"; do
             before=$(du -sh "$framework/NodeMobile" | cut -f1)
             xcrun strip -S -x "$framework/NodeMobile"
+            # Stripping breaks the signature from the Node build: sign again (ad hoc),
+            # or dyld kills the app ("Code Signature Invalid").
+            codesign --force --sign - --timestamp=none "$framework"
+            codesign --verify --verbose=1 "$framework"
             echo "$(basename "$(dirname "$framework")"): NodeMobile $before → $(du -sh "$framework/NodeMobile" | cut -f1)"
             # awk reads all of nm's output: no SIGPIPE under pipefail.
             nm -gU "$framework/NodeMobile" | awk '$3 == "_node_start" { found = 1 } END { exit !found }' \
@@ -162,6 +166,10 @@ jobs:
           for framework in "$device" "$simulator"; do
             before=$(du -sh "$framework/NodeMobile" | cut -f1)
             xcrun strip -S -x "$framework/NodeMobile"
+            # Stripping breaks the signature from the Node build: sign again (ad hoc),
+            # or dyld kills the app ("Code Signature Invalid").
+            codesign --force --sign - --timestamp=none "$framework"
+            codesign --verify --verbose=1 "$framework"
             echo "$(basename "$(dirname "$framework")"): NodeMobile $before → $(du -sh "$framework/NodeMobile" | cut -f1)"
             # awk reads all of nm's output: no SIGPIPE under pipefail.
             nm -gU "$framework/NodeMobile" | awk '$3 == "_node_start" { found = 1 } END { exit !found }' \
@@ -216,7 +224,7 @@ jobs:
           fi
           echo "== launch on the simulator"
           xcrun simctl list devices booted
-          timeout 60 xcrun simctl launch --console-pty booted com.pyksel.nuviotvos 2>&1 | tail -60
+          perl -e 'alarm 60; exec @ARGV' xcrun simctl launch --console-pty booted com.pyksel.nuviotvos 2>&1 | tail -60
       - name: What AIOStreams did
         if: always()
         env:
