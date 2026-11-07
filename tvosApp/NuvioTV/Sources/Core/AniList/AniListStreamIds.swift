@@ -3,9 +3,13 @@ import Foundation
 /// The ids an AniList title is asked by from add-ons that don't know `anilist:` ids (Settings →
 /// AniList → "Ask Other Add-ons"):
 ///
-/// 1. `kitsu:ID:episode`: Kitsu keeps a separate entry per season, as AniList does, so the
-///    episode number stays as on AniList.
+/// 1. `kitsu:ID:episode`, `mal:ID:episode`, `anidb:ID:episode`: they keep a separate entry per
+///    season, as AniList does, so the episode number stays as on AniList.
 /// 2. `tt…:season:episode`: IMDb with Cinemeta's numbering, the one Stremio add-ons go by.
+/// 3. `tmdb:ID:season:episode`: TMDB with TheTVDB's numbering.
+///
+/// And the other way (`cinemetaAlternatives`): a Cinemeta anime episode for add-ons that take
+/// only anime ids.
 ///
 /// The offline tables (Fribb, anibridge) answer first, in TheTVDB's numbering. Only what they
 /// don't know is asked online: ani.zip for ids and TheTVDB numbers; for a season too new for any
@@ -71,9 +75,19 @@ enum AniListStreamIds {
         if let kitsu {
             ids.append(episode.map { "kitsu:\(kitsu):\($0)" } ?? "kitsu:\(kitsu)")
         }
+        // MyAnimeList and AniDB keep a separate entry per season too: AniList's episode number.
+        if let mal = await MALEpisodeRatings.malID(aniListID: entryID) {
+            ids.append(episode.map { "mal:\(mal):\($0)" } ?? "mal:\(mal)")
+        }
+        if let anidb = offline?.anidb {
+            ids.append(episode.map { "anidb:\(anidb):\($0)" } ?? "anidb:\(anidb)")
+        }
+        let tmdbShow = offline?.tmdbTV
+        let tmdbMovie = offline?.tmdbMovie
         guard let episode else {
-            // A film: its IMDb id alone.
+            // A film: its IMDb id, and TMDB's.
             if let imdb { ids.append(imdb) }
+            if let tmdbMovie { ids.append("tmdb:\(tmdbMovie)") }
             return ids
         }
 
@@ -85,7 +99,12 @@ enum AniListStreamIds {
                 tvdb = nil
             }
         }
-        guard let imdb else { return ids }
+        // TMDB by TheTVDB's season and episode (TMDB mostly numbers anime as TheTVDB does).
+        var tmdb: [String] = []
+        if let tmdbShow, let numbering, numbering.season > 0 {
+            tmdb.append("tmdb:\(tmdbShow):\(numbering.season):\(numbering.episode)")
+        }
+        guard let imdb else { return ids + tmdb }
 
         let videos = await cinemetaVideos(imdb: imdb)
         if numbering == nil {
@@ -103,6 +122,45 @@ enum AniListStreamIds {
         if let numbering {
             ids.append("\(imdb):\(numbering.season):\(numbering.episode)")
         }
+        return ids + tmdb
+    }
+
+    // MARK: Cinemeta anime for anime add-ons
+
+    /// The other way: a Cinemeta anime episode (`tt…:season:episode`, TheTVDB's numbering as the
+    /// offline tables have it) for add-ons that take only anime ids: `anilist:`, `kitsu:`,
+    /// `mal:`, `anidb:` with the entry's own episode number. A film by its entry alone. [] for
+    /// anything the tables don't know as anime, or with the setting off.
+    static func cinemetaAlternatives(for videoId: String) async -> [String] {
+        guard AniListSettings.opensTitles, AniListSettings.asksOtherAddons else { return [] }
+        let key = "cinemeta|" + videoId
+        if let cached = lock.withLock({ known[key] }) { return cached }
+        let maps = AniListOfflineMaps.shared
+        let entryID: Int
+        let episode: Int?
+        if let parsed = MALEpisodeRatings.cinemetaEpisode(videoId) {
+            guard let found = await maps.aniListEpisode(imdb: parsed.imdb, tmdbTV: nil, season: parsed.season, episode: parsed.episode),
+                  found.episode > 0 else { return [] }
+            entryID = found.aniListID
+            episode = found.episode
+        } else if videoId.hasPrefix("tt"), !videoId.contains(":"), let film = await maps.film(imdb: videoId, tmdbMovie: nil) {
+            entryID = film
+            episode = nil
+        } else {
+            return []
+        }
+        let offline = await maps.entry(aniListID: entryID)
+        func id(_ prefix: String, _ value: Int?) -> String? {
+            guard let value else { return nil }
+            return episode.map { "\(prefix):\(value):\($0)" } ?? "\(prefix):\(value)"
+        }
+        let ids = [
+            id("anilist", entryID),
+            id("kitsu", offline?.kitsu),
+            id("mal", offline?.mal),
+            id("anidb", offline?.anidb),
+        ].compactMap { $0 }
+        lock.withLock { known[key] = ids }
         return ids
     }
 
