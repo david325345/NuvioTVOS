@@ -3,7 +3,7 @@ import SwiftUI
 /// One line of text that shows its end when it doesn't fit: while `isActive` (the focused card),
 /// after a moment it scrolls to the end, rests there, goes back, and again — as tvOS scrolls a
 /// focused title. Inactive, or text that fits, is the usual one line ending in "…". Nothing moves
-/// with Reduce Motion on (Settings → Accessibility → Motion). Only the active text is measured.
+/// with Reduce Motion on (Settings → Accessibility → Motion). Only the active line is measured.
 struct MarqueeText: View {
     let text: String
     var font: Font
@@ -54,7 +54,14 @@ struct MarqueeText: View {
         ZStack(alignment: scrolling ? .leading : alignment) {
             // The line's full height, so scrolling at a smaller size doesn't move what's around it.
             Text(" ").font(font).hidden()
-            if scrolling {
+            Text(text)
+                .font(font)
+                .foregroundColor(color)
+                .lineLimit(1)
+                .minimumScaleFactor(minimumScaleFactor)
+                .opacity(scrolling ? 0 : 1)
+            // Already there while focused, so the first move animates instead of appearing.
+            if isActive && overflow > 0 {
                 Text(text)
                     .font(font)
                     .foregroundColor(color)
@@ -62,47 +69,34 @@ struct MarqueeText: View {
                     .fixedSize(horizontal: true, vertical: false)
                     .scaleEffect(minimumScaleFactor, anchor: .leading)
                     .offset(x: -offset)
-            } else {
-                Text(text)
-                    .font(font)
-                    .foregroundColor(color)
-                    .lineLimit(1)
-                    .minimumScaleFactor(minimumScaleFactor)
+                    .opacity(scrolling ? 1 : 0)
             }
         }
         .frame(maxWidth: .infinity, alignment: scrolling ? .leading : alignment)
         .clipped()
         .mask(fadeMask)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+            boxWidth = width
+        }
         .background {
-            if isActive { measurements }
+            if isActive { lineMeasure }
         }
         .task(id: MarqueeKey(text: text, moves: moves, overflow: overflow)) {
             await run()
         }
     }
 
-    /// The box's width and the whole line's, never shown.
-    private var measurements: some View {
-        ZStack(alignment: .leading) {
-            GeometryReader { box in
-                Color.clear
-                    .onAppear { boxWidth = box.size.width }
-                    .onChange(of: box.size.width) { _, width in boxWidth = width }
+    /// The whole line's width, never shown.
+    private var lineMeasure: some View {
+        Text(text)
+            .font(font)
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .hidden()
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+                fullWidth = width
             }
-            Text(text)
-                .font(font)
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
-                .hidden()
-                .background(
-                    GeometryReader { line in
-                        Color.clear
-                            .onAppear { fullWidth = line.size.width }
-                            .onChange(of: line.size.width) { _, width in fullWidth = width }
-                    }
-                )
-                .frame(width: 0, alignment: .leading)
-        }
+            .frame(width: 0, alignment: .leading)
     }
 
     @ViewBuilder
@@ -131,6 +125,8 @@ struct MarqueeText: View {
         guard moves else { return }
         guard await pause(Self.startDelay) else { return }
         withTransaction(reset) { scrolling = true }
+        // Let it draw at the start before it moves.
+        guard await pause(0.05) else { return }
         // A little past the end, so the last letter clears the fade.
         let distance = overflow + Self.edgeFade
         let duration = Double(distance / Self.pointsPerSecond)
