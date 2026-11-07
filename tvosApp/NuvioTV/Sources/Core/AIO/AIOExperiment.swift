@@ -137,11 +137,19 @@ final class AIOExperiment: ObservableObject {
         }
     }
 
+    /// Posted when the addon appears, changes or goes away: Home loads its
+    /// catalogs again (NuvioSyncManager), as AIOStreams starts after Nuvio.
+    nonisolated static let addonChangedNotification = Notification.Name("nuvio.aio.experiment.addonChanged")
+
     private func publishAddon() {
         let url = (phase == .running && addonEnabled && configurationVerified) ? manifestURL.flatMap(URL.init(string:)) : nil
         Self.addonLock.lock()
+        let changed = Self.currentAddonURL != url
         Self.currentAddonURL = url
         Self.addonLock.unlock()
+        if changed {
+            NotificationCenter.default.post(name: Self.addonChangedNotification, object: nil)
+        }
     }
 
     nonisolated static func uuid(fromManifest manifest: String) -> String? {

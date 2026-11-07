@@ -357,6 +357,18 @@ final class NuvioSyncManager: ObservableObject {
                 self.homeCollectionsRevision &+= 1
             }
         })
+        // Fork experiment: the AIOStreams addon comes and goes with AIOStreams
+        // (it starts after Nuvio). Home loads its catalogs again; nothing is
+        // pushed, as the addon exists on this Apple TV only.
+        observers.append(center.addObserver(
+            forName: AIOExperiment.addonChangedNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.homeCatalogRevision &+= 1
+            }
+        })
         observers.append(center.addObserver(
             forName: CollectionsStore.locallyEditedNotification,
             object: nil,
