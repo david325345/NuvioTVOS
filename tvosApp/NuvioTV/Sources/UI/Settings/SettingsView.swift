@@ -5556,9 +5556,9 @@ private struct MALOptionsSheet: View {
             title: L10n.string("settings_anilist_section_account", fallback: "Account"),
             subtitle: L10n.string("settings_mal_section_account_subtitle", fallback: "Your MAL lists on Home, \"+\" in details, and what you watch written to MAL")
         ) {
-            if let accountName {
+            if let name = accountName {
                 SettingsActionRow(
-                    title: L10n.format("settings_anilist_logged_in", fallback: "Logged in as %@", accountName),
+                    title: L10n.format("settings_anilist_logged_in", fallback: "Logged in as %@", name),
                     subtitle: L10n.string("settings_mal_logged_in_subtitle", fallback: "Renewed by itself; after a month unused, log in again"),
                     value: L10n.string("settings_anilist_log_out", fallback: "Log Out"),
                     accentColor: accentColor
