@@ -65,7 +65,10 @@ cp -a node_modules "$STAGE/node_modules"
 bcryptjs_dir="$WORK/bcryptjs"
 rm -rf "$bcryptjs_dir" && mkdir -p "$bcryptjs_dir"
 (cd "$bcryptjs_dir" && npm pack --silent bcryptjs@3 >/dev/null && tar xzf bcryptjs-*.tgz && mv package bcryptjs)
-for shim in better-sqlite3 bcrypt yencode; do
+# shim folder:package
+for entry in better-sqlite3:better-sqlite3 bcrypt:bcrypt yencode:yencode fsmux-fuse:@viren070/fsmux-fuse; do
+  shim=${entry%%:*}
+  package=${entry#*:}
   found=0
   while IFS= read -r -d '' dir; do
     found=1
@@ -75,9 +78,9 @@ for shim in better-sqlite3 bcrypt yencode; do
       mkdir -p "$dir/node_modules"
       cp -R "$bcryptjs_dir/bcryptjs" "$dir/node_modules/bcryptjs"
     fi
-    echo "shim: $shim → ${dir#$STAGE/}"
-  done < <(find "$STAGE/node_modules/.pnpm" -mindepth 3 -maxdepth 3 -type d -path "*/node_modules/$shim" -print0)
-  [ "$found" = 1 ] || echo "note: $shim is not among the production dependencies"
+    echo "shim: $package → ${dir#$STAGE/}"
+  done < <(find "$STAGE/node_modules/.pnpm" -mindepth 3 -maxdepth 4 -type d -path "*/node_modules/$package" -print0)
+  [ "$found" = 1 ] || echo "note: $package is not among the production dependencies"
 done
 
 # Anything native left is reported: it can't run on Apple TV.

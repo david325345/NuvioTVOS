@@ -38,7 +38,7 @@ node --jitless --max-old-space-size=1024 "$PACKAGE/bootstrap.mjs" "$PACKAGE/aio.
 PID=$!
 for _ in $(seq 1 300); do
   grep -q '"status": "running"' "$NUVIO_STATE_FILE" 2>/dev/null && break
-  grep -q '"status": "not answering"' "$NUVIO_STATE_FILE" 2>/dev/null && break
+  grep -qE '"status": "(not answering|failed)"' "$NUVIO_STATE_FILE" 2>/dev/null && break
   kill -0 $PID 2>/dev/null || break
   sleep 1
 done

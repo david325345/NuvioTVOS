@@ -149,7 +149,13 @@ writeState({ status: 'starting', pid: process.pid, node: process.version, port: 
 process.chdir(aioRoot);
 startProxy();
 log(`starting AIOStreams from ${aioRoot} (node ${process.version}, ${process.arch}, jitless: ${process.execArgv.includes('--jitless') || process.versions.mobile ? 'yes' : 'no'})`);
-await import(pathToFileURL(path.join(aioRoot, 'packages/server/dist/server.js')).href);
+try {
+  await import(pathToFileURL(path.join(aioRoot, 'packages/server/dist/server.js')).href);
+} catch (error) {
+  log(`AIOStreams failed to load: ${error && error.stack ? error.stack : error}`);
+  writeState({ status: 'failed', error: String(error && error.message ? error.message : error) });
+  process.exit(1);
+}
 const ready = await waitUntilReady();
 const seconds = ((Date.now() - started) / 1000).toFixed(1);
 const memory = Math.round(process.memoryUsage().rss / 1048576);
