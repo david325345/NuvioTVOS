@@ -18758,6 +18758,13 @@ private struct AIOExperimentSheet: View {
                     }
                 }
 
+                if let notice = aio.notice {
+                    Text(notice)
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundColor(.yellow)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
                 if aio.phase == .stopped {
                     SettingsActionRow(
                         title: "Start AIOStreams",
@@ -18766,6 +18773,14 @@ private struct AIOExperimentSheet: View {
                         accentColor: accentColor
                     ) {
                         aio.start()
+                    }
+                    SettingsActionRow(
+                        title: "Test Node.js only",
+                        subtitle: "Runs only Node.js with a short test, without AIOStreams. Close and reopen Nuvio AIO afterwards to start AIOStreams.",
+                        value: "Test",
+                        accentColor: accentColor
+                    ) {
+                        aio.testNodeOnly()
                     }
                 }
 
@@ -18785,17 +18800,30 @@ private struct AIOExperimentSheet: View {
                     accentColor: accentColor
                 )
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Log")
-                        .font(.system(size: 22, weight: .bold))
-                        .foregroundColor(.white)
-                    ForEach(Array(aio.logLines.suffix(80).enumerated()), id: \.offset) { _, line in
-                        Text(line)
-                            .font(.system(size: 15, weight: .regular, design: .monospaced))
-                            .foregroundColor(line.hasPrefix("✕") ? .red : line.hasPrefix("!") ? .yellow : .white.opacity(0.8))
-                            .lineLimit(3)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                if let previous = aio.previousRun, aio.phase == .stopped || previous.unexpected {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Last run" + (previous.date.map { " · " + $0.formatted(date: .abbreviated, time: .shortened) } ?? ""))
+                            .font(.system(size: 22, weight: .bold))
+                            .foregroundColor(.white)
+                        Text(previous.summary)
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundColor(previous.unexpected ? .red : .white.opacity(0.8))
+                            .fixedSize(horizontal: false, vertical: true)
                             .focusable()
+                        ForEach(Array(previous.lines.enumerated()), id: \.offset) { _, line in
+                            logLine(line)
+                        }
+                    }
+                }
+
+                if !aio.logLines.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Log")
+                            .font(.system(size: 22, weight: .bold))
+                            .foregroundColor(.white)
+                        ForEach(Array(aio.logLines.suffix(80).enumerated()), id: \.offset) { _, line in
+                            logLine(line)
+                        }
                     }
                 }
 
@@ -18810,6 +18838,16 @@ private struct AIOExperimentSheet: View {
             }
             .settingsEntryAnchor()
         }
+    }
+
+    private func logLine(_ line: String) -> some View {
+        Text(line)
+            .font(.system(size: 15, weight: .regular, design: .monospaced))
+            .foregroundColor(line.contains("CRASH") || line.hasPrefix("✕") || line.contains("FAILED") ? .red
+                : line.hasPrefix("!") ? .yellow : .white.opacity(0.8))
+            .lineLimit(3)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .focusable()
     }
 
     @ViewBuilder
@@ -18832,9 +18870,11 @@ private struct AIOExperimentSheet: View {
     private var statusText: String {
         switch aio.phase {
         case .stopped: return "Not running"
-        case .starting: return "Starting…"
+        case .starting: return aio.runKind == .nodeTest ? "Testing Node.js…" : "Starting…"
         case .running: return "Running"
         case .notAnswering: return "Started, but not answering"
+        case .exited(let code) where aio.runKind == .nodeTest:
+            return "Node.js test finished (\(code)) — close and reopen Nuvio AIO to start AIOStreams"
         case .exited(let code): return "Node.js stopped (\(code)) — restart Nuvio to try again"
         case .unavailable(let reason): return reason
         }
@@ -18842,7 +18882,7 @@ private struct AIOExperimentSheet: View {
 
     private var statusColor: Color {
         switch aio.phase {
-        case .running: return .green
+        case .running, .exited(0) where aio.runKind == .nodeTest: return .green
         case .starting, .stopped: return .white
         default: return .red
         }
