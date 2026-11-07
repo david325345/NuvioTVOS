@@ -31,6 +31,8 @@ COMMIT=$(git rev-parse --short HEAD)
 
 corepack enable
 pnpm install --frozen-lockfile
+# resources/metadata.json: version and channel, as AIOStreams' release builds have it.
+pnpm run metadata || echo "note: metadata.json was not generated"
 pnpm run build
 
 # Production dependencies of the server and what it uses, as in the image.
