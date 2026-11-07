@@ -34,14 +34,32 @@ jobs:
             gh run list -R "$GITHUB_REPOSITORY" --workflow "$1" --branch aio-node --status success --limit 1 \
               --json databaseId --jq '.[0].databaseId // empty'
           }
-          node_run=$(latest build-node-tvos.yml)
           aio_run=$(latest build-aio-package.yml)
-          [ -n "$node_run" ] || { echo "::error::No successful Node.js for tvOS build yet"; exit 1; }
           [ -n "$aio_run" ] || { echo "::error::No successful AIOStreams package build yet"; exit 1; }
-          gh run download "$node_run" -R "$GITHUB_REPOSITORY" -n NodeMobile-tvos -D Vendor/NodeMobile
           gh run download "$aio_run" -R "$GITHUB_REPOSITORY" -n aio-package -D tvosApp/NuvioTV/AIOPackage
+          # Node.js: the newest build-node-tvos.yml run with both framework slices.
+          node_run=""
+          for id in $(gh run list -R "$GITHUB_REPOSITORY" --workflow build-node-tvos.yml --branch aio-node --limit 10 \
+                        --json databaseId --jq '.[].databaseId'); do
+            count=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/artifacts" \
+              --jq '[.artifacts[] | select(.expired == false) | select(.name == "node-tvos-arm64" or .name == "node-tvos-arm64-simulator")] | length')
+            if [ "$count" = 2 ]; then node_run=$id; break; fi
+          done
+          [ -n "$node_run" ] || { echo "::error::No Node.js for tvOS build with both slices yet"; exit 1; }
+          gh run download "$node_run" -R "$GITHUB_REPOSITORY" -n node-tvos-arm64 -D "$RUNNER_TEMP/node-device"
+          gh run download "$node_run" -R "$GITHUB_REPOSITORY" -n node-tvos-arm64-simulator -D "$RUNNER_TEMP/node-simulator"
+          device="$RUNNER_TEMP/node-device/iphoneos-arm64/Release-appletvos/NodeMobile.framework"
+          simulator="$RUNNER_TEMP/node-simulator/iphonesimulator-arm64/Release-appletvsimulator/NodeMobile.framework"
+          for framework in "$device" "$simulator"; do
+            before=$(du -sh "$framework/NodeMobile" | cut -f1)
+            xcrun strip -S -x "$framework/NodeMobile"
+            echo "$(basename "$(dirname "$framework")"): NodeMobile $before → $(du -sh "$framework/NodeMobile" | cut -f1)"
+            nm -gU "$framework/NodeMobile" | grep -q " _node_start$" || { echo "::error::node_start missing in $framework"; exit 1; }
+          done
+          mkdir -p Vendor/NodeMobile
+          xcodebuild -create-xcframework -framework "$device" -framework "$simulator" -output Vendor/NodeMobile/NodeMobile.xcframework
           ls -la Vendor/NodeMobile tvosApp/NuvioTV/AIOPackage
-          echo "::notice::Node.js run $node_run · AIOStreams $(tr -d '\n' < tvosApp/NuvioTV/AIOPackage/nuvio-package.json) from run $aio_run"
+          echo "::notice::Node.js run $node_run ($(du -sh Vendor/NodeMobile/NodeMobile.xcframework | cut -f1)) · AIOStreams $(tr -d '\n' < tvosApp/NuvioTV/AIOPackage/nuvio-package.json) from run $aio_run"
       - name: Install Tuist
         run: brew install tuist
       - name: Make it a separate app (Nuvio AIO)
@@ -123,14 +141,32 @@ jobs:
             gh run list -R "$GITHUB_REPOSITORY" --workflow "$1" --branch aio-node --status success --limit 1 \
               --json databaseId --jq '.[0].databaseId // empty'
           }
-          node_run=$(latest build-node-tvos.yml)
           aio_run=$(latest build-aio-package.yml)
-          [ -n "$node_run" ] || { echo "::error::No successful Node.js for tvOS build yet"; exit 1; }
           [ -n "$aio_run" ] || { echo "::error::No successful AIOStreams package build yet"; exit 1; }
-          gh run download "$node_run" -R "$GITHUB_REPOSITORY" -n NodeMobile-tvos -D Vendor/NodeMobile
           gh run download "$aio_run" -R "$GITHUB_REPOSITORY" -n aio-package -D tvosApp/NuvioTV/AIOPackage
+          # Node.js: the newest build-node-tvos.yml run with both framework slices.
+          node_run=""
+          for id in $(gh run list -R "$GITHUB_REPOSITORY" --workflow build-node-tvos.yml --branch aio-node --limit 10 \
+                        --json databaseId --jq '.[].databaseId'); do
+            count=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/artifacts" \
+              --jq '[.artifacts[] | select(.expired == false) | select(.name == "node-tvos-arm64" or .name == "node-tvos-arm64-simulator")] | length')
+            if [ "$count" = 2 ]; then node_run=$id; break; fi
+          done
+          [ -n "$node_run" ] || { echo "::error::No Node.js for tvOS build with both slices yet"; exit 1; }
+          gh run download "$node_run" -R "$GITHUB_REPOSITORY" -n node-tvos-arm64 -D "$RUNNER_TEMP/node-device"
+          gh run download "$node_run" -R "$GITHUB_REPOSITORY" -n node-tvos-arm64-simulator -D "$RUNNER_TEMP/node-simulator"
+          device="$RUNNER_TEMP/node-device/iphoneos-arm64/Release-appletvos/NodeMobile.framework"
+          simulator="$RUNNER_TEMP/node-simulator/iphonesimulator-arm64/Release-appletvsimulator/NodeMobile.framework"
+          for framework in "$device" "$simulator"; do
+            before=$(du -sh "$framework/NodeMobile" | cut -f1)
+            xcrun strip -S -x "$framework/NodeMobile"
+            echo "$(basename "$(dirname "$framework")"): NodeMobile $before → $(du -sh "$framework/NodeMobile" | cut -f1)"
+            nm -gU "$framework/NodeMobile" | grep -q " _node_start$" || { echo "::error::node_start missing in $framework"; exit 1; }
+          done
+          mkdir -p Vendor/NodeMobile
+          xcodebuild -create-xcframework -framework "$device" -framework "$simulator" -output Vendor/NodeMobile/NodeMobile.xcframework
           ls -la Vendor/NodeMobile tvosApp/NuvioTV/AIOPackage
-          echo "::notice::Node.js run $node_run · AIOStreams $(tr -d '\n' < tvosApp/NuvioTV/AIOPackage/nuvio-package.json) from run $aio_run"
+          echo "::notice::Node.js run $node_run ($(du -sh Vendor/NodeMobile/NodeMobile.xcframework | cut -f1)) · AIOStreams $(tr -d '\n' < tvosApp/NuvioTV/AIOPackage/nuvio-package.json) from run $aio_run"
       - name: Install Tuist
         run: brew install tuist
       - name: Generate Xcode project
