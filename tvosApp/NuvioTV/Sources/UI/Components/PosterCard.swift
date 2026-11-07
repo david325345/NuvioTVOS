@@ -233,6 +233,7 @@ struct PosterCard: View {
     let onClick: () -> Void
 
     private let landscapeTransitionDuration: TimeInterval = 0.3
+    @AppStorage(SettingsKey.focusedPosterBackdropEnabled) private var focusedPosterBackdropEnabled = true
     @AppStorage(SettingsKey.customPosterURLPattern) private var customPosterURLPattern = ""
     @AppStorage(SettingsKey.customPosterEnabledScreens) private var customPosterEnabledScreens = "all"
     @State private var loadedCustomLandscapeArtworkURL: String?
@@ -482,7 +483,7 @@ struct PosterCard: View {
                     meta.name,
                     size: effectiveHomeLayout == "Compact" ? 18 : 20, weight: showsFocusedAppearance ? .semibold : .medium,
                     color: titleColor,
-                    isActive: showsFocusedAppearance
+                    isActive: showsFocusedAppearance && !expandsToBackdrop
                 )
                 .frame(width: cardWidth, alignment: .leading)
             }
@@ -685,6 +686,12 @@ struct PosterCard: View {
     #if os(tvOS)
     private var effectiveHomeLayout: String {
         layoutMode
+    }
+
+    /// The focused poster turns into its backdrop with logo and name after a moment (Settings →
+    /// Layout → Expand Focused Poster to Backdrop, Modern layout): its title doesn't scroll then.
+    private var expandsToBackdrop: Bool {
+        focusedPosterBackdropEnabled && effectiveHomeLayout == "Modern" && !isEffectivelyAlwaysLandscape
     }
 
     private var effectivePosterLabels: Bool {
