@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      TAG: ${{ github.event.inputs.tag || 'v2.37.0' }}
+      AIO_IMAGE_TAG: ${{ github.event.inputs.tag || 'v2.37.0' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -43,13 +43,13 @@ jobs:
           globalThis.WebAssembly = WebAssembly;
           JS
           (cd "$RUNNER_TEMP/bcryptjs" && npm pack --silent bcryptjs@3 >/dev/null && tar xzf bcryptjs-*.tgz && mv package bcryptjs)
-      - name: Prepare AIOStreams from ghcr.io/viren070/aiostreams:${{ env.TAG }}
+      - name: Prepare AIOStreams from ghcr.io/viren070/aiostreams:${{ env.AIO_IMAGE_TAG }}
         env:
           UNDICI_NO_WASM_SIMD: "1"
         run: |
           set -o pipefail
           node --jitless --import "$RUNNER_TEMP/wasm/preload.mjs" aio-node/image/image-install.mjs \
-            --image "ghcr.io/viren070/aiostreams:$TAG" --work "$RUNNER_TEMP/work" --out "$RUNNER_TEMP/package" \
+            --image "ghcr.io/viren070/aiostreams:$AIO_IMAGE_TAG" --work "$RUNNER_TEMP/work" --out "$RUNNER_TEMP/package" \
             --shims aio-node/aio-package/shims --nuvio-main aio-node/aio-package/nuvio-main.mjs \
             --bcryptjs "$RUNNER_TEMP/bcryptjs/bcryptjs" 2>&1 | tee probe.log
           grep -E "^\[image\] (application layer|downloaded|node_modules layout|flatten|package)" probe.log | while IFS= read -r line; do echo "::notice::$line"; done
