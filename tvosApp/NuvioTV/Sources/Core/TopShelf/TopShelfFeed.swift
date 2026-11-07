@@ -162,6 +162,9 @@ public struct TopShelfEntry: Codable, Equatable, Sendable {
     /// place of the title's own poster and card art, which stay the fallback.
     public let customPosterURL: String?
     public let customLandscapeURL: String?
+    /// The full name drawn under the logo in the carousel: an AniList season shows the series'
+    /// logo, so its own name says which one it is.
+    public let logoCaption: String?
 
     public init(contentId: String, contentType: String, title: String,
                 subtitle: String?, imageURL: String?, backdropURL: String? = nil,
@@ -172,7 +175,8 @@ public struct TopShelfEntry: Codable, Equatable, Sendable {
                 logoURL: String? = nil, cast: [String]? = nil, directors: [String]? = nil,
                 carouselArtworkFileName: String? = nil, airDate: String? = nil,
                 imdbId: String? = nil, tmdbId: Int? = nil, imdbRating: Double? = nil,
-                homeOrder: Int? = nil, customPosterURL: String? = nil, customLandscapeURL: String? = nil) {
+                homeOrder: Int? = nil, customPosterURL: String? = nil, customLandscapeURL: String? = nil,
+                logoCaption: String? = nil) {
         self.contentId = contentId
         self.contentType = contentType
         self.title = title
@@ -198,6 +202,20 @@ public struct TopShelfEntry: Codable, Equatable, Sendable {
         self.homeOrder = homeOrder
         self.customPosterURL = customPosterURL
         self.customLandscapeURL = customLandscapeURL
+        self.logoCaption = logoCaption
+    }
+
+    /// The same entry with other artwork and ids (the app's `TopShelfFeedStore.entryEnricher`).
+    public func with(backdropURL: String?, logoURL: String?, imdbId: String?, logoCaption: String?) -> TopShelfEntry {
+        TopShelfEntry(
+            contentId: contentId, contentType: contentType, title: title, subtitle: subtitle,
+            imageURL: imageURL, backdropURL: backdropURL, progress: progress, action: action ?? .resume,
+            artworkFileName: artworkFileName, summary: summary, genres: genres, year: year,
+            releaseDate: releaseDate, runtimeMinutes: runtimeMinutes, logoURL: logoURL, cast: cast,
+            directors: directors, carouselArtworkFileName: carouselArtworkFileName, airDate: airDate,
+            imdbId: imdbId, tmdbId: tmdbId, imdbRating: imdbRating, homeOrder: homeOrder,
+            customPosterURL: customPosterURL, customLandscapeURL: customLandscapeURL,
+            logoCaption: logoCaption)
     }
 
     /// Artwork the card is rendered from: the backdrop, else the poster.
@@ -430,6 +448,10 @@ public enum TopShelfFeedStore {
     /// Set by the app: the ratings the carousel shows for a title, in Nuvio's
     /// own sources and order. Nil in the extension, which only reads them.
     public static var ratingsProvider: (@Sendable (TopShelfEntry) async -> [TopShelfRatingBadge])?
+    /// Set by the app: better artwork and ids for an entry before it is written (an AniList
+    /// title's backdrop, logo and IMDb id). Nil in the extension.
+    public static var entryEnricher: (@Sendable (TopShelfEntry) async -> TopShelfEntry)?
+    static let enrichmentConcurrency = 4
     private static let writeCoordinators: [TopShelfSection: TopShelfWriteCoordinator] =
         Dictionary(uniqueKeysWithValues: TopShelfSection.allCases.map { ($0, TopShelfWriteCoordinator()) })
 
@@ -487,9 +509,9 @@ public enum TopShelfFeedStore {
     static func writeCatalogRowsAndWait(_ rows: [TopShelfFeedRow]) async {
         guard isAvailable, let writeCoordinator = writeCoordinators[.catalog] else { return }
         let generation = writeCoordinator.beginWrite()
-        let feed = TopShelfFeed(
+        let feed = await enriched(TopShelfFeed(
             entries: [],
-            rows: rows.map { TopShelfFeedRow(id: $0.id, title: $0.title, entries: $0.entries.map(decorated)) })
+            rows: rows.map { TopShelfFeedRow(id: $0.id, title: $0.title, entries: $0.entries.map(decorated)) }))
         guard writeCoordinator.commitIfCurrent(generation, commit: {
             writeFeed(feed, section: .catalog)
         }) else { return }
@@ -500,12 +522,49 @@ public enum TopShelfFeedStore {
         guard isAvailable, let writeCoordinator = writeCoordinators[section] else { return }
         let generation = writeCoordinator.beginWrite()
         Task.detached(priority: .utility) {
-            let feed = makeFeed()
+            let feed = await enriched(makeFeed())
             guard writeCoordinator.commitIfCurrent(generation, commit: {
                 writeFeed(feed, section: section)
             }) else { return }
             await refreshArtworkNow()
         }
+    }
+
+    /// `feed` with the app's `entryEnricher` applied to every entry (a few at a time), the render
+    /// names named again for what changed.
+    static func enriched(_ feed: TopShelfFeed) async -> TopShelfFeed {
+        guard let enricher = entryEnricher else { return feed }
+        func enrich(_ entries: [TopShelfEntry]) async -> [TopShelfEntry] {
+            var result = entries
+            await withTaskGroup(of: (Int, TopShelfEntry).self) { group in
+                var next = 0
+                while next < min(enrichmentConcurrency, entries.count) {
+                    let index = next
+                    let entry = entries[index]
+                    group.addTask { (index, await enricher(entry)) }
+                    next += 1
+                }
+                while let (index, entry) = await group.next() {
+                    result[index] = entry == entries[index] ? entry : decorated(entry)
+                    if next < entries.count {
+                        let following = next
+                        let waiting = entries[following]
+                        group.addTask { (following, await enricher(waiting)) }
+                        next += 1
+                    }
+                }
+            }
+            return result
+        }
+        var rows: [TopShelfFeedRow]? = nil
+        if let feedRows = feed.rows {
+            var enrichedRows: [TopShelfFeedRow] = []
+            for row in feedRows {
+                enrichedRows.append(TopShelfFeedRow(id: row.id, title: row.title, entries: await enrich(row.entries)))
+            }
+            rows = enrichedRows
+        }
+        return TopShelfFeed(entries: await enrich(feed.entries), title: feed.title, rows: rows, updatedAt: feed.updatedAt)
     }
 
     /// Redraws the shelf for the current setting: renders the artwork the
@@ -632,7 +691,7 @@ public enum TopShelfFeedStore {
             entry.contentId,
             entry.artworkSourceURL ?? "",
             entry.logoURL ?? ""
-        ])
+        ] + (entry.logoCaption.map { [$0] } ?? []))
     }
 
     /// The same image at the largest size its host serves, then the URL as
@@ -726,7 +785,7 @@ public enum TopShelfFeedStore {
                     let icon = await ratingIcon(for: badge, cache: &icons)
                     drawn.append((icon: icon, badge: badge))
                 }
-                rendered = renderedCarouselArtwork(from: image, logo: logo, ratings: drawn, scale: scale)
+                rendered = renderedCarouselArtwork(from: image, logo: logo, caption: entry.logoCaption, ratings: drawn, scale: scale)
             case .card:
                 rendered = renderedArtwork(from: image, subtitle: entry.subtitle)
             }
@@ -865,6 +924,7 @@ public enum TopShelfFeedStore {
     private static func renderedCarouselArtwork(
         from image: UIImage,
         logo: UIImage?,
+        caption: String? = nil,
         ratings: [(icon: UIImage?, badge: TopShelfRatingBadge)],
         scale: CGFloat
     ) -> Data? {
@@ -892,10 +952,40 @@ public enum TopShelfFeedStore {
                 let origin = CGPoint(x: 120, y: size.height * logoCenterHeight - logoSize.height / 2)
                 logo.draw(in: CGRect(origin: origin, size: logoSize))
                 ratingsTop = origin.y + logoSize.height + 32
+                if let caption, !caption.isEmpty {
+                    ratingsTop = drawCaption(caption, at: CGPoint(x: 120, y: origin.y + logoSize.height + 20),
+                                             width: maximum.width) + 28
+                }
             }
             drawRatings(ratings, at: CGPoint(x: 120, y: ratingsTop), maximumX: size.width * 0.55)
         }
         return rendered.jpegData(compressionQuality: 0.85)
+    }
+
+    /// The name under the logo, up to two lines; returns where it ends.
+    private static func drawCaption(_ caption: String, at origin: CGPoint, width: CGFloat) -> CGFloat {
+        let shadow = NSShadow()
+        shadow.shadowColor = UIColor.black.withAlphaComponent(0.7)
+        shadow.shadowBlurRadius = 6
+        shadow.shadowOffset = CGSize(width: 0, height: 1)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byTruncatingTail
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: 34, weight: .semibold),
+            .foregroundColor: UIColor.white,
+            .shadow: shadow,
+            .paragraphStyle: paragraph
+        ]
+        let text = NSAttributedString(string: caption, attributes: attributes)
+        let lineHeight = ceil(UIFont.systemFont(ofSize: 34, weight: .semibold).lineHeight)
+        let bounds = text.boundingRect(
+            with: CGSize(width: width, height: lineHeight * 2),
+            options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
+            context: nil)
+        let height = min(ceil(bounds.height), lineHeight * 2)
+        text.draw(with: CGRect(x: origin.x, y: origin.y, width: width, height: height),
+                  options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine], context: nil)
+        return origin.y + height
     }
 
     /// One row of provider icons with their scores, as on the Details page.

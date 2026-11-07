@@ -496,6 +496,35 @@ final class AniListTests: XCTestCase {
 
     // MARK: Episode labels
 
+    /// Top Shelf: an AniList title takes the hero's backdrop and logo, its IMDb id (trailers) and
+    /// its name under the logo; everything else stays.
+    func testTopShelfEntriesTakeBetterArtwork() throws {
+        let entry = TopShelfEntry(
+            contentId: "anilist:166531", contentType: "series", title: "[Oshi no Ko] 2nd Season", subtitle: "E3",
+            imageURL: "cover", backdropURL: "banner", progress: 0.5, action: .details,
+            summary: "About", tmdbId: 203737, homeOrder: 2)
+        let better = entry.with(backdropURL: "fanart", logoURL: "logo", imdbId: "tt21030032", logoCaption: entry.title)
+        XCTAssertEqual(better.backdropURL, "fanart")
+        XCTAssertEqual(better.logoURL, "logo")
+        XCTAssertEqual(better.imdbId, "tt21030032")
+        XCTAssertEqual(better.logoCaption, "[Oshi no Ko] 2nd Season")
+        XCTAssertEqual(better.title, entry.title)
+        XCTAssertEqual(better.subtitle, "E3")
+        XCTAssertEqual(better.imageURL, "cover")
+        XCTAssertEqual(better.progress, 0.5)
+        XCTAssertEqual(better.action, .details)
+        XCTAssertEqual(better.summary, "About")
+        XCTAssertEqual(better.tmdbId, 203737)
+        XCTAssertEqual(better.homeOrder, 2)
+        // Feeds written before the caption existed still read.
+        let old = try JSONEncoder().encode(entry)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: old) as? [String: Any])
+        object.removeValue(forKey: "logoCaption")
+        let decoded = try JSONDecoder().decode(TopShelfEntry.self, from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertNil(decoded.logoCaption)
+        XCTAssertEqual(decoded.title, entry.title)
+    }
+
     /// Settings → Rating Providers & Order: AniList is one of the rows, moved and switched like the others.
     func testAniListsScoreCanBeMovedAndSwitchedOff() throws {
         let suite = "anilist-ratings-\(UUID().uuidString)"
