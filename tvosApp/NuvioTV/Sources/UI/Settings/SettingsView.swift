@@ -18745,6 +18745,10 @@ private struct AIOExperimentSheet: View {
                             .font(.system(size: 26, weight: .bold))
                             .foregroundColor(statusColor)
                         if let page = aio.configurationPageURL, aio.phase == .running {
+                            Text("Configuration page — open it in a browser on your computer (it is not an add-on address):")
+                                .font(.system(size: 18, weight: .medium))
+                                .foregroundColor(.white.opacity(0.65))
+                                .fixedSize(horizontal: false, vertical: true)
                             Text(page)
                                 .font(.system(size: 24, weight: .semibold, design: .monospaced))
                                 .foregroundColor(.white)
@@ -18788,6 +18792,13 @@ private struct AIOExperimentSheet: View {
                     title: "Start with Nuvio",
                     subtitle: "Run AIOStreams whenever Nuvio runs",
                     isOn: Binding(get: { aio.autoStart }, set: { aio.setAutoStart($0) }),
+                    accentColor: accentColor
+                )
+
+                SettingsToggleRow(
+                    title: "Detailed AIOStreams log",
+                    subtitle: "Every request in the log, not only warnings and errors (from the next start)",
+                    isOn: Binding(get: { aio.detailedLog }, set: { aio.setDetailedLog($0) }),
                     accentColor: accentColor
                 )
 
@@ -18838,6 +18849,8 @@ private struct AIOExperimentSheet: View {
             }
             .settingsEntryAnchor()
         }
+        .onAppear { aio.setLogVisible(true) }
+        .onDisappear { aio.setLogVisible(false) }
     }
 
     private func logLine(_ line: String) -> some View {
@@ -18894,6 +18907,8 @@ private struct AIOExperimentSheet: View {
         if let node = aio.nodeMemoryMB { parts.append("Node.js \(node) MB") }
         if let app = aio.appMemoryMB { parts.append("Nuvio in total \(app) MB") }
         parts.append(aio.manifestURL == nil ? "No configuration saved yet" : "Addon added")
+        parts.append(aio.hasBackup ? "Configuration backed up" : "No backup yet")
+        if let warmUp = aio.lastWarmUp { parts.append("Warm-up: \(warmUp)") }
         return parts.joined(separator: " · ")
     }
 }

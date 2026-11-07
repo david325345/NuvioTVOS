@@ -11,9 +11,16 @@ import os
 /// runs `nuvio-main.mjs`, which starts AIOStreams on 127.0.0.1 and a proxy for
 /// its configuration page on the network.
 ///
-/// Node can be started once per app run. When the configuration page saves a
-/// configuration, `nuvio-main.mjs` writes its addon address to the state file
-/// and Nuvio adds that addon on this Apple TV only (never synced).
+/// Node can be started once per app run. When the configuration page creates,
+/// loads or saves a configuration, `nuvio-main.mjs` writes its addon address
+/// to the state file and a backup of it to the backup file. Nuvio remembers
+/// the address (so the addon is back after a restart), keeps the backup in the
+/// Keychain and, as tvOS keeps AIOStreams' database in Caches and may clear
+/// it, restores the configuration from the backup when AIOStreams no longer
+/// has it. The addon is added on this Apple TV only (never synced).
+///
+/// After each start, and after a long time in the background, one stream
+/// request warms AIOStreams up, so the first real search is not the slow one.
 ///
 /// Everything Node.js prints goes straight to a log file, and a crash or an
 /// exit() leaves a note with the native stack in it, so the next app run can
@@ -29,6 +36,11 @@ final class AIOExperiment: ObservableObject {
     private nonisolated static let addonKey = "aio.experiment.addonEnabled"
     private nonisolated static let secretKey = "aio.experiment.secret"
     private nonisolated static let runRecordKey = "aio.experiment.lastRun"
+    private nonisolated static let manifestKey = "aio.experiment.manifest"
+    private nonisolated static let detailedLogKey = "aio.experiment.detailedLog"
+    private nonisolated static let backupDefaultsKey = "aio.experiment.backup"
+    /// The movie the warm-up asks for (The Matrix).
+    private nonisolated static let warmUpID = "tt0133093"
 
     enum Phase: Equatable {
         case stopped
@@ -62,26 +74,44 @@ final class AIOExperiment: ObservableObject {
     @Published private(set) var logLines: [String] = []
     @Published private(set) var previousRun: PreviousRun?
     @Published private(set) var notice: String?
+    @Published private(set) var lastWarmUp: String?
+    @Published private(set) var hasBackup = false
     @Published private(set) var autoStart: Bool
     @Published private(set) var addonEnabled: Bool
+    @Published private(set) var detailedLog: Bool
 
     private var stateTimer: Timer?
+    private var logTimer: Timer?
+    private var logVisible = false
     private var started = false
     private var startDate: Date?
     private var markedReady = false
     private var lastStartUnfinished = false
+    /// The remembered configuration exists in AIOStreams (checked after each start).
+    private var configurationVerified = false
+    private var checkingConfiguration = false
+    private var warmingUp = false
+    private var backgroundSince: Date?
+    /// The addon address last seen in the state file (the page's doing).
+    private var lastStateManifest: String?
 
     private init() {
         autoStart = UserDefaults.standard.bool(forKey: Self.autoStartKey)
         addonEnabled = UserDefaults.standard.object(forKey: Self.addonKey) as? Bool ?? true
+        detailedLog = UserDefaults.standard.bool(forKey: Self.detailedLogKey)
+        manifestURL = UserDefaults.standard.string(forKey: Self.manifestKey)
         packageVersion = Self.packageInfo()
+        hasBackup = Self.loadBackup() != nil
         loadPreviousRun()
-        _ = NotificationCenter.default.addObserver(
-            forName: Notification.Name("UIApplicationDidReceiveMemoryWarningNotification"),
-            object: nil,
-            queue: nil
-        ) { _ in
+        let center = NotificationCenter.default
+        _ = center.addObserver(forName: Notification.Name("UIApplicationDidReceiveMemoryWarningNotification"), object: nil, queue: nil) { _ in
             Self.note("memory warning · \(Self.memoryDescription())")
+        }
+        _ = center.addObserver(forName: Notification.Name("UIApplicationDidEnterBackgroundNotification"), object: nil, queue: nil) { _ in
+            Task { @MainActor in AIOExperiment.shared.backgroundSince = Date() }
+        }
+        _ = center.addObserver(forName: Notification.Name("UIApplicationWillEnterForegroundNotification"), object: nil, queue: nil) { _ in
+            Task { @MainActor in AIOExperiment.shared.enteredForeground() }
         }
     }
 
@@ -90,19 +120,36 @@ final class AIOExperiment: ObservableObject {
     private nonisolated(unsafe) static var currentAddonURL: URL?
     private nonisolated static let addonLock = NSLock()
 
-    /// The AIOStreams addon while it runs and is turned on; read by
-    /// `CatalogRepository.configuredStreamAddonManifestURLs`.
+    /// The AIOStreams addon while it runs and is turned on.
     nonisolated static var addonManifestURLs: [URL] {
         addonLock.lock()
         defer { addonLock.unlock() }
         return currentAddonURL.map { [$0] } ?? []
     }
 
+    /// For `CatalogRepository.configuredStreamAddonManifestURLs`: the addon,
+    /// unless the same configuration was also added by hand (its address on
+    /// the network) — then once is enough.
+    nonisolated static func aioAddonURLs(besides installed: [URL]) -> [URL] {
+        addonManifestURLs.filter { url in
+            guard let uuid = uuid(fromManifest: url.absoluteString) else { return true }
+            return !installed.contains { $0.absoluteString.contains("/stremio/\(uuid)/") }
+        }
+    }
+
     private func publishAddon() {
-        let url = (phase == .running && addonEnabled) ? manifestURL.flatMap(URL.init(string:)) : nil
+        let url = (phase == .running && addonEnabled && configurationVerified) ? manifestURL.flatMap(URL.init(string:)) : nil
         Self.addonLock.lock()
         Self.currentAddonURL = url
         Self.addonLock.unlock()
+    }
+
+    nonisolated static func uuid(fromManifest manifest: String) -> String? {
+        guard let range = manifest.range(of: "/stremio/") else { return nil }
+        let rest = manifest[range.upperBound...]
+        guard let slash = rest.firstIndex(of: "/") else { return nil }
+        let uuid = String(rest[..<slash])
+        return uuid.isEmpty ? nil : uuid.removingPercentEncoding ?? uuid
     }
 
     // MARK: - Settings
@@ -116,6 +163,14 @@ final class AIOExperiment: ObservableObject {
         addonEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: Self.addonKey)
         publishAddon()
+        if enabled { Task { await warmUp() } }
+    }
+
+    /// Every request in AIOStreams' log (info) instead of warnings and errors
+    /// only; from the next start.
+    func setDetailedLog(_ enabled: Bool) {
+        detailedLog = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.detailedLogKey)
     }
 
     /// The configuration page from a computer on the same network.
@@ -138,7 +193,11 @@ final class AIOExperiment: ObservableObject {
             notice = "Not started automatically: the last start did not finish (see Last run). Start it here when you want to try again."
             return
         }
-        start()
+        // A moment for Nuvio's own start first.
+        Task {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            start()
+        }
     }
 
     func start() {
@@ -158,7 +217,7 @@ final class AIOExperiment: ObservableObject {
             return
         }
         // The database (with the saved configuration) belongs in Application
-        // Support; tvOS may refuse it, then Caches.
+        // Support; tvOS refuses it, then Caches (hence the backup).
         let support = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
         var dataDirectory = (support ?? caches).appendingPathComponent("AIOStreams", isDirectory: true)
         if (try? fileManager.createDirectory(at: dataDirectory, withIntermediateDirectories: true)) == nil {
@@ -172,6 +231,7 @@ final class AIOExperiment: ObservableObject {
             try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         }
         let stateFile = dataDirectory.appendingPathComponent("nuvio-state.json")
+        let backupFile = dataDirectory.appendingPathComponent("nuvio-backup.json")
         try? fileManager.removeItem(at: stateFile)
 
         let host = PluginHTTPServerCore.localIPv4Address() ?? "127.0.0.1"
@@ -185,12 +245,14 @@ final class AIOExperiment: ObservableObject {
             "PORT": String(Self.aioPort),
             "NUVIO_LAN_PORT": String(Self.lanPort),
             "NUVIO_STATE_FILE": stateFile.path,
+            "NUVIO_BACKUP_FILE": backupFile.path,
             "BASE_URL": "http://\(host):\(Self.lanPort)",
             "DATABASE_URI": "sqlite://" + (dataDirectory.appendingPathComponent("db.sqlite").path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? ""),
             "DISK_CACHE_DIR": cache.path,
             "SECRET_KEY": Self.secret(),
             "ANIME_DB_LEVEL_OF_DETAIL": "required",
-            "LOG_LEVEL": "info",
+            // Every request in the log costs work on the TV: warnings and errors unless asked.
+            "LOG_LEVEL": detailedLog ? "info" : "warn",
             // process.exit() would close Nuvio: nuvio-main.mjs turns it into a stop.
             "NUVIO_EMBEDDED": "1",
         ]
@@ -206,12 +268,15 @@ final class AIOExperiment: ObservableObject {
             .aio,
             nodeStart: nodeStart,
             arguments: ["node", "--max-old-space-size=1024", bootstrap.path, package.path, install.path],
-            stateFile: stateFile
+            stateFile: stateFile,
+            backupFile: backupFile
         )
+        Self.note("data: \(dataDirectory.path)")
     }
 
     /// Only Node.js with a short self-test, no AIOStreams: tells a crash of
-    /// Node.js itself on this Apple TV from one in AIOStreams.
+    /// Node.js itself on this Apple TV from one in AIOStreams, and measures
+    /// AIOStreams' way of downloading against Node.js' own.
     func testNodeOnly() {
         guard !started else { return }
         guard let nodeStart = Self.nodeStartFunction() else {
@@ -219,10 +284,10 @@ final class AIOExperiment: ObservableObject {
             return
         }
         setenv("TMPDIR", NSTemporaryDirectory(), 1)
-        launch(.nodeTest, nodeStart: nodeStart, arguments: ["node", "--input-type=module", "-e", Self.nodeTestScript], stateFile: nil)
+        launch(.nodeTest, nodeStart: nodeStart, arguments: ["node", "--input-type=module", "-e", Self.nodeTestScript], stateFile: nil, backupFile: nil)
     }
 
-    private func launch(_ kind: RunKind, nodeStart: NodeStart, arguments: [String], stateFile: URL?) {
+    private func launch(_ kind: RunKind, nodeStart: NodeStart, arguments: [String], stateFile: URL?, backupFile: URL?) {
         started = true
         runKind = kind
         startDate = Date()
@@ -249,21 +314,30 @@ final class AIOExperiment: ObservableObject {
         thread.qualityOfService = .userInitiated
         thread.start()
 
-        stateTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
+        scheduleStateTimer(every: 2, stateFile: stateFile, backupFile: backupFile)
+        if logVisible { startLogTimer() }
+    }
+
+    /// The state file every 2 s while AIOStreams starts, then every 5 s.
+    private func scheduleStateTimer(every seconds: TimeInterval, stateFile: URL?, backupFile: URL?) {
+        stateTimer?.invalidate()
+        stateTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: true) { _ in
             Task { @MainActor in
                 let shared = AIOExperiment.shared
-                if let stateFile { shared.readState(stateFile) }
-                shared.refreshLog()
+                if let stateFile { shared.readState(stateFile, backupFile: backupFile) }
+                if shared.runKind == .nodeTest { shared.refreshLog() }
             }
         }
     }
 
     // MARK: - State
 
-    private func readState(_ file: URL) {
+    private func readState(_ file: URL, backupFile: URL?) {
         appMemoryMB = Self.appFootprintMB()
+        if let backupFile { takeBackup(from: backupFile) }
         guard let data = try? Data(contentsOf: file),
               let state = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        let wasStarting = phase == .starting
         if let status = state["status"] as? String {
             switch (status, phase) {
             case ("running", .starting): phase = .running
@@ -275,17 +349,208 @@ final class AIOExperiment: ObservableObject {
         }
         if let seconds = state["startupSeconds"] as? Double { startupSeconds = seconds }
         if let rss = state["rssMB"] as? Int { nodeMemoryMB = rss }
-        if let manifest = state["manifest"] as? String { manifestURL = manifest }
+        if let manifest = state["manifest"] as? String, manifest != lastStateManifest {
+            // Created or loaded on the page just now: it exists.
+            lastStateManifest = manifest
+            manifestURL = manifest
+            UserDefaults.standard.set(manifest, forKey: Self.manifestKey)
+            configurationVerified = true
+            notice = nil
+            publishAddon()
+            Task { await warmUp() }
+        }
         if phase == .running, !markedReady {
             markedReady = true
             Self.saveRunRecord(kind: .aio, ready: true)
             Self.note("ready · \(Self.memoryDescription())")
+        }
+        if wasStarting, phase != .starting {
+            scheduleStateTimer(every: 5, stateFile: file, backupFile: backupFile)
+            if phase == .running { Task { await checkConfiguration() } }
         }
         publishAddon()
     }
 
     private nonisolated static func saveRunRecord(kind: RunKind, ready: Bool) {
         UserDefaults.standard.set(["kind": kind.rawValue, "ready": ready, "date": Date()], forKey: runRecordKey)
+    }
+
+    // MARK: - Configuration: check, backup, restore
+
+    /// After a start: does AIOStreams still have the remembered configuration?
+    /// If not, it comes back from the backup (as a new configuration with the
+    /// same settings and password), or Nuvio says so.
+    func checkConfiguration() async {
+        guard phase == .running, !checkingConfiguration else { return }
+        checkingConfiguration = true
+        defer { checkingConfiguration = false }
+        if let manifest = manifestURL, let uuid = Self.uuid(fromManifest: manifest) {
+            switch await Self.userExists(uuid) {
+            case .some(false):
+                Self.note("configuration \(uuid.prefix(8))… is no longer in AIOStreams")
+            default:
+                configurationVerified = true
+                publishAddon()
+                await warmUp()
+                return
+            }
+        }
+        guard let backup = Self.loadBackup(),
+              let config = backup["config"],
+              let password = backup["password"] as? String else {
+            if manifestURL != nil {
+                notice = "AIOStreams no longer has your configuration (tvOS may have cleared its storage). Open the configuration page and create or load it again."
+                forgetConfiguration()
+            }
+            return
+        }
+        guard let restored = await Self.createConfiguration(config: config, password: password) else {
+            notice = "Your configuration could not be restored from the backup (see the log). Open the configuration page and create or load it again."
+            forgetConfiguration()
+            return
+        }
+        Self.note("configuration restored from the backup as \(restored.uuid.prefix(8))…")
+        var updated = backup
+        updated["uuid"] = restored.uuid
+        if let data = try? JSONSerialization.data(withJSONObject: updated) { Self.saveBackup(data) }
+        manifestURL = restored.manifest
+        UserDefaults.standard.set(restored.manifest, forKey: Self.manifestKey)
+        configurationVerified = true
+        notice = nil
+        publishAddon()
+        await warmUp()
+    }
+
+    private func forgetConfiguration() {
+        manifestURL = nil
+        configurationVerified = false
+        UserDefaults.standard.removeObject(forKey: Self.manifestKey)
+        publishAddon()
+    }
+
+    /// The backup nuvio-main.mjs wrote moves to the Keychain.
+    private func takeBackup(from file: URL) {
+        guard let data = try? Data(contentsOf: file) else { return }
+        try? FileManager.default.removeItem(at: file)
+        if Self.saveBackup(data) {
+            hasBackup = true
+        }
+    }
+
+    /// true / false, or nil when AIOStreams did not answer.
+    private nonisolated static func userExists(_ uuid: String) async -> Bool? {
+        var components = URLComponents(string: "http://127.0.0.1:\(aioPort)/api/v1/user")
+        components?.queryItems = [URLQueryItem(name: "uuid", value: uuid)]
+        guard let url = components?.url else { return nil }
+        var request = URLRequest(url: url)
+        request.httpMethod = "HEAD"
+        request.timeoutInterval = 20
+        guard let (_, response) = try? await URLSession.shared.data(for: request),
+              let status = (response as? HTTPURLResponse)?.statusCode else { return nil }
+        if status == 200 { return true }
+        return (400..<500).contains(status) ? false : nil
+    }
+
+    private nonisolated static func createConfiguration(config: Any, password: String) async -> (uuid: String, manifest: String)? {
+        guard let url = URL(string: "http://127.0.0.1:\(aioPort)/api/v1/user"),
+              let body = try? JSONSerialization.data(withJSONObject: ["config": config, "password": password]) else { return nil }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        request.timeoutInterval = 60
+        guard let (data, response) = try? await URLSession.shared.data(for: request) else {
+            note("restore: AIOStreams did not answer")
+            return nil
+        }
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(status),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let answer = object["data"] as? [String: Any],
+              let uuid = answer["uuid"] as? String,
+              let encrypted = answer["encryptedPassword"] as? String else {
+            note("restore: HTTP \(status) \(String(decoding: data.prefix(300), as: UTF8.self))")
+            return nil
+        }
+        // As encodeURIComponent in nuvio-main.mjs.
+        let unreserved = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()")
+        let manifest = "http://127.0.0.1:\(aioPort)/stremio/\(uuid.addingPercentEncoding(withAllowedCharacters: unreserved) ?? uuid)/\(encrypted.addingPercentEncoding(withAllowedCharacters: unreserved) ?? encrypted)/manifest.json"
+        return (uuid, manifest)
+    }
+
+    // The backup (configuration and its password) lives in the Keychain; a
+    // build without Keychain access (unsigned simulator tests) keeps it in
+    // the user defaults instead.
+    private nonisolated static var backupQuery: [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "nuvio.aio.experiment",
+            kSecAttrAccount as String: "configuration",
+        ]
+    }
+
+    @discardableResult
+    private nonisolated static func saveBackup(_ data: Data) -> Bool {
+        let stored = (try? (data as NSData).compressed(using: .zlib) as Data) ?? data
+        SecItemDelete(backupQuery as CFDictionary)
+        var item = backupQuery
+        item[kSecValueData as String] = stored
+        item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        if SecItemAdd(item as CFDictionary, nil) == errSecSuccess {
+            UserDefaults.standard.removeObject(forKey: backupDefaultsKey)
+            return true
+        }
+        UserDefaults.standard.set(stored, forKey: backupDefaultsKey)
+        return true
+    }
+
+    private nonisolated static func loadBackup() -> [String: Any]? {
+        var query = backupQuery
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        var stored: Data?
+        if SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess {
+            stored = item as? Data
+        }
+        if stored == nil { stored = UserDefaults.standard.data(forKey: backupDefaultsKey) }
+        guard let stored else { return nil }
+        let data = (try? (stored as NSData).decompressed(using: .zlib) as Data) ?? stored
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+    // MARK: - Warm-up
+
+    /// One stream request through the whole of AIOStreams (its addons, debrid,
+    /// filters) and its connections, so the first real search is quick.
+    func warmUp() async {
+        guard phase == .running, addonEnabled, configurationVerified, !warmingUp,
+              let manifest = manifestURL,
+              let url = URL(string: manifest.replacingOccurrences(of: "/manifest.json", with: "/stream/movie/\(Self.warmUpID).json")) else { return }
+        warmingUp = true
+        defer { warmingUp = false }
+        let begin = Date()
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 90
+        let result: String
+        if let (data, response) = try? await URLSession.shared.data(for: request) {
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let streams = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["streams"] as? [Any]
+            result = status == 200
+                ? "\(streams?.count ?? 0) streams in \(String(format: "%.1f", Date().timeIntervalSince(begin))) s"
+                : "HTTP \(status) after \(String(format: "%.1f", Date().timeIntervalSince(begin))) s"
+        } else {
+            result = "no answer after \(String(format: "%.1f", Date().timeIntervalSince(begin))) s"
+        }
+        lastWarmUp = result
+        Self.note("warm-up: \(result)")
+    }
+
+    /// Back from the background after a while: connections have gone stale.
+    private func enteredForeground() {
+        defer { backgroundSince = nil }
+        guard let since = backgroundSince, Date().timeIntervalSince(since) > 600 else { return }
+        Task { await warmUp() }
     }
 
     // MARK: - Log file
@@ -318,10 +583,29 @@ final class AIOExperiment: ObservableObject {
         line.withCString { _ = write(descriptor, $0, strlen($0)) }
     }
 
+    /// The log is read only while it is on screen (the AIOStreams sheet).
+    func setLogVisible(_ visible: Bool) {
+        logVisible = visible
+        if visible {
+            refreshLog()
+            startLogTimer()
+        } else {
+            logTimer?.invalidate()
+            logTimer = nil
+        }
+    }
+
+    private func startLogTimer() {
+        logTimer?.invalidate()
+        logTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
+            Task { @MainActor in AIOExperiment.shared.refreshLog() }
+        }
+    }
+
     func refreshLog() {
         guard let text = Self.tail(of: Self.logFile, bytes: 48 * 1024) else { return }
         logLines = Array(text.split(separator: "\n").suffix(400).map { Self.shorten(String($0)) })
-        // AIOStreams logs every request: keep the file small.
+        // With a detailed log AIOStreams logs every request: keep the file small.
         let size = (try? FileManager.default.attributesOfItem(atPath: Self.logFile.path))?[.size] as? UInt64 ?? 0
         if size > 16 << 20, aioLogDescriptor >= 0 {
             ftruncate(aioLogDescriptor, 0)
@@ -448,6 +732,9 @@ final class AIOExperiment: ObservableObject {
     }
 
     /// What "Test Node.js only" runs: each step prints its result or its error.
+    /// The downloads compare AIOStreams' way (fetch: undici, whose HTTP parser
+    /// is WebAssembly, emulated in JavaScript on Apple TV) with Node.js' own
+    /// native parser (node:https).
     private nonisolated static let nodeTestScript = #"""
     const out = (text) => console.log('[node-test] ' + text);
     const step = async (name, run) => {
@@ -472,7 +759,28 @@ final class AIOExperiment: ObservableObject {
     });
     await step('fetch https', async () => { const response = await fetch('https://www.apple.com/library/test/success.html'); return `${response.status}, ${(await response.text()).length} B`; });
     await step('cpu', () => { let sum = 0; for (let i = 0; i < 20000000; i++) sum += i % 7; return `20M loop, sum ${sum}`; });
+    const https = await import('node:https');
+    const agent = new https.Agent({ keepAlive: true });
+    const big = 'https://cdn.jsdelivr.net/npm/typescript@5.6.3/lib/typescript.js';
+    const small = 'https://cdn.jsdelivr.net/npm/ms@2.1.3/package.json';
+    const viaFetch = async (url) => (await (await fetch(url, { headers: { 'accept-encoding': 'identity' } })).arrayBuffer()).byteLength;
+    const viaHttps = (url) => new Promise((resolve, reject) => {
+      https.get(url, { agent, headers: { 'accept-encoding': 'identity' } }, (response) => {
+        let bytes = 0;
+        response.on('data', (chunk) => { bytes += chunk.length; });
+        response.on('end', () => resolve(bytes));
+        response.on('error', reject);
+      }).on('error', reject);
+    });
+    const mb = (bytes) => `${(bytes / 1048576).toFixed(1)} MB`;
+    for (const round of [1, 2]) {
+      await step(`big download, fetch (AIOStreams' way) #${round}`, async () => mb(await viaFetch(big)));
+      await step(`big download, node:https (native) #${round}`, async () => mb(await viaHttps(big)));
+    }
+    await step('20 small requests, fetch', async () => { for (let i = 0; i < 20; i++) await viaFetch(small); return 'done'; });
+    await step('20 small requests, node:https', async () => { for (let i = 0; i < 20; i++) await viaHttps(small); return 'done'; });
     await step('memory after', () => `${Math.round(process.memoryUsage().rss / 1048576)} MB`);
+    agent.destroy();
     out('done');
     """#
 

@@ -5,23 +5,28 @@
 //   PORT              AIOStreams' own port; bound to 127.0.0.1 only
 //   NUVIO_LAN_PORT    the port the configuration page is reachable on from the network
 //   NUVIO_STATE_FILE  where the addon address of a saved configuration is written
+//   NUVIO_BACKUP_FILE where a copy of the configuration (with its password) is
+//                     written; Nuvio moves it to the Keychain at once
 // plus AIOStreams' usual environment (DATABASE_URI, SECRET_KEY, BASE_URL …).
 //
 // The network port is a small proxy in front of AIOStreams. It forwards every
-// request unchanged and watches one thing: when the configuration page saves
-// a new configuration (POST /api/v1/user), the answer carries its uuid and
-// encrypted password, and Nuvio gets the addon address from NUVIO_STATE_FILE —
-// nothing to copy by hand.
+// request unchanged and watches the configuration page's user API: creating a
+// configuration (POST /api/v1/user), loading one with its uuid and password
+// (session + GET) and saving changes (PUT). From those Nuvio gets the addon
+// address (NUVIO_STATE_FILE) — nothing to copy by hand — and a backup of the
+// configuration: tvOS keeps AIOStreams' database in Caches, which it may clear.
 import http from 'node:http';
 import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { pathToFileURL } from 'node:url';
 
 const aioRoot = process.env.AIO_ROOT;
 const aioPort = Number(process.env.PORT || 8770);
 const lanPort = Number(process.env.NUVIO_LAN_PORT || 0);
 const stateFile = process.env.NUVIO_STATE_FILE;
+const backupFile = process.env.NUVIO_BACKUP_FILE;
 const started = Date.now();
 
 function log(message) {
@@ -53,34 +58,91 @@ function writeState(update) {
   fs.renameSync(`${stateFile}.tmp`, stateFile);
 }
 
-function findCredentials(value) {
-  if (!value || typeof value !== 'object') return null;
-  if (typeof value.uuid === 'string' && typeof value.encryptedPassword === 'string') {
-    return { uuid: value.uuid, encryptedPassword: value.encryptedPassword };
-  }
-  for (const child of Object.values(value)) {
-    const found = findCredentials(child);
-    if (found) return found;
-  }
-  return null;
+// The configuration page's user API: 'user' (/api/v1/user) or 'session'
+// (/api/v1/user/session, logging in with uuid and password).
+function userApi(request) {
+  const match = /^\/api\/v\d+\/user(\/session)?\/?(\?|$)/.exec(request.url || '');
+  if (!match || !['GET', 'POST', 'PUT'].includes(request.method)) return null;
+  return match[1] ? 'session' : 'user';
 }
 
-function rememberConfiguration(body) {
+function basicCredentials(request) {
+  const match = /^Basic\s+(.+)$/i.exec(request.headers.authorization || '');
+  if (!match) return null;
+  const text = Buffer.from(match[1], 'base64').toString('utf8');
+  const colon = text.indexOf(':');
+  return colon > 0 ? { uuid: text.slice(0, colon), password: text.slice(colon + 1) } : null;
+}
+
+function decoded(buffer, encoding) {
+  switch ((encoding || '').toLowerCase()) {
+    case 'gzip': return zlib.gunzipSync(buffer);
+    case 'deflate': return zlib.inflateSync(buffer);
+    case 'br': return zlib.brotliDecompressSync(buffer);
+    default: return buffer;
+  }
+}
+
+function parsed(text) {
   try {
-    const credentials = findCredentials(JSON.parse(body));
-    if (!credentials) return;
-    const manifest = `http://127.0.0.1:${aioPort}/stremio/${encodeURIComponent(credentials.uuid)}/${encodeURIComponent(credentials.encryptedPassword)}/manifest.json`;
-    writeState({ manifest });
-    log(`configuration saved, addon: /stremio/${credentials.uuid}/…/manifest.json`);
-  } catch (error) {
-    log(`could not read the saved configuration: ${error.message}`);
+    return text ? JSON.parse(text) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveAddon(uuid, encryptedPassword) {
+  const manifest = `http://127.0.0.1:${aioPort}/stremio/${encodeURIComponent(uuid)}/${encodeURIComponent(encryptedPassword)}/manifest.json`;
+  writeState({ manifest });
+  log(`configuration ${uuid.slice(0, 8)}… in use, addon: /stremio/${uuid.slice(0, 8)}…/manifest.json`);
+}
+
+function saveBackup(uuid, password, config) {
+  if (!backupFile || !config || typeof password !== 'string') return;
+  fs.mkdirSync(path.dirname(backupFile), { recursive: true });
+  fs.writeFileSync(`${backupFile}.tmp`, JSON.stringify({ uuid, password, config, savedAt: new Date().toISOString() }));
+  fs.renameSync(`${backupFile}.tmp`, backupFile);
+  log(`configuration ${uuid.slice(0, 8)}… backed up`);
+}
+
+let sessionCredentials = null; // the last login on the page
+
+function observe(kind, request, requestBody, answer) {
+  const body = parsed(requestBody.toString('utf8'));
+  const data = (parsed(decoded(answer.body, answer.headers['content-encoding']).toString('utf8')).data) || {};
+  const credentials = basicCredentials(request) || sessionCredentials;
+  if (kind === 'session') {
+    if (request.method === 'POST' && typeof body.uuid === 'string' && typeof body.password === 'string') {
+      sessionCredentials = { uuid: typeof data.uuid === 'string' ? data.uuid : body.uuid, password: body.password };
+    }
+    return;
+  }
+  if (request.method === 'POST') {
+    // A new configuration.
+    if (typeof data.uuid === 'string' && typeof data.encryptedPassword === 'string') {
+      saveAddon(data.uuid, data.encryptedPassword);
+      saveBackup(data.uuid, body.password, body.config);
+    }
+  } else if (request.method === 'GET') {
+    // An existing configuration, loaded with its uuid and password.
+    const uuid = (data.userData && data.userData.uuid) || (credentials && credentials.uuid);
+    if (uuid && typeof data.encryptedPassword === 'string') {
+      saveAddon(uuid, data.encryptedPassword);
+      if (credentials) saveBackup(uuid, credentials.password, data.userData);
+    }
+  } else if (request.method === 'PUT') {
+    // Changes saved.
+    const uuid = data.uuid || (credentials && credentials.uuid);
+    if (uuid && credentials) saveBackup(uuid, credentials.password, body.config);
   }
 }
 
 function startProxy() {
   if (!lanPort) return;
   const proxy = http.createServer((request, response) => {
-    const watch = request.method === 'POST' && /^\/api\/v\d+\/user\/?(\?|$)/.test(request.url || '');
+    const watch = userApi(request);
+    const requestChunks = [];
+    if (watch) request.on('data', (chunk) => requestChunks.push(chunk));
     const upstream = http.request(
       { host: '127.0.0.1', port: aioPort, method: request.method, path: request.url, headers: request.headers },
       (answer) => {
@@ -96,7 +158,11 @@ function startProxy() {
         });
         answer.on('end', () => {
           response.end();
-          rememberConfiguration(Buffer.concat(chunks).toString('utf8'));
+          try {
+            observe(watch, request, Buffer.concat(requestChunks), { headers: answer.headers, body: Buffer.concat(chunks) });
+          } catch (error) {
+            log(`could not read the configuration page's request: ${error.message}`);
+          }
         });
       }
     );
@@ -174,4 +240,4 @@ writeState({ status: ready ? 'running' : 'not answering', startupSeconds: Number
 log(ready ? `AIOStreams is ready in ${seconds} s, ${memory} MB` : `AIOStreams did not answer within 5 minutes`);
 setInterval(() => {
   writeState({ rssMB: Math.round(process.memoryUsage().rss / 1048576), heapMB: Math.round(process.memoryUsage().heapUsed / 1048576) });
-}, 15000).unref();
+}, 60000).unref();

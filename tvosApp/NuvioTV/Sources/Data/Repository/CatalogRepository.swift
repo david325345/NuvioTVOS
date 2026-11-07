@@ -1308,7 +1308,7 @@ final class CinemetaCatalogRepository: CatalogRepository {
         }
         // Plugins with catalogs, metadata or ratings act as add-ons that exist
         // only on this Apple TV; they are never part of the synced add-on list.
-        return installed + PluginAddonRegistry.shared.manifestURLs + AIOExperiment.addonManifestURLs
+        return installed + PluginAddonRegistry.shared.manifestURLs + AIOExperiment.aioAddonURLs(besides: installed)
     }
 
     static func configuredStreamAddonPreferences(in defaults: UserDefaults = ProfileSettings.current) -> [StreamAddonPreference] {

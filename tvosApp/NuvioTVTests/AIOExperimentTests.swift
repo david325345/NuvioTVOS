@@ -4,7 +4,9 @@
 //
 //  Fork branch aio-node only: starts the original AIOStreams in Node.js inside
 //  the app on the tvOS simulator, saves a configuration like its page does and
-//  asks the resulting addon for streams. Prints the timings and the log.
+//  asks the resulting addon for streams; then checks the backup, the warm-up
+//  and that a configuration AIOStreams lost comes back from the backup.
+//  Prints the timings and the log.
 //
 
 import XCTest
@@ -18,6 +20,7 @@ final class AIOExperimentTests: XCTestCase {
         let aio = AIOExperiment.shared
         let started = Date()
         aio.start()
+        aio.setLogVisible(true)
 
         try await waitUntil(seconds: 300) {
             switch aio.phase {
@@ -49,7 +52,7 @@ final class AIOExperimentTests: XCTestCase {
         let (created, response) = try await URLSession.shared.data(for: request)
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 201, String(decoding: created.prefix(400), as: UTF8.self))
 
-        try await waitUntil(seconds: 10) { aio.manifestURL != nil }
+        try await waitUntil(seconds: 15) { aio.manifestURL != nil }
         let manifest = try XCTUnwrap(aio.manifestURL, "Nuvio did not get the addon address")
         XCTAssertEqual(AIOExperiment.addonManifestURLs.map(\.absoluteString), [manifest], "the addon is offered to Nuvio")
         let manifestStatus = try await status(manifest)
@@ -64,6 +67,29 @@ final class AIOExperimentTests: XCTestCase {
             note("AIO-TEST stream request \(attempt): \(streams.count) streams in \(Int(Date().timeIntervalSince(begin) * 1000)) ms; first: \(String(describing: streams.first?["name"] ?? "-"))")
         }
         note("AIO-TEST ready in \(aio.startupSeconds ?? -1) s · Node \(aio.nodeMemoryMB ?? -1) MB · app \(aio.appMemoryMB ?? -1) MB · \(aio.packageVersion)")
+
+        // The configuration page's save left a backup, and the warm-up ran.
+        try await waitUntil(seconds: 15) { aio.hasBackup }
+        XCTAssertTrue(aio.hasBackup, "the configuration is backed up")
+        try await waitUntil(seconds: 120) { aio.lastWarmUp != nil }
+        note("AIO-TEST warm-up: \(aio.lastWarmUp ?? "did not run")")
+        XCTAssertNotNil(aio.lastWarmUp)
+
+        // AIOStreams loses the configuration (as when tvOS clears Caches):
+        // Nuvio restores it from the backup, with a new addon address.
+        let uuid = try XCTUnwrap(AIOExperiment.uuid(fromManifest: manifest))
+        var delete = URLRequest(url: URL(string: "\(local)/api/v1/user")!)
+        delete.httpMethod = "DELETE"
+        delete.setValue("Basic " + Data("\(uuid):nuvio-simulator-test".utf8).base64EncodedString(), forHTTPHeaderField: "Authorization")
+        let (deleted, deleteResponse) = try await URLSession.shared.data(for: delete)
+        XCTAssertEqual((deleteResponse as? HTTPURLResponse)?.statusCode, 200, String(decoding: deleted.prefix(300), as: UTF8.self))
+        await aio.checkConfiguration()
+        let restored = try XCTUnwrap(aio.manifestURL, "restored from the backup")
+        XCTAssertNotEqual(restored, manifest)
+        XCTAssertEqual(AIOExperiment.addonManifestURLs.map(\.absoluteString), [restored])
+        let restoredStreams = try await status(restored.replacingOccurrences(of: "/manifest.json", with: "/stream/movie/tt0133093.json"))
+        XCTAssertEqual(restoredStreams, 200)
+        note("AIO-TEST restore: \(AIOExperiment.uuid(fromManifest: restored) ?? "?") replaces \(uuid), streams HTTP \(restoredStreams)")
         note("AIO-TEST log:\n" + aio.logLines.suffix(60).joined(separator: "\n"))
     }
 
