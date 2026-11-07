@@ -137,6 +137,30 @@ struct AniListTag: Decodable, Hashable {
 struct AniListPage: Decodable {
     var pageInfo: AniListPageInfo? = nil
     var media: [AniListMedia]? = nil
+
+    init(pageInfo: AniListPageInfo? = nil, media: [AniListMedia]? = nil) {
+        self.pageInfo = pageInfo
+        self.media = media
+    }
+
+    private enum CodingKeys: String, CodingKey { case pageInfo, media }
+
+    /// `media` as a list (a Page), or as a connection with `nodes` (a studio's titles).
+    private struct Connection: Decodable {
+        var pageInfo: AniListPageInfo? = nil
+        var nodes: [AniListMedia]? = nil
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        pageInfo = try container.decodeIfPresent(AniListPageInfo.self, forKey: .pageInfo)
+        if let list = try? container.decodeIfPresent([AniListMedia].self, forKey: .media) {
+            media = list
+        } else if let connection = try? container.decodeIfPresent(Connection.self, forKey: .media) {
+            media = connection.nodes
+            pageInfo = pageInfo ?? connection.pageInfo
+        }
+    }
 }
 
 struct AniListPageInfo: Decodable {

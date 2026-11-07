@@ -2014,7 +2014,28 @@ enum MdbListDetailsService {
         }
     }
 
+    /// MDBList's ratings; with MyAnimeList on, the MAL score straight from MAL instead of
+    /// MDBList's copy (MDBList's stays when MAL has none to give).
     static func fetchRatings(for meta: NuvioMeta) async -> [NuvioExternalRating] {
+        let defaults = ProfileSettings.current
+        let malKey = providerSettings[providerMyAnimeList] ?? ""
+        let showsMAL = defaults.object(forKey: malKey) == nil || defaults.bool(forKey: malKey)
+        async let ownMAL = ownMALScore(for: meta, shows: showsMAL)
+        var ratings = await mdbListRatings(for: meta)
+        guard let mal = await ownMAL else { return ratings }
+        ratings.removeAll { $0.source == providerMyAnimeList }
+        ratings.append(mal)
+        return ratings.sorted {
+            (providerPriorityOrder.firstIndex(of: $0.source) ?? Int.max) < (providerPriorityOrder.firstIndex(of: $1.source) ?? Int.max)
+        }
+    }
+
+    private static func ownMALScore(for meta: NuvioMeta, shows: Bool) async -> NuvioExternalRating? {
+        guard shows else { return nil }
+        return await MALCatalogs.seriesScore(for: meta)
+    }
+
+    private static func mdbListRatings(for meta: NuvioMeta) async -> [NuvioExternalRating] {
         let defaults = ProfileSettings.current
         guard defaults.bool(forKey: SettingsKey.mdbListEnabled),
               let apiKey = defaults.string(forKey: SettingsKey.mdbListApiKey)?

@@ -11,6 +11,9 @@ import Network
 final class AniListLoginServer: @unchecked Sendable {
     static let port: UInt16 = 47811
     static let path = "/anilist"
+    /// MyAnimeList sends the phone here with `?code=…&state=…`; the Apple TV trades the code for
+    /// the login itself (`exchange`), so this route needs no script.
+    static let malPath = "/mal"
     static let lifetime: TimeInterval = 600
 
     enum State: Equatable, Sendable {
@@ -33,22 +36,31 @@ final class AniListLoginServer: @unchecked Sendable {
     private var busy = false
     private var session: UUID?
     private var callback: (@Sendable (State) -> Void)?
+    private var exchange: (@Sendable (String) async throws -> String)?
 
     /// The Redirect URL to give AniList: this Apple TV's address in the home network.
-    static func redirectURL() -> URL? {
+    static func redirectURL(path: String = AniListLoginServer.path) -> URL? {
         localIPv4Address().flatMap { URL(string: "http://\($0):\(port)\(path)") }
     }
 
     /// Listens for the phone. `expectedState` is the `state` of the address the QR code opens; a
     /// token coming back with another one was asked for elsewhere and is refused. `session`
     /// names this start, so a late `stop` of an earlier one leaves it running.
-    func start(session: UUID, expectedState: String, changed: @escaping @Sendable (State) -> Void) {
+    /// `exchange` makes this a MyAnimeList login: the code MAL returns is given to it, and the
+    /// name it answers is who logged in.
+    func start(
+        session: UUID,
+        expectedState: String,
+        exchange: (@Sendable (String) async throws -> String)? = nil,
+        changed: @escaping @Sendable (State) -> Void
+    ) {
         queue.async {
             self.stopOnQueue()
             self.session = session
             self.callback = changed
             self.expectedState = expectedState
-            guard let redirect = Self.redirectURL(), let port = NWEndpoint.Port(rawValue: Self.port) else {
+            self.exchange = exchange
+            guard let redirect = Self.redirectURL(path: exchange == nil ? Self.path : Self.malPath), let port = NWEndpoint.Port(rawValue: Self.port) else {
                 changed(.failed("This Apple TV isn't on a home network."))
                 return
             }
@@ -132,6 +144,7 @@ final class AniListLoginServer: @unchecked Sendable {
         for connection in connections.values { connection.cancel() }
         connections.removeAll()
         callback = nil
+        exchange = nil
         busy = false
     }
 
@@ -158,6 +171,10 @@ final class AniListLoginServer: @unchecked Sendable {
                 self.send(Self.response(status: "404 Not Found", type: "text/plain", body: Data()), on: connection, id: id)
             case .token(let token, let state):
                 self.logIn(token: token, state: state, connection: connection, id: id)
+            case .code(let code, let state):
+                self.trade(code: code, state: state, connection: connection, id: id)
+            case .codeRefused(let message):
+                self.sendPage(ok: false, message: message, connection: connection, id: id)
             }
         }
     }
@@ -202,6 +219,70 @@ final class AniListLoginServer: @unchecked Sendable {
         }
     }
 
+    /// MyAnimeList's code, traded for the login by `exchange`; the phone gets a page saying how it went.
+    private func trade(code: String, state: String?, connection: NWConnection, id: UUID) {
+        guard let exchange else {
+            sendPage(ok: false, message: "Start the MyAnimeList login on your Apple TV first.", connection: connection, id: id)
+            return
+        }
+        guard state == expectedState else {
+            sendPage(ok: false, message: "This login was started on another device. Scan the QR code on your Apple TV again.", connection: connection, id: id)
+            return
+        }
+        guard !busy else {
+            sendPage(ok: false, message: "Your Apple TV is already logging in.", connection: connection, id: id)
+            return
+        }
+        busy = true
+        let current = generation
+        callback?(.loggingIn)
+        Task { [weak self] in
+            let ok: Bool
+            let message: String
+            let outcome: State
+            do {
+                let name = try await exchange(code)
+                ok = true
+                message = "Logged in to MyAnimeList as \(name). You can close this page."
+                outcome = .loggedIn(name)
+            } catch {
+                ok = false
+                message = error.localizedDescription
+                outcome = .failed(error.localizedDescription)
+            }
+            guard let self else { return }
+            self.queue.async {
+                guard self.generation == current else { return }
+                self.busy = false
+                let callback = self.callback
+                self.sendPage(ok: ok, message: message, connection: connection, id: id) {
+                    if ok, self.generation == current { self.stopOnQueue() }
+                }
+                callback?(outcome)
+            }
+        }
+    }
+
+    private func sendPage(ok: Bool, message: String, connection: NWConnection, id: UUID, then: (() -> Void)? = nil) {
+        let body = Data(Self.resultPage(ok: ok, message: message).utf8)
+        send(Self.response(status: "200 OK", type: "text/html; charset=utf-8", body: body), on: connection, id: id, then: then)
+    }
+
+    static func resultPage(ok: Bool, message: String) -> String {
+        let escaped = message
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+        return """
+        <!doctype html>
+        <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+        <title>Nuvio · MyAnimeList</title>
+        <style>body{font:18px -apple-system,system-ui,sans-serif;background:#101114;color:#eee;margin:0;padding:48px 24px;text-align:center}
+        h1{font-size:24px;margin:0 0 16px}p{line-height:1.45}.ok{color:#7ddc8a}.err{color:#ff8a80}</style></head>
+        <body><h1>Nuvio · MyAnimeList</h1><p class="\(ok ? "ok" : "err")">\(escaped)</p></body></html>
+        """
+    }
+
     private func answer(ok: Bool, message: String, connection: NWConnection, id: UUID, then: (() -> Void)? = nil) {
         let body = (try? JSONSerialization.data(withJSONObject: ["ok": ok, "message": message])) ?? Data()
         send(Self.response(status: "200 OK", type: "application/json", body: body), on: connection, id: id, then: then)
@@ -228,6 +309,10 @@ final class AniListLoginServer: @unchecked Sendable {
         case notFound
         /// The token the page posts back, with the `state` AniList returned, if it did.
         case token(String, state: String?)
+        /// MyAnimeList's code and `state`.
+        case code(String, state: String?)
+        /// MyAnimeList said no (the viewer cancelled, or the client is set up wrong).
+        case codeRefused(String)
     }
 
     static func parse(_ request: Data) -> Request {
@@ -254,6 +339,14 @@ final class AniListLoginServer: @unchecked Sendable {
         switch (method, route) {
         case ("GET", path), ("GET", path + "/"):
             return .page
+        case ("GET", malPath), ("GET", malPath + "/"):
+            let query = target.split(separator: "?", maxSplits: 1).dropFirst().first.map(String.init) ?? ""
+            let fields = formFields(query)
+            if let code = fields["code"], !code.isEmpty {
+                return .code(code, state: fields["state"])
+            }
+            let reason = fields["error_description"] ?? fields["message"] ?? fields["error"] ?? "No login arrived."
+            return .codeRefused("MyAnimeList: \(reason)")
         case ("POST", path + "/token"):
             let body = request[headerEnd.upperBound...]
             guard body.count >= contentLength else { return .incomplete }

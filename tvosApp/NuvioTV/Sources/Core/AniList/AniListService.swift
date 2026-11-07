@@ -28,7 +28,7 @@ enum AniListService {
     private static let decoder = JSONDecoder()
 
     static func isAniListTitle(_ id: String) -> Bool {
-        AniListSettings.isEnabled && AniListMetaBuilder.isAniListID(id)
+        AniListSettings.opensTitles && AniListMetaBuilder.isAniListID(id)
     }
 
     private static var isAdultVariable: Bool? {
@@ -56,18 +56,21 @@ enum AniListService {
         )
     }
 
-    /// The viewer's lists first (when logged in), then the AniList rows that Layout doesn't hide.
+    /// The viewer's lists first (when logged in), then the AniList rows that Layout doesn't hide,
+    /// then MyAnimeList's (MAL Catalogs), which open as AniList titles.
     static func homeCatalogs() async -> [NuvioCatalog] {
-        guard AniListSettings.isEnabled else { return [] }
+        guard AniListSettings.opensTitles else { return [] }
         // The offline tables, downloaded when missing or a week old (in the background).
         Task.detached(priority: .background) { await AniListOfflineMaps.shared.refreshIfStale() }
-        guard AniListSettings.showsHomeRows else {
-            AniListDiagnostics.note(.home, "Off: AniList Rows on Home is off")
-            return []
+        async let mal = MALCatalogs.homeCatalogs()
+        guard AniListSettings.isEnabled else { return await mal }
+        guard !AniListCatalogs.chosen().isEmpty else {
+            AniListDiagnostics.note(.home, "Off: no AniList catalog is chosen")
+            return await mal
         }
         async let lists = listCatalogs()
         let rows = await browseCatalogs()
-        return await lists + rows
+        return await lists + rows + mal
     }
 
     static func listSettingsKey(_ rowID: String) -> String {
@@ -114,48 +117,45 @@ enum AniListService {
         }
     }
 
-    /// The AniList rows that Layout doesn't hide, in one request.
+    /// Rows asked together: AniList refuses a query that asks too much at once.
+    static let rowsPerRequest = 6
+
+    /// The AniList rows that Layout doesn't hide, a few per request.
     private static func browseCatalogs() async -> [NuvioCatalog] {
         let disabled = TVHomeCatalogOrder.disabledCatalogKeys()
         let rows = AniListHomeRow.all.filter { !disabled.contains(catalogSettingsKey($0)) }
         guard !rows.isEmpty else {
-            AniListDiagnostics.note(.home, "Every AniList row is hidden in Layout")
+            AniListDiagnostics.note(.home, "No AniList row to show (AniList Catalogs, Layout)")
             return []
         }
 
-        let current = AniListSeason.current()
-        let next = AniListSeason.next()
-        var variables: [String: Any?] = ["perPage": homeRowSize, "isAdult": isAdultVariable]
-        if rows.contains(where: \.usesSeason) {
-            variables["season"] = current.season
-            variables["seasonYear"] = current.year
+        var pages: [String: AniListPage] = [:]
+        var lastAnswer: AniListClient.Answer?
+        var failure: String?
+        for start in stride(from: 0, to: rows.count, by: rowsPerRequest) {
+            let chunk = Array(rows[start..<min(start + rowsPerRequest, rows.count)])
+            do {
+                let answer = try await AniListClient.shared.answer(
+                    AniListQueries.homeRows(chunk), variables: homeVariables(for: chunk), ttl: catalogTTL
+                )
+                lastAnswer = answer
+                let decoded = try decoder.decode(AniListAliasedPagesResponse.self, from: answer.data).data ?? [:]
+                pages.merge(decoded) { _, new in new }
+            } catch {
+                failure = AniListDiagnostics.describe(error)
+            }
         }
-        if rows.contains(where: \.usesNextSeason) {
-            variables["nextSeason"] = next.season
-            variables["nextSeasonYear"] = next.year
-        }
-
-        let answer: AniListClient.Answer
-        do {
-            answer = try await AniListClient.shared.answer(
-                AniListQueries.homeRows(rows), variables: variables, ttl: catalogTTL
-            )
-        } catch {
-            AniListDiagnostics.note(.home, "Failed: \(AniListDiagnostics.describe(error))")
-            return []
-        }
-        let pages: [String: AniListPage]
-        do {
-            pages = try decoder.decode(AniListAliasedPagesResponse.self, from: answer.data).data ?? [:]
-        } catch {
-            await AniListClient.shared.noteFailure("Unreadable Home answer: \(error)")
-            AniListDiagnostics.note(.home, "Unreadable answer · \(AniListDiagnostics.source(answer))")
+        if pages.isEmpty, let failure {
+            AniListDiagnostics.note(.home, "Failed: \(failure)")
             return []
         }
 
         let language = AniListSettings.titleLanguage
+        let adult = AniListSettings.showsAdult
         let catalogs: [NuvioCatalog] = rows.compactMap { row in
-            let items = (pages[row.id]?.media ?? []).map { AniListMetaBuilder.card($0, language: language) }
+            var media = pages[row.alias]?.media ?? []
+            if row.studio != nil, !adult { media = media.filter { $0.isAdult != true } }
+            let items = media.map { AniListMetaBuilder.card($0, language: language) }
             guard !items.isEmpty else { return nil }
             let title = catalogDisplayTitle(row)
             return NuvioCatalog(
@@ -171,17 +171,40 @@ enum AniListService {
             )
         }
         let titles = catalogs.reduce(0) { $0 + ($1.items?.count ?? 0) }
+        let source = lastAnswer.map { AniListDiagnostics.source($0) } ?? "no answer"
         AniListDiagnostics.note(
             .home,
             catalogs.isEmpty
-                ? "AniList answered with no titles · \(AniListDiagnostics.source(answer))"
-                : "\(catalogs.count) of \(rows.count) rows, \(titles) titles · \(AniListDiagnostics.source(answer))"
+                ? "AniList answered with no titles · \(source)"
+                : "\(catalogs.count) of \(rows.count) rows, \(titles) titles · \(source)"
         )
         return catalogs
     }
 
-    /// See All for an AniList row.
+    /// The variables the rows of one request use, and no others.
+    static func homeVariables(for rows: [AniListHomeRow]) -> [String: Any?] {
+        var variables: [String: Any?] = ["perPage": homeRowSize]
+        if rows.contains(where: { $0.studio == nil }) {
+            variables["isAdult"] = isAdultVariable
+        }
+        if rows.contains(where: \.usesSeason) {
+            let current = AniListSeason.current()
+            variables["season"] = current.season
+            variables["seasonYear"] = current.year
+        }
+        if rows.contains(where: \.usesNextSeason) {
+            let next = AniListSeason.next()
+            variables["nextSeason"] = next.season
+            variables["nextSeasonYear"] = next.year
+        }
+        return variables
+    }
+
+    /// See All for an AniList row (or a MAL one).
     static func browse(catalogId: String, skip: Int, genre: String? = nil) async -> CatalogPage {
+        if catalogId.hasPrefix(MALCatalogs.idPrefix) {
+            return await MALCatalogs.browse(catalogId: catalogId, skip: skip)
+        }
         if let listRow = AniListAccount.listRows.first(where: { $0.id == catalogId }) {
             // One of the viewer's lists: all of it at once.
             guard skip == 0, let byRow = await AniListAccount.listEntries() else {
@@ -195,30 +218,22 @@ enum AniListService {
             return CatalogPage(items: [], hasMore: false, page: 1)
         }
         let page = max(skip, 0) / pageSize + 1
-        var variables: [String: Any?] = [
-            "page": page,
-            "perPage": pageSize,
-            "sort": row.sort,
-            "season": nil,
-            "seasonYear": nil,
-            "genre": genre,
-            "isAdult": isAdultVariable,
-        ]
-        if row.usesSeason {
-            let current = AniListSeason.current()
-            variables["season"] = current.season
-            variables["seasonYear"] = current.year
-        } else if row.usesNextSeason {
-            let next = AniListSeason.next()
-            variables["season"] = next.season
-            variables["seasonYear"] = next.year
+        let usesGenre = genre != nil && row.studio == nil && !row.arguments.contains("genre:")
+        var variables: [String: Any?] = ["page": page, "perPage": pageSize]
+        if row.studio == nil {
+            variables.merge(homeVariables(for: [row]).filter { $0.key != "perPage" }) { _, new in new }
         }
-        guard let data = try? await AniListClient.shared.query(AniListQueries.catalog, variables: variables, ttl: catalogTTL),
+        if usesGenre {
+            variables["genre"] = genre
+        }
+        guard let data = try? await AniListClient.shared.query(AniListQueries.rowPage(row, withGenre: usesGenre), variables: variables, ttl: catalogTTL),
               let result = try? decoder.decode(AniListPageResponse.self, from: data).data?.Page else {
             return CatalogPage(items: [], hasMore: false, page: page)
         }
         let language = AniListSettings.titleLanguage
-        let items = (result.media ?? []).map { AniListMetaBuilder.card($0, language: language) }
+        var media = result.media ?? []
+        if row.studio != nil, !AniListSettings.showsAdult { media = media.filter { $0.isAdult != true } }
+        let items = media.map { AniListMetaBuilder.card($0, language: language) }
         return CatalogPage(
             items: items,
             hasMore: result.pageInfo?.hasNextPage ?? false,
@@ -315,7 +330,7 @@ enum AniListService {
     /// The whole title for `anilist:ID`. With "One Title", an entry inside a series gives the
     /// series under its first entry's id.
     static func metadata(id: String) async throws -> NuvioMeta? {
-        guard AniListSettings.isEnabled, let startID = AniListMetaBuilder.aniListID(from: id) else { return nil }
+        guard AniListSettings.opensTitles, let startID = AniListMetaBuilder.aniListID(from: id) else { return nil }
         let merge = AniListSettings.seasonMode == .merged
         let language = AniListSettings.titleLanguage
 
@@ -492,7 +507,7 @@ enum AniListService {
     /// tables', else ani.zip's, else arm-server's. It is never written to the title, whose streams and ratings go by its
     /// AniList id.
     static func trailerIMDbID(metaID: String) async -> String? {
-        guard AniListSettings.isEnabled, let id = AniListMetaBuilder.aniListID(from: metaID) else { return nil }
+        guard AniListSettings.opensTitles, let id = AniListMetaBuilder.aniListID(from: metaID) else { return nil }
         if let imdbID = await AniListOfflineMaps.shared.imdb(aniListID: id) { return imdbID }
         if let imdbID = await aniZipMappings(entryID: id, finished: false)?.mappings?.imdbID {
             return imdbID
@@ -529,7 +544,7 @@ enum AniListService {
     /// The background and logo for Home's hero while an AniList card is focused, from ani.zip,
     /// TMDB and Metahub only, so moving along a row costs no AniList requests.
     static func heroArtwork(for card: NuvioMeta) async -> AniListMetaBuilder.Artwork? {
-        guard AniListSettings.isEnabled, AniListSettings.usesEpisodeDetails,
+        guard AniListSettings.opensTitles, AniListSettings.usesEpisodeDetails,
               let entryID = AniListMetaBuilder.aniListID(from: card.id) else { return nil }
         let isFilm = card.type == "movie"
         let response = await aniZipMappings(entryID: entryID, finished: card.status == AniListMetaBuilder.status("FINISHED"))
@@ -611,7 +626,7 @@ enum AniListService {
 
     /// Characters with their Japanese voice actors, and AniList's recommendations.
     static func extras(metaID: String) async -> (people: [TmdbPersonMetadata], recommendations: [RelatedTitle]) {
-        guard AniListSettings.isEnabled, let id = AniListMetaBuilder.aniListID(from: metaID),
+        guard AniListSettings.opensTitles, let id = AniListMetaBuilder.aniListID(from: metaID),
               let data = try? await AniListClient.shared.query(AniListQueries.extras, variables: ["id": id], ttl: finishedTTL),
               let media = try? decoder.decode(AniListMediaResponse.self, from: data).data?.Media else {
             return ([], [])

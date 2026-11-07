@@ -33,7 +33,7 @@ enum AniListStreamIds {
     }
 
     private static func ids(for videoId: String) async -> [String] {
-        guard AniListSettings.isEnabled, let entryID = AniListMetaBuilder.aniListID(from: videoId) else { return [] }
+        guard AniListSettings.opensTitles, let entryID = AniListMetaBuilder.aniListID(from: videoId) else { return [] }
         if let cached = lock.withLock({ known[videoId] }) { return cached }
         let ids = await find(entryID: entryID, episode: AniListAccount.episodeNumber(in: videoId))
         if !ids.isEmpty { lock.withLock { known[videoId] = ids } }

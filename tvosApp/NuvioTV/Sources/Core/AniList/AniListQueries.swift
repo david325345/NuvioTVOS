@@ -167,10 +167,17 @@ enum AniListQueries {
     /// All Home rows in a single request.
     static func homeRows(_ rows: [AniListHomeRow]) -> String {
         let pages = rows.map { row in
-            "\(row.id): Page(perPage: $perPage) { media(type: ANIME, \(row.arguments), isAdult: $isAdult) { \(cardFields) } }"
+            if let studio = row.studio {
+                // A studio's main titles; Studio has no adult filter, so those are left out after.
+                return "\(row.alias): Studio(search: \(quoted(studio))) { media(sort: [POPULARITY_DESC], isMain: true, perPage: $perPage) { nodes { \(cardFields) } } }"
+            }
+            return "\(row.alias): Page(perPage: $perPage) { media(type: ANIME, \(row.arguments), isAdult: $isAdult) { \(cardFields) } }"
         }
         // GraphQL refuses a declared variable that no row uses.
-        var declarations = ["$perPage: Int", "$isAdult: Boolean"]
+        var declarations = ["$perPage: Int"]
+        if rows.contains(where: { $0.studio == nil }) {
+            declarations.append("$isAdult: Boolean")
+        }
         if rows.contains(where: \.usesSeason) {
             declarations += ["$season: MediaSeason", "$seasonYear: Int"]
         }
@@ -183,33 +190,89 @@ enum AniListQueries {
         }
         """
     }
+
+    /// One page of a row for See All; a studio row answers under the same `Page` name.
+    static func rowPage(_ row: AniListHomeRow, withGenre: Bool) -> String {
+        if let studio = row.studio {
+            return """
+            query ($page: Int, $perPage: Int) {
+              Page: Studio(search: \(quoted(studio))) {
+                media(sort: [POPULARITY_DESC], isMain: true, page: $page, perPage: $perPage) { pageInfo { hasNextPage } nodes { \(cardFields) } }
+              }
+            }
+            """
+        }
+        var declarations = ["$page: Int", "$perPage: Int", "$isAdult: Boolean"]
+        var arguments = row.arguments
+        if row.usesSeason {
+            declarations += ["$season: MediaSeason", "$seasonYear: Int"]
+        }
+        if row.usesNextSeason {
+            declarations += ["$nextSeason: MediaSeason", "$nextSeasonYear: Int"]
+        }
+        if withGenre, !row.arguments.contains("genre:") {
+            declarations.append("$genre: String")
+            arguments += ", genre: $genre"
+        }
+        return """
+        query (\(declarations.joined(separator: ", "))) {
+          Page(page: $page, perPage: $perPage) {
+            pageInfo { hasNextPage }
+            media(type: ANIME, \(arguments), isAdult: $isAdult) { \(cardFields) }
+          }
+        }
+        """
+    }
+
+    /// Every AniList tag with its category, for the catalog window.
+    static let tags = "query { MediaTagCollection { name category isAdult isGeneralSpoiler } }"
+
+    /// The viewer's favourite anime.
+    static let favourites = """
+    query ($userId: Int, $page: Int) {
+      User(id: $userId) { favourites { anime(page: $page, perPage: 50) { nodes { \(cardFields) } } } }
+    }
+    """
+
+    /// A string as a GraphQL literal.
+    static func quoted(_ text: String) -> String {
+        "\"" + text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
+    }
 }
 
-/// The AniList rows offered on Home.
+/// An AniList row on Home: `arguments` go to `media(…)` beside the type and the adult filter; a
+/// studio row lists that studio's main titles instead. Which rows there are is Settings → Anime
+/// Integrations → AniList → AniList Catalogs (`AniListCatalogs`).
 struct AniListHomeRow: Hashable {
     let id: String
     let title: String
-    /// Arguments for `media(…)` beside the type and the adult filter.
-    let arguments: String
-    let sort: [String]
-    let usesSeason: Bool
-    let usesNextSeason: Bool
+    var arguments: String = ""
+    var usesSeason = false
+    var usesNextSeason = false
+    var studio: String? = nil
 
-    static let all: [AniListHomeRow] = [
-        AniListHomeRow(id: "trending", title: "Trending Now", arguments: "sort: [TRENDING_DESC, POPULARITY_DESC]",
-                       sort: ["TRENDING_DESC", "POPULARITY_DESC"], usesSeason: false, usesNextSeason: false),
-        AniListHomeRow(id: "season", title: "Popular This Season", arguments: "season: $season, seasonYear: $seasonYear, sort: [POPULARITY_DESC]",
-                       sort: ["POPULARITY_DESC"], usesSeason: true, usesNextSeason: false),
-        AniListHomeRow(id: "nextseason", title: "Upcoming Next Season", arguments: "season: $nextSeason, seasonYear: $nextSeasonYear, sort: [POPULARITY_DESC]",
-                       sort: ["POPULARITY_DESC"], usesSeason: false, usesNextSeason: true),
-        AniListHomeRow(id: "popular", title: "All-Time Popular", arguments: "sort: [POPULARITY_DESC]",
-                       sort: ["POPULARITY_DESC"], usesSeason: false, usesNextSeason: false),
-        AniListHomeRow(id: "top", title: "Top 100", arguments: "sort: [SCORE_DESC]",
-                       sort: ["SCORE_DESC"], usesSeason: false, usesNextSeason: false),
+    /// The id as a GraphQL alias (letters, digits and _).
+    var alias: String {
+        let cleaned = String(id.map { $0.isLetter || $0.isNumber ? $0 : "_" })
+            .folding(options: .diacriticInsensitive, locale: nil)
+            .filter { $0.isASCII }
+        return "r_" + cleaned
+    }
+
+    /// The five rows Home had before the catalog window.
+    static let standard: [AniListHomeRow] = [
+        AniListHomeRow(id: "trending", title: "Trending Now", arguments: "sort: [TRENDING_DESC, POPULARITY_DESC]"),
+        AniListHomeRow(id: "season", title: "Popular This Season", arguments: "season: $season, seasonYear: $seasonYear, sort: [POPULARITY_DESC]", usesSeason: true),
+        AniListHomeRow(id: "nextseason", title: "Upcoming Next Season", arguments: "season: $nextSeason, seasonYear: $nextSeasonYear, sort: [POPULARITY_DESC]", usesNextSeason: true),
+        AniListHomeRow(id: "popular", title: "All-Time Popular", arguments: "sort: [POPULARITY_DESC]"),
+        AniListHomeRow(id: "top", title: "Top 100", arguments: "sort: [SCORE_DESC]"),
     ]
 
+    /// The rows the viewer chose.
+    static var all: [AniListHomeRow] { AniListCatalogs.chosenRows() }
+
     static func row(id: String) -> AniListHomeRow? {
-        all.first { $0.id == id }
+        AniListCatalogs.row(id: id, title: nil)
     }
 }
 
@@ -226,6 +289,13 @@ enum AniListSeason {
         let year = calendar.component(.year, from: date)
         let nextMonth = month + 3
         return nextMonth > 12 ? (name(forMonth: nextMonth - 12), year + 1) : (name(forMonth: nextMonth), year)
+    }
+
+    static func previous(at date: Date = Date(), calendar: Calendar = Calendar(identifier: .gregorian)) -> (season: String, year: Int) {
+        let month = calendar.component(.month, from: date)
+        let year = calendar.component(.year, from: date)
+        let earlier = month - 3
+        return earlier < 1 ? (name(forMonth: earlier + 12), year - 1) : (name(forMonth: earlier), year)
     }
 
     private static func name(forMonth month: Int) -> String {

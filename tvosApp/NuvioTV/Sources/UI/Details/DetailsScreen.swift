@@ -4393,11 +4393,16 @@ struct TvDetailsContent: View {
                 )
             },
             onWatchlistClick: {
-                // An AniList title also goes onto (or off) the viewer's AniList list.
-                if AniListAccount.isLoggedIn,
+                // An AniList title also goes onto (or off) the viewer's AniList and MAL lists.
+                if AniListAccount.isLoggedIn || MALAccount.isLoggedIn,
                    let entryID = aniListTarget?.entryID ?? AniListMetaBuilder.aniListID(from: openedID ?? meta.id) {
                     let added = !uiState.isInWatchlist
-                    Task { await AniListAccount.libraryChanged(entryID: entryID, added: added) }
+                    Task {
+                        if AniListAccount.isLoggedIn {
+                            await AniListAccount.libraryChanged(entryID: entryID, added: added)
+                        }
+                        await MALAccount.libraryChanged(aniListID: entryID, added: added)
+                    }
                 }
                 onWatchlistClick()
             },

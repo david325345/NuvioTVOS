@@ -26,7 +26,7 @@ enum MALEpisodeRatings {
         let page: Int
     }
 
-    static var isEnabled: Bool { AniListSettings.showsMALEpisodeRatings }
+    static var isEnabled: Bool { MALSettings.showsEpisodeRatings }
 
     // MARK: Ratings
 
