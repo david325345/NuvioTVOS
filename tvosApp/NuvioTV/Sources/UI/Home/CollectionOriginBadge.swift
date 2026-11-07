@@ -34,6 +34,12 @@ struct CollectionOriginBadge: View {
             image = nil
             loadedOrigin = nil
             for value in urls {
+                // "asset:name": one of the app's own images (MyAnimeList's mark).
+                if value.hasPrefix("asset:"), let local = UIImage(named: String(value.dropFirst("asset:".count))) {
+                    image = CollectionIconRenderer.render(local, style: requested.serviceIcon, sourceURL: value)
+                    loadedOrigin = requested
+                    return
+                }
                 guard !Task.isCancelled, let url = URL(string: value) else { return }
                 if let loaded = await PosterArtworkCache.shared.image(for: url, maxPixelSize: 160) {
                     guard !Task.isCancelled, requested == origin else { return }
