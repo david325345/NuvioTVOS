@@ -107,6 +107,25 @@ enum AniListSettings {
         bool(SettingsKey.aniListEpisodeDetails, default: true)
     }
 
+    /// What "+" in details writes to the viewer's AniList list.
+    enum PlusStatus: String, CaseIterable {
+        case planning = "PLANNING"
+        case watching = "CURRENT"
+        case off
+
+        var label: String {
+            switch self {
+            case .planning: return "Planning"
+            case .watching: return "Watching"
+            case .off: return "Nothing"
+            }
+        }
+    }
+
+    static var plusStatus: PlusStatus {
+        PlusStatus(rawValue: ProfileSettings.current.string(forKey: SettingsKey.aniListPlusStatus) ?? "") ?? .planning
+    }
+
     /// The AniList button in details (status, score, favourite), when logged in.
     static var showsDetailsButton: Bool {
         AniListAccount.isLoggedIn && bool(SettingsKey.aniListDetailsButton, default: true)

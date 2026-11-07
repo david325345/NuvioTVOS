@@ -511,11 +511,14 @@ enum AniListAccount {
     static func libraryChanged(entryID: Int, added: Bool) async {
         guard isLoggedIn else { return }
         if !hasAsked(entryID) { await refreshStates(ids: [entryID]) }
+        // Settings → AniList → "+" in Details: Planning, Watching or nothing.
+        let wanted = AniListSettings.plusStatus
+        guard wanted != .off else { return }
         let status = entry(for: entryID)?.status
         if added {
             guard status == nil else { return }
-            await setStatus("PLANNING", entryID: entryID)
-        } else if status == "PLANNING" {
+            await setStatus(wanted.rawValue, entryID: entryID)
+        } else if status == wanted.rawValue {
             await remove(entryID: entryID)
         }
     }

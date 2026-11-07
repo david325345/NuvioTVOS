@@ -303,12 +303,14 @@ enum MALAccount {
 
     /// "+" in details: Plan to Watch when it isn't on the list; taken off only while still there.
     static func libraryChanged(aniListID: Int, added: Bool) async {
-        guard isLoggedIn, let mal = await MALEpisodeRatings.malID(aniListID: aniListID),
+        // Settings → MyAnimeList → "+" in Details: Plan to Watch, Watching or nothing.
+        let wanted = MALSettings.plusStatus
+        guard isLoggedIn, wanted != .off, let mal = await MALEpisodeRatings.malID(aniListID: aniListID),
               let current = await listStatus(mal: mal) else { return }
         if added {
             guard current.status == nil else { return }
-            await update(mal: mal, ["status": "plan_to_watch"])
-        } else if current.status == "plan_to_watch" {
+            await update(mal: mal, ["status": wanted.rawValue])
+        } else if current.status == wanted.rawValue {
             await remove(mal: mal)
         }
     }
