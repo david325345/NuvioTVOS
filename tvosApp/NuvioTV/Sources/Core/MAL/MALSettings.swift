@@ -11,6 +11,8 @@ extension SettingsKey {
     static let malDetailsButton = "nuvio.tv.settings.integrations.malDetailsButton"
     static let aniListDetailsButton = "nuvio.tv.settings.integrations.aniListDetailsButton"
     static let malPlusStatus = "nuvio.tv.settings.integrations.malPlusStatus"
+    static let malSeriesScore = "nuvio.tv.settings.integrations.malSeriesScore"
+    static let aniListScore = "nuvio.tv.settings.integrations.aniListScore"
     static let aniListPlusStatus = "nuvio.tv.settings.integrations.aniListPlusStatus"
 }
 
@@ -29,13 +31,17 @@ enum MALSettings {
         (ProfileSettings.current.string(forKey: SettingsKey.malClientID) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Each anime episode's MAL score (1–5) on episode cards.
-    static var showsEpisodeRatings: Bool {
-        isEnabled && bool(SettingsKey.malEpisodeRatings, default: true)
-    }
+    /// Each anime episode's MAL score (1–5) on episode cards. Works with MyAnimeList off too.
+    static var showsEpisodeRatings: Bool { followingMAL(SettingsKey.malEpisodeRatings) }
 
-    /// The series' MAL score straight from MAL instead of MDBList's copy.
-    static var usesOwnScore: Bool { isEnabled }
+    /// The series' MAL score straight from MAL instead of MDBList's copy. Works with MyAnimeList
+    /// off too.
+    static var usesOwnScore: Bool { followingMAL(SettingsKey.malSeriesScore) }
+
+    /// A score setting: as switched, or, never switched, as MyAnimeList is on.
+    static func followingMAL(_ key: String, in store: UserDefaults = ProfileSettings.current) -> Bool {
+        store.object(forKey: key) == nil ? isEnabled(in: store) : store.bool(forKey: key)
+    }
 
     /// Watched episodes written to the viewer's MAL list.
     static var scrobbles: Bool {

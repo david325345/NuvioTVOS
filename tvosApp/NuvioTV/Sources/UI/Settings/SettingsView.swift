@@ -419,7 +419,7 @@ enum SettingsKey {
         aniListEnabled, aniListTitleLanguage, aniListSeasonMode, aniListHomeRows, aniListSearch,
         aniListHideCinemetaDuplicates, aniListEpisodeDetails, aniListAdult,
         aniListClientID, aniListScrobble, aniListScrobbleCinemeta, aniListListRows, aniListOtherAddons, aniListCatalogs,
-        malEnabled, malClientID, malEpisodeRatings, malScrobble, malAdult, malCatalogs, malDetailsButton, aniListDetailsButton, malPlusStatus, aniListPlusStatus,
+        malEnabled, malClientID, malEpisodeRatings, malScrobble, malAdult, malCatalogs, malDetailsButton, aniListDetailsButton, malPlusStatus, aniListPlusStatus, malSeriesScore, aniListScore,
         mdbListEnabled, mdbListApiKey, mdbListUseImdb, mdbListUseTmdb,
         mdbListUseTomatoes, mdbListUseMetacritic, mdbListUseTrakt,
         mdbListUseLetterboxd, mdbListUseAudience,
@@ -5344,6 +5344,32 @@ private struct IntegrationSettingsView: View {
     }
 }
 
+/// A few paragraphs of explanation in a settings window (how to log in, which ids add-ons get);
+/// **bold** and *italic* as Markdown.
+private struct SettingsHelpText: View {
+    let title: String
+    let paragraphs: [String]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundColor(.white.opacity(0.88))
+            ForEach(Array(paragraphs.enumerated()), id: \.offset) { _, paragraph in
+                Text(LocalizedStringKey(paragraph))
+                    .font(.system(size: 19, weight: .regular))
+                    .foregroundColor(.white.opacity(0.62))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
+        .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color.white.opacity(0.05)))
+        .accessibilityElement(children: .combine)
+    }
+}
+
 /// Settings → Integrations → Anime Integrations: AniList and MyAnimeList, each in its own window.
 private struct AnimeIntegrationsSheet: View {
     let accentColor: Color
@@ -5426,7 +5452,8 @@ private struct MALOptionsSheet: View {
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
     @AppStorage(SettingsKey.malEnabled) private var enabled = false
     @AppStorage(SettingsKey.malClientID) private var clientID = ""
-    @AppStorage(SettingsKey.malEpisodeRatings) private var episodeRatings = true
+    @AppStorage(SettingsKey.malEpisodeRatings) private var episodeRatingsSetting: Bool?
+    @AppStorage(SettingsKey.malSeriesScore) private var seriesScoreSetting: Bool?
     @AppStorage(SettingsKey.malScrobble) private var scrobble = true
     @AppStorage(SettingsKey.malAdult) private var adult = false
     @AppStorage(SettingsKey.malDetailsButton) private var detailsButton = true
@@ -5506,24 +5533,26 @@ private struct MALOptionsSheet: View {
             title: L10n.string("settings_mal_section_ratings", fallback: "Ratings"),
             subtitle: L10n.string("settings_mal_section_ratings_subtitle", fallback: "Shown where the MyAnimeList rating is on (Rating Providers & Order)")
         ) {
-            SettingsInfoRow(
-                title: L10n.string("settings_mal_series_score", fallback: "Series Score"),
-                value: L10n.string("settings_mal_series_score_value", fallback: "From MAL instead of MDBList; MDBList's when MAL has none")
+            SettingsToggleRow(
+                title: L10n.string("settings_mal_series_score", fallback: "Series Score from MAL"),
+                subtitle: L10n.string(
+                    "settings_mal_series_score_subtitle",
+                    fallback: "MAL's score straight from MAL instead of MDBList's copy (MDBList's when MAL has none). Works with MyAnimeList off"
+                ),
+                isOn: Binding(get: { seriesScoreSetting ?? enabled }, set: { seriesScoreSetting = $0 }),
+                accentColor: accentColor
             )
 
             SettingsToggleRow(
                 title: L10n.string("settings_mal_episode_ratings", fallback: "MAL Episode Ratings"),
                 subtitle: L10n.string(
                     "settings_mal_episode_ratings_subtitle",
-                    fallback: "Each episode's MyAnimeList score (1–5) on episode cards. For AniList anime and anime from Cinemeta"
+                    fallback: "Each episode's MyAnimeList score (1–5) on episode cards, for AniList anime and anime from Cinemeta. Works with MyAnimeList off"
                 ),
-                isOn: $episodeRatings,
-                accentColor: accentColor,
-                isAvailable: enabled
+                isOn: Binding(get: { episodeRatingsSetting ?? enabled }, set: { episodeRatingsSetting = $0 }),
+                accentColor: accentColor
             )
         }
-        .opacity(enabled ? 1 : 0.46)
-        .disabled(!enabled)
     }
 
     @ViewBuilder
@@ -5604,6 +5633,25 @@ private struct MALOptionsSheet: View {
                     accentColor: accentColor
                 )
             } else {
+                SettingsHelpText(
+                    title: L10n.string("settings_mal_why_title", fallback: "Why Log In?"),
+                    paragraphs: [
+                        L10n.string("settings_mal_why_1", fallback: "**Without logging in:** MAL catalogs on Home (top lists, seasons, airing days, genres, themes, studios, dubs, streaming services…) and MAL scores of series and episodes, from Tenrai, with no account or key needed."),
+                        L10n.string("settings_mal_why_2", fallback: "**Logged in, you also get:** your MAL lists as Home rows (Watching, Completed, On-Hold, Dropped, Plan to Watch); watched episodes written to your MAL by themselves, progress only forward; \"+\" in details adding to your list; the MAL button in details (status, score, remove)."),
+                        L10n.string("settings_mal_why_3", fallback: "**Good to know:** the account is free. The login stays on this Apple TV for this profile and renews itself; after a month without using Nuvio you log in again. Nuvio writes to your MAL only when you finish an episode, mark one, press \"+\" or use the MAL button.")
+                    ]
+                )
+
+                SettingsHelpText(
+                    title: L10n.string("settings_mal_howto_title", fallback: "How to Log In"),
+                    paragraphs: [
+                        L10n.string("settings_mal_howto_1", fallback: "1. Create a free account at **myanimelist.net/register.php**."),
+                        L10n.string("settings_mal_howto_2", fallback: "2. Open **myanimelist.net/apiconfig** → *Create ID*: App Type **other**, **App Redirect URL** = the address shown below, Homepage URL anything (e.g. github.com/david325345/NuvioTVOS), Non-Commercial, Hobbyist."),
+                        L10n.string("settings_mal_howto_3", fallback: "3. Copy the **Client ID** into the field below."),
+                        L10n.string("settings_mal_howto_4", fallback: "4. Scan the QR code with your phone on the same Wi-Fi, log in to MAL and tap *Allow*.")
+                    ]
+                )
+
                 SettingsTextFieldRow(
                     title: L10n.string("settings_anilist_client_id", fallback: "Client ID"),
                     subtitle: L10n.string(
@@ -5817,6 +5865,7 @@ private struct AniListOptionsSheet: View {
     @AppStorage(SettingsKey.aniListEpisodeDetails) private var episodeDetails = true
     @AppStorage(SettingsKey.malEnabled) private var malEnabled = false
     @AppStorage(SettingsKey.aniListDetailsButton) private var detailsButton = true
+    @AppStorage(SettingsKey.aniListScore) private var aniListScoreSetting: Bool?
     @AppStorage(SettingsKey.aniListPlusStatus) private var plusStatus = AniListSettings.PlusStatus.planning.rawValue
     @State private var showingCatalogs = false
     @AppStorage(SettingsKey.aniListAdult) private var adult = false
@@ -5874,6 +5923,16 @@ private struct AniListOptionsSheet: View {
                         )
 
                         SettingsToggleRow(
+                            title: L10n.string("settings_anilist_score", fallback: "AniList Score"),
+                            subtitle: L10n.string(
+                                "settings_anilist_score_subtitle",
+                                fallback: "AniList's average score beside the other ratings, for anime from Cinemeta too. Works with AniList off; order it in Rating Providers & Order"
+                            ),
+                            isOn: Binding(get: { aniListScoreSetting ?? enabled }, set: { aniListScoreSetting = $0 }),
+                            accentColor: accentColor
+                        )
+
+                        SettingsToggleRow(
                             title: L10n.string("settings_anilist_convert_ids", fallback: "Convert IDs for Other Add-ons"),
                             subtitle: L10n.string(
                                 "settings_anilist_other_addons_subtitle",
@@ -5882,6 +5941,16 @@ private struct AniListOptionsSheet: View {
                             isOn: $otherAddons,
                             accentColor: accentColor,
                             isAvailable: enabled || malEnabled
+                        )
+
+                        SettingsHelpText(
+                            title: L10n.string("settings_anilist_ids_title", fallback: "AniList IDs or Converted IDs?"),
+                            paragraphs: [
+                                L10n.string("settings_anilist_ids_1", fallback: "**Add-ons that take anilist: ids get exactly what you opened.** Every season, part, OVA and movie has its own AniList entry, and episodes are numbered the way AniList numbers them, so nothing has to be guessed."),
+                                L10n.string("settings_anilist_ids_2", fallback: "**AniList is the fastest and the widest.** New anime are usually on AniList within hours of their announcement, before IMDb, TheTVDB, TMDB or Kitsu. It also lists ONAs, shorts, specials, donghua and music videos that the others often don't have."),
+                                L10n.string("settings_anilist_ids_3", fallback: "**Converted ids are for add-ons that don't know AniList.** They get a Kitsu, MAL, AniDB, IMDb or TMDB id with season and episode, from the offline tables. That can miss brand-new seasons or number split seasons differently. An episode that can't be placed isn't asked at all rather than asked wrong."),
+                                L10n.string("settings_anilist_ids_4", fallback: "**Recommended:** prefer add-ons that take anilist: ids, and keep conversion on for the rest.")
+                            ]
                         )
                     }
 
@@ -6113,6 +6182,25 @@ private struct AniListOptionsSheet: View {
 
     @ViewBuilder
     private var loginRows: some View {
+        SettingsHelpText(
+            title: L10n.string("settings_anilist_why_title", fallback: "Why Log In?"),
+            paragraphs: [
+                L10n.string("settings_anilist_why_1", fallback: "**Without logging in:** AniList catalogs on Home (trending, seasons, genres, tags, studios…), search, details with episodes and AniList scores, the calendar's AniList anime, and streams from add-ons by anilist: ids or converted ids. All of it works with AniList on, no account needed."),
+                L10n.string("settings_anilist_why_2", fallback: "**Logged in, you also get:** your lists as Home rows (Watching, Planning, Completed, Favourites, custom lists…); watched episodes written to your AniList by themselves, progress only forward; \"+\" in details adding to your list; the AniList button in details (status, score, favourite); the calendar following your lists, with premieres from Planning."),
+                L10n.string("settings_anilist_why_3", fallback: "**Good to know:** the account is free and setting it up takes a few minutes. The login stays on this Apple TV for this profile. Nuvio writes to your AniList only when you finish an episode, mark one, press \"+\" or use the AniList button.")
+            ]
+        )
+
+        SettingsHelpText(
+            title: L10n.string("settings_anilist_howto_title", fallback: "How to Log In"),
+            paragraphs: [
+                L10n.string("settings_anilist_howto_1", fallback: "1. Create a free account at **anilist.co/signup**."),
+                L10n.string("settings_anilist_howto_2", fallback: "2. Open **anilist.co/settings/developer** → *Create New Client*. Name it e.g. \"Nuvio\" and set **Redirect URL** to the address shown below."),
+                L10n.string("settings_anilist_howto_3", fallback: "3. Copy the **Client ID** into the field below."),
+                L10n.string("settings_anilist_howto_4", fallback: "4. Scan the QR code with your phone on the same Wi-Fi, log in to AniList and tap *Authorize*. This Apple TV logs in by itself.")
+            ]
+        )
+
         SettingsTextFieldRow(
             title: L10n.string("settings_anilist_client_id", fallback: "Client ID"),
             subtitle: L10n.string(
@@ -6845,8 +6933,9 @@ private struct MdbListOptionsSheet: View {
             )
         }
 
-        // AniList's own score (Settings → AniList), switched here like the others but without MDBList.
-        if AniListSettings.isEnabled {
+        // AniList's own score (Settings → AniList → AniList Score), switched here like the others
+        // but without MDBList; listed whether or not AniList is on.
+        do {
             items.append(
                 RatingProviderRowItem(
                     id: AniListMetaBuilder.ratingSource,
