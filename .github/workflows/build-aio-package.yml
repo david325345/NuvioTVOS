@@ -27,10 +27,14 @@ jobs:
       - name: Build
         env:
           AIO_TAG: ${{ github.event.inputs.tag }}
-        run: bash aio-node/aio-package/build.sh "$RUNNER_TEMP/aio-work" out 2>&1 | tee build.log
-      - name: Notes
         run: |
-          echo "::notice::$(cat out/nuvio-package.json | tr -d '\n') · aio.tar.gz $(du -sh out/aio.tar.gz | cut -f1)"
+          set -o pipefail
+          bash aio-node/aio-package/build.sh "$RUNNER_TEMP/aio-work" out 2>&1 | tee build.log
+      - name: Notes
+        if: always()
+        run: |
+          cp build.log out/ 2>/dev/null || true
+          [ -f out/aio.tar.gz ] && echo "::notice::$(tr -d '\n' < out/nuvio-package.json) · aio.tar.gz $(du -sh out/aio.tar.gz | cut -f1)"
           grep -E "^(shim|note|Native addons|files):" -A3 build.log | head -30 || true
       - name: Smoke test (Node 24, --jitless)
         run: bash aio-node/aio-package/smoke.sh out

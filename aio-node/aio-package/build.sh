@@ -18,7 +18,8 @@ OUT=$(mkdir -p "${2:?output dir}" && cd "$2" && pwd)
 REPO=https://github.com/Viren070/AIOStreams
 
 if [ -z "${AIO_TAG:-}" ]; then
-  AIO_TAG=$(git ls-remote --tags --refs --sort=-v:refname "$REPO" 'v*' | head -1 | sed 's#.*refs/tags/##')
+  # The newest release tag (no betas). sed reads everything: no SIGPIPE under pipefail.
+  AIO_TAG=$(git ls-remote --tags --refs --sort=-v:refname "$REPO" 'v*' | sed 's#.*refs/tags/##' | grep -vE -- '-' | sed -n 1p)
 fi
 echo "AIOStreams $AIO_TAG"
 
