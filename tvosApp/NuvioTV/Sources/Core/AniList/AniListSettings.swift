@@ -14,6 +14,7 @@ extension SettingsKey {
     static let aniListScrobbleCinemeta = "nuvio.tv.settings.integrations.aniListScrobbleCinemeta"
     static let aniListListRows = "nuvio.tv.settings.integrations.aniListListRows"
     static let aniListOtherAddons = "nuvio.tv.settings.integrations.aniListOtherAddons"
+    static let aniListMALEpisodeRatings = "nuvio.tv.settings.integrations.aniListMALEpisodeRatings"
 }
 
 /// Settings → Integrations → AniList. Anime from AniList keep their `anilist:` ids everywhere,
@@ -78,6 +79,11 @@ enum AniListSettings {
 
     static var usesEpisodeDetails: Bool {
         bool(SettingsKey.aniListEpisodeDetails, default: true)
+    }
+
+    /// Each anime episode's MyAnimeList score (1–5) on episode cards, from Tenrai (`MALEpisodeRatings`).
+    static var showsMALEpisodeRatings: Bool {
+        isEnabled && bool(SettingsKey.aniListMALEpisodeRatings, default: true)
     }
 
     static var showsAdult: Bool {

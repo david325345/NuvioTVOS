@@ -418,7 +418,7 @@ enum SettingsKey {
         tmdbUseMoreLikeThis, tmdbUseCollections, tmdbApplyToHome,
         aniListEnabled, aniListTitleLanguage, aniListSeasonMode, aniListHomeRows, aniListSearch,
         aniListHideCinemetaDuplicates, aniListEpisodeDetails, aniListAdult,
-        aniListClientID, aniListScrobble, aniListScrobbleCinemeta, aniListListRows, aniListOtherAddons,
+        aniListClientID, aniListScrobble, aniListScrobbleCinemeta, aniListListRows, aniListOtherAddons, aniListMALEpisodeRatings,
         mdbListEnabled, mdbListApiKey, mdbListUseImdb, mdbListUseTmdb,
         mdbListUseTomatoes, mdbListUseMetacritic, mdbListUseTrakt,
         mdbListUseLetterboxd, mdbListUseAudience,
@@ -5333,6 +5333,7 @@ private struct AniListOptionsSheet: View {
     @AppStorage(SettingsKey.aniListSearch) private var search = true
     @AppStorage(SettingsKey.aniListHideCinemetaDuplicates) private var hideCinemetaDuplicates = false
     @AppStorage(SettingsKey.aniListEpisodeDetails) private var episodeDetails = true
+    @AppStorage(SettingsKey.aniListMALEpisodeRatings) private var malEpisodeRatings = true
     @AppStorage(SettingsKey.aniListAdult) private var adult = false
     @AppStorage(SettingsKey.aniListClientID) private var clientID = ""
     @AppStorage(SettingsKey.aniListScrobble) private var scrobble = true
@@ -5451,6 +5452,17 @@ private struct AniListOptionsSheet: View {
                 title: L10n.string("settings_anilist_episode_details", fallback: "Episode Titles and Pictures"),
                 subtitle: L10n.string("settings_anilist_episode_details_subtitle", fallback: "From api.ani.zip, where AniList has none, with backgrounds and logos from TheTVDB, TMDB or Metahub"),
                 isOn: $episodeDetails,
+                accentColor: accentColor,
+                isAvailable: enabled
+            )
+
+            SettingsToggleRow(
+                title: L10n.string("settings_anilist_mal_episode_ratings", fallback: "MAL Episode Ratings"),
+                subtitle: L10n.string(
+                    "settings_anilist_mal_episode_ratings_subtitle",
+                    fallback: "Each episode's MyAnimeList score (1–5) on episode cards, from Tenrai. For AniList anime and anime from Cinemeta"
+                ),
+                isOn: $malEpisodeRatings,
                 accentColor: accentColor,
                 isAvailable: enabled
             )

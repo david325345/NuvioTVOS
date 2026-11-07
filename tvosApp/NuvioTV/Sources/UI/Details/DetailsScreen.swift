@@ -8549,6 +8549,24 @@ private struct TvEpisodeRatingItem: Identifiable {
     let color: Color
 }
 
+extension TvEpisodeRatingItem {
+    /// An add-on's rating, or an anime episode's MyAnimeList score as MAL shows it ("4.76").
+    init(_ rating: NuvioExternalRating) {
+        let isMAL = rating.source == MALEpisodeRatings.source
+        self.init(
+            id: rating.source,
+            source: rating.source,
+            displayName: rating.name ?? rating.source.capitalized,
+            valueText: isMAL
+                ? MALEpisodeRatings.formatted(rating.value)
+                : AddonRatingsService.formatRating(value: rating.value, max: rating.max),
+            iconUrl: isMAL ? nil : rating.iconUrl.flatMap { URL(string: $0) },
+            assetName: isMAL ? MALEpisodeRatings.assetName : nil,
+            color: Color(red: 0.96, green: 0.77, blue: 0.22)
+        )
+    }
+}
+
 private struct TvEpisodeCard: View {
     let video: NuvioVideo
     let fallbackArtworkURL: String?
@@ -8906,18 +8924,7 @@ private struct TvEpisodeCard: View {
         var items: [TvEpisodeRatingItem] = []
 
         for rating in episodeRatings {
-            let formatted = AddonRatingsService.formatRating(value: rating.value, max: rating.max)
-            items.append(
-                TvEpisodeRatingItem(
-                    id: rating.source,
-                    source: rating.source,
-                    displayName: rating.name ?? rating.source.capitalized,
-                    valueText: formatted,
-                    iconUrl: rating.iconUrl.flatMap { URL(string: $0) },
-                    assetName: nil,
-                    color: Color(red: 0.96, green: 0.77, blue: 0.22)
-                )
-            )
+            items.append(TvEpisodeRatingItem(rating))
         }
 
         if let ratingText {
@@ -9467,18 +9474,7 @@ private struct TvStreamPickerOverlay: View {
         var items: [TvEpisodeRatingItem] = []
 
         for rating in episodeRatings {
-            let formatted = AddonRatingsService.formatRating(value: rating.value, max: rating.max)
-            items.append(
-                TvEpisodeRatingItem(
-                    id: rating.source,
-                    source: rating.source,
-                    displayName: rating.name ?? rating.source.capitalized,
-                    valueText: formatted,
-                    iconUrl: rating.iconUrl.flatMap { URL(string: $0) },
-                    assetName: nil,
-                    color: Color(red: 0.96, green: 0.77, blue: 0.22)
-                )
-            )
+            items.append(TvEpisodeRatingItem(rating))
         }
 
         if let ratingText = episode.rating?.trimmingCharacters(in: .whitespaces), !ratingText.isEmpty {
