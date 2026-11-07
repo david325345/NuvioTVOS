@@ -5,9 +5,9 @@
 #
 # Same steps and layout as AIOStreams' own Dockerfile (packages/server/dist,
 # packages/frontend/dist, resources, node_modules), then:
-#   - no symlinks: Apple TV does not let apps create them, so node_modules is
-#     pnpm's hoisted layout (real folders) and no-symlinks.py turns the links
-#     to AIOStreams' own packages into forwarding packages,
+#   - no symlinks: Apple TV does not let apps create them, so flatten.py lays
+#     pnpm's install out in real folders, the way npm does (no-symlinks.py
+#     then checks that none is left),
 #   - native addons, which Apple TV can't load, are swapped for the shims in
 #     shims/ (better-sqlite3 → node:sqlite, bcrypt → bcryptjs, yencode → off),
 #   - nuvio-main.mjs is added,
@@ -38,10 +38,9 @@ pnpm install --frozen-lockfile
 pnpm run metadata || echo "note: metadata.json was not generated"
 pnpm run build
 
-# Production dependencies of the server and what it uses, as in the image —
-# hoisted (real folders, like npm), because Apple TV refuses symlinks.
+# Production dependencies of the server and what it uses, as in the image.
 rm -rf node_modules packages/*/node_modules
-pnpm install --prod --frozen-lockfile --filter '@aiostreams/server...' --config.node-linker=hoisted
+pnpm install --prod --frozen-lockfile --filter '@aiostreams/server...'
 
 STAGE="$WORK/stage"
 rm -rf "$STAGE"
@@ -52,11 +51,11 @@ for package in core crypto server; do
   mkdir -p "$STAGE/packages/$package"
   cp "packages/$package/package.json" "$STAGE/packages/$package/"
   [ -d "packages/$package/dist" ] && cp -R "packages/$package/dist" "$STAGE/packages/$package/dist"
-  [ -d "packages/$package/node_modules" ] && cp -a "packages/$package/node_modules" "$STAGE/packages/$package/node_modules"
 done
 # crypto ships its sources as the package (see the Dockerfile).
 cp -R packages/crypto/. "$STAGE/packages/crypto/"
-rm -rf "$STAGE/packages/crypto/node_modules/.cache"
+# (it has no dependencies; its node_modules is only a build cache)
+rm -rf "$STAGE/packages/crypto/node_modules"
 cp -R packages/server/src/static "$STAGE/packages/server/dist/static"
 for web in frontend web; do
   if [ -d "packages/$web/dist" ]; then
@@ -64,9 +63,9 @@ for web in frontend web; do
     cp -R "packages/$web/dist" "$STAGE/packages/$web/dist"
   fi
 done
-cp -a node_modules "$STAGE/node_modules"
 
-# No symlinks at all (forwarding packages for AIOStreams' own, .bin dropped).
+# node_modules without symlinks (Apple TV refuses them), and a check.
+python3 "$HERE/flatten.py" "$SRC" "$STAGE"
 python3 "$HERE/no-symlinks.py" "$STAGE"
 
 # Native addons → shims, wherever the package is in node_modules.
