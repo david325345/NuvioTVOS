@@ -1,0 +1,160 @@
+name: AIOStreams test build (fork experiment)
+
+# Fork only, never part of a PR: the Nuvio Test IPA of the aio-node branch,
+# with Node.js for tvOS and the original AIOStreams inside.
+on:
+  push:
+    branches: [aio-node]
+    paths:
+      - tvosApp/**
+      - .github/workflows/build-aio-ipa.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  ipa:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Node.js for tvOS and the AIOStreams package
+        # The newest successful runs of build-node-tvos.yml and build-aio-package.yml.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          latest() {
+            gh run list -R "$GITHUB_REPOSITORY" --workflow "$1" --branch aio-node --status success --limit 1 \
+              --json databaseId --jq '.[0].databaseId // empty'
+          }
+          node_run=$(latest build-node-tvos.yml)
+          aio_run=$(latest build-aio-package.yml)
+          [ -n "$node_run" ] || { echo "::error::No successful Node.js for tvOS build yet"; exit 1; }
+          [ -n "$aio_run" ] || { echo "::error::No successful AIOStreams package build yet"; exit 1; }
+          gh run download "$node_run" -R "$GITHUB_REPOSITORY" -n NodeMobile-tvos -D Vendor/NodeMobile
+          gh run download "$aio_run" -R "$GITHUB_REPOSITORY" -n aio-package -D tvosApp/NuvioTV/AIOPackage
+          ls -la Vendor/NodeMobile tvosApp/NuvioTV/AIOPackage
+          echo "::notice::Node.js run $node_run · AIOStreams $(tr -d '\n' < tvosApp/NuvioTV/AIOPackage/nuvio-package.json) from run $aio_run"
+      - name: Install Tuist
+        run: brew install tuist
+      - name: Make it a separate app (Nuvio Test)
+        # Its own bundle ID, name and App Group, so the test build installs next to the
+        # release app instead of replacing it. Only this job: the tests keep the real IDs.
+        run: |
+          set -euo pipefail
+          perl -pi -e 's/^let bundleID = "com\.pyksel\.nuviotvos"$/let bundleID = "com.pyksel.nuviotvos.test"/' tvosApp/Project.swift
+          grep -q '^let bundleID = "com.pyksel.nuviotvos.test"$' tvosApp/Project.swift
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Nuvio Test" tvosApp/NuvioTV/Info.plist
+          perl -pi -e 's/group\.com\.pyksel\.nuviotvos</group.com.pyksel.nuviotvos.test</' \
+            tvosApp/NuvioTV/NuvioTV.entitlements tvosApp/TopShelf/TopShelf.entitlements
+          echo "::notice::bundle com.pyksel.nuviotvos.test · Nuvio Test · group.com.pyksel.nuviotvos.test"
+      - name: Build unsigned IPA
+        run: |
+          set -o pipefail
+          report() {
+            grep -E "error: " build.log | grep -v "produced no further output" \
+              | sort -u | head -40 | while IFS= read -r line; do echo "::error::$line"; done
+          }
+          trap 'report' ERR
+          bash scripts/build-ipa.sh 2>&1 | tee build.log
+      - name: Embed the App Group entitlement (Top Shelf test)
+        # The unsigned IPA carries no entitlements at all, so a sideloader has no App Group to
+        # register and the Top Shelf extension never gets the app's rows. Fake-sign both
+        # binaries with just the App Group, which the sideloader reads when it re-signs.
+        run: |
+          set -euo pipefail
+          brew install ldid
+          work="$(mktemp -d)"
+          cp build-ipa/NuvioTV-unsigned.ipa "$work/in.ipa"
+          cd "$work"
+          unzip -q in.ipa
+          app="Payload/NuvioTV.app"
+          cat > groups.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>com.apple.security.application-groups</key>
+            <array>
+              <string>group.com.pyksel.nuviotvos.test</string>
+            </array>
+          </dict>
+          </plist>
+          PLIST
+          for appex in "$app"/PlugIns/*.appex; do
+            exe=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$appex/Info.plist")
+            ldid -Sgroups.plist "$appex/$exe"
+            echo "::notice::$(basename "$appex"): $(ldid -e "$appex/$exe" | tr -d '\n' | grep -o 'group\.[^<]*' || echo none)"
+          done
+          exe=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$app/Info.plist")
+          ldid -Sgroups.plist "$app/$exe"
+          echo "::notice::NuvioTV.app: $(ldid -e "$app/$exe" | tr -d '\n' | grep -o 'group\.[^<]*' || echo none)"
+          rm in.ipa
+          zip -qry out.ipa Payload
+          cp out.ipa "$GITHUB_WORKSPACE/build-ipa/NuvioTV-unsigned.ipa"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NuvioTV-aio-unsigned-ipa
+          path: build-ipa/NuvioTV-unsigned.ipa
+          retention-days: 7
+
+  simulator:
+    # The original AIOStreams started inside the app on the tvOS simulator.
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Node.js for tvOS and the AIOStreams package
+        # The newest successful runs of build-node-tvos.yml and build-aio-package.yml.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          latest() {
+            gh run list -R "$GITHUB_REPOSITORY" --workflow "$1" --branch aio-node --status success --limit 1 \
+              --json databaseId --jq '.[0].databaseId // empty'
+          }
+          node_run=$(latest build-node-tvos.yml)
+          aio_run=$(latest build-aio-package.yml)
+          [ -n "$node_run" ] || { echo "::error::No successful Node.js for tvOS build yet"; exit 1; }
+          [ -n "$aio_run" ] || { echo "::error::No successful AIOStreams package build yet"; exit 1; }
+          gh run download "$node_run" -R "$GITHUB_REPOSITORY" -n NodeMobile-tvos -D Vendor/NodeMobile
+          gh run download "$aio_run" -R "$GITHUB_REPOSITORY" -n aio-package -D tvosApp/NuvioTV/AIOPackage
+          ls -la Vendor/NodeMobile tvosApp/NuvioTV/AIOPackage
+          echo "::notice::Node.js run $node_run · AIOStreams $(tr -d '\n' < tvosApp/NuvioTV/AIOPackage/nuvio-package.json) from run $aio_run"
+      - name: Install Tuist
+        run: brew install tuist
+      - name: Generate Xcode project
+        run: tuist generate --path tvosApp --no-open
+      - name: AIOStreams in Node.js on the simulator
+        env:
+          NUVIO_TEST_ARTIFACTS: ${{ runner.temp }}/nuvio-tests
+          NUVIO_DERIVED_DATA: ${{ runner.temp }}/NuvioTVDerivedData
+        run: |
+          set -o pipefail
+          report() {
+            grep -E "error: |XCTAssert|failed \(" "$NUVIO_TEST_ARTIFACTS/xcodebuild.log" 2>/dev/null \
+              | grep -v "produced no further output" \
+              | sort -u | head -40 | while IFS= read -r line; do echo "::error::$line"; done
+          }
+          trap 'report' ERR
+          bash scripts/test-tvos.sh -only-testing:NuvioTVTests/AIOExperimentTests
+      - name: What AIOStreams did
+        if: always()
+        env:
+          NUVIO_TEST_ARTIFACTS: ${{ runner.temp }}/nuvio-tests
+        run: |
+          grep -h "AIO-TEST" "$NUVIO_TEST_ARTIFACTS"/*.log 2>/dev/null | head -20 | while IFS= read -r line; do echo "::notice::$line"; done
+          grep -h -A80 "AIO-TEST log" "$NUVIO_TEST_ARTIFACTS"/*.log 2>/dev/null | tail -120 || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: aio-simulator-test
+          path: ${{ runner.temp }}/nuvio-tests

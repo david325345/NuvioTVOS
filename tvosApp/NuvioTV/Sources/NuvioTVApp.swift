@@ -759,6 +759,7 @@ struct ContentView: View {
         .onAppear {
             Task { await releaseUpdateService.checkIfNeeded() }
             Task { await announcementService.checkIfNeeded() }
+            AIOExperiment.shared.startIfWanted()
             Task(priority: .utility) {
                 // Plugin repository updates wait until the first screen has loaded.
                 try? await Task.sleep(nanoseconds: 8_000_000_000)
