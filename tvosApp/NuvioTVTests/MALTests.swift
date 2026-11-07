@@ -87,4 +87,12 @@ final class MALTests: XCTestCase {
         let planned = MALAccount.ListStatus(status: "plan_to_watch", watched: 0, episodes: 0)
         XCTAssertEqual(MALAccount.progress(planned, watched: 1), ["num_watched_episodes": "1", "status": "watching"])
     }
+
+    func testTheDetailsButtonSaysWhereTheTitleIs() {
+        XCTAssertEqual(MALAccount.buttonTitle(nil), "MAL")
+        XCTAssertEqual(MALAccount.buttonTitle(.init(status: nil, watched: 0, episodes: 12)), "Add")
+        XCTAssertEqual(MALAccount.buttonTitle(.init(status: "watching", watched: 5, episodes: 12)), "Watching 5/12")
+        XCTAssertEqual(MALAccount.buttonTitle(.init(status: "on_hold", watched: 3, episodes: 0)), "On-Hold 3")
+        XCTAssertEqual(MALAccount.buttonTitle(.init(status: "plan_to_watch", watched: 0, episodes: 12)), "Plan to Watch")
+    }
 }

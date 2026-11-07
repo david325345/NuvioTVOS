@@ -87,6 +87,11 @@ enum AniListSettings {
         bool(SettingsKey.aniListEpisodeDetails, default: true)
     }
 
+    /// The AniList button in details (status, score, favourite), when logged in.
+    static var showsDetailsButton: Bool {
+        AniListAccount.isLoggedIn && bool(SettingsKey.aniListDetailsButton, default: true)
+    }
+
     static var showsAdult: Bool {
         bool(SettingsKey.aniListAdult, default: false)
     }

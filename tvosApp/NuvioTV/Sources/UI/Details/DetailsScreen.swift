@@ -4122,6 +4122,10 @@ struct TvDetailsContent: View {
     @State private var aniListTarget: AniListScrobbler.Target?
     @State private var showingAniListMenu = false
     @State private var showingAniListScore = false
+    @State private var malID: Int?
+    @State private var malStatus: MALAccount.ListStatus?
+    @State private var showingMALMenu = false
+    @State private var showingMALScore = false
     @State private var consumedInitialPlayRequestID: UInt?
     @State private var detailsFocusMoveGeneration = 0
     @State private var pendingPlayFocusGeneration: Int?
@@ -4412,9 +4416,14 @@ struct TvDetailsContent: View {
                 onRateClick?()
             } : nil,
             aniListTitle: aniListButtonTitle,
-            onAniListClick: (AniListAccount.isLoggedIn && aniListTarget != nil) ? {
+            onAniListClick: (AniListSettings.showsDetailsButton && aniListTarget != nil) ? {
                 stopBackgroundTrailer(manual: false)
                 showingAniListMenu = true
+            } : nil,
+            malTitle: MALAccount.buttonTitle(malStatus),
+            onMALClick: (MALSettings.showsDetailsButton && malID != nil) ? {
+                stopBackgroundTrailer(manual: false)
+                showingMALMenu = true
             } : nil,
             onTrailerClick: {
                 presentFullscreenTrailer()
@@ -5015,6 +5024,14 @@ struct TvDetailsContent: View {
                 showingMenu: $showingAniListMenu,
                 showingScore: $showingAniListScore
             ))
+            .modifier(TvDetailsMALMenus(
+                title: aniListTarget?.label ?? meta.name,
+                entryID: aniListTarget?.entryID,
+                malID: $malID,
+                status: $malStatus,
+                showingMenu: $showingMALMenu,
+                showingScore: $showingMALScore
+            ))
             .onReceive(NotificationCenter.default.publisher(for: TraktSettingsStore.libraryChangedNotification).receive(on: RunLoop.main)) { _ in
                 progressRevision &+= 1
             }
@@ -5540,7 +5557,7 @@ private struct TvDetailsLogo: View {
 /// (tvOS doesn't auto-focus the primary button when the details content swaps in
 /// after the async load — see `TvDetailsContent`).
 private enum DetailsActionFocus: Hashable {
-    case play, party, watchlist, watched, rate, anilist, trailer
+    case play, party, watchlist, watched, rate, anilist, mal, trailer
 }
 
 private enum DetailsCastHeaderFocus: Hashable {
@@ -5563,6 +5580,9 @@ private struct TvDetailsActionRow: View {
     /// Settings → Integrations → AniList: the viewer's list status of this title ("Watching 5/12").
     var aniListTitle: String? = nil
     var onAniListClick: (() -> Void)? = nil
+    /// Settings → Anime Integrations → MyAnimeList: the viewer's MAL status ("Watching 5/12").
+    var malTitle: String? = nil
+    var onMALClick: (() -> Void)? = nil
     let onTrailerClick: () -> Void
     var onBack: (() -> Void)? = nil
     var focus: FocusState<DetailsActionFocus?>.Binding
@@ -5653,6 +5673,24 @@ private struct TvDetailsActionRow: View {
                 .disabled(entryLocked)
             }
 
+            if let onMALClick {
+                TvDetailsActionButton(
+                    title: malTitle,
+                    systemName: "m.circle.fill",
+                    iconAsset: MALEpisodeRatings.assetName,
+                    accessibilityLabel: malTitle.map { "MyAnimeList: \($0)" } ?? "MyAnimeList",
+                    accessibilityHint: "Changes this title on your MyAnimeList list",
+                    isPrimary: false,
+                    isWide: true,
+                    focus: focus,
+                    tag: .mal,
+                    action: onMALClick,
+                    onFocus: onFocus,
+                    onBack: onBack
+                )
+                .disabled(entryLocked)
+            }
+
             TvDetailsActionButton(
                 title: nil,
                 systemName: isWatched ? "eye.fill" : "eye.slash.fill",
@@ -5704,9 +5742,9 @@ private struct TvDetailsAniListMenus: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .task(id: "\(meta.id)|\(episode?.id ?? "")|\(AniListAccount.login?.viewerID ?? 0)") {
+            .task(id: "\(meta.id)|\(episode?.id ?? "")|\(AniListAccount.login?.viewerID ?? 0)|\(MALAccount.login?.userName ?? "")") {
                 target = await Self.findTarget(meta: meta, episode: episode)
-                if let target, !AniListAccount.hasAsked(target.entryID) {
+                if AniListAccount.isLoggedIn, let target, !AniListAccount.hasAsked(target.entryID) {
                     await AniListAccount.refreshStates(ids: [target.entryID])
                 }
             }
@@ -5776,7 +5814,7 @@ private struct TvDetailsAniListMenus: ViewModifier {
     /// The AniList entry and episode of the play target: an AniList title's own, a Cinemeta
     /// anime's as AniList knows it, an AniList series' first entry before any episode.
     private static func findTarget(meta: NuvioMeta, episode: NuvioVideo?) async -> AniListScrobbler.Target? {
-        guard AniListAccount.isLoggedIn else { return nil }
+        guard AniListAccount.isLoggedIn || MALAccount.isLoggedIn else { return nil }
         if let found = await AniListScrobbler.target(meta: meta, video: episode, season: episode?.season, episode: episode?.episode) {
             return found
         }
@@ -5784,6 +5822,84 @@ private struct TvDetailsAniListMenus: ViewModifier {
             return AniListScrobbler.Target(entryID: first, episode: 0, label: meta.name)
         }
         return nil
+    }
+}
+
+/// The MAL button's menus: status, score, remove; for the MAL entry of the AniList entry the
+/// AniList button works on.
+private struct TvDetailsMALMenus: ViewModifier {
+    let title: String
+    let entryID: Int?
+    @Binding var malID: Int?
+    @Binding var status: MALAccount.ListStatus?
+    @Binding var showingMenu: Bool
+    @Binding var showingScore: Bool
+    @State private var revision = 0
+
+    func body(content: Content) -> some View {
+        content
+            .task(id: "\(entryID ?? 0)|\(MALAccount.login?.userName ?? "")|\(revision)") {
+                guard MALSettings.showsDetailsButton, let entryID,
+                      let mal = await MALEpisodeRatings.malID(aniListID: entryID) else {
+                    malID = nil
+                    status = nil
+                    return
+                }
+                malID = mal
+                status = await MALAccount.listStatus(mal: mal)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: MALAccount.changedNotification).receive(on: RunLoop.main)) { _ in
+                revision &+= 1
+            }
+            .confirmationDialog("MyAnimeList: \(title)", isPresented: $showingMenu, titleVisibility: .visible) {
+                menuButtons
+            } message: {
+                Text(message)
+            }
+            .confirmationDialog("Score on MyAnimeList", isPresented: $showingScore, titleVisibility: .visible) {
+                scoreButtons
+            }
+    }
+
+    @ViewBuilder
+    private var menuButtons: some View {
+        if let malID {
+            let current = status?.status
+            ForEach(MALAccount.statuses, id: \.self) { value in
+                Button(MALAccount.statusLabel(value) + (current == value ? " ✓" : "")) {
+                    let known = status
+                    Task { await MALAccount.setStatus(value, mal: malID, current: known) }
+                }
+            }
+            Button("Score…") { showingScore = true }
+            if current != nil {
+                Button("Remove from List", role: .destructive) {
+                    Task { await MALAccount.remove(mal: malID) }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var scoreButtons: some View {
+        if let malID {
+            ForEach(Array(stride(from: 10, through: 1, by: -1)), id: \.self) { score in
+                Button("\(score)/10" + (status?.score == score ? " ✓" : "")) {
+                    Task { await MALAccount.setScore(score, mal: malID) }
+                }
+            }
+            Button("Remove Score", role: .destructive) {
+                Task { await MALAccount.setScore(0, mal: malID) }
+            }
+        }
+    }
+
+    private var message: String {
+        guard let status, let current = status.status else { return "Not on your list yet" }
+        var parts = [MALAccount.statusLabel(current)]
+        parts.append(status.episodes > 0 ? "\(status.watched)/\(status.episodes) episodes" : "\(status.watched) episodes")
+        if status.score > 0 { parts.append("Score \(status.score)/10") }
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -5822,14 +5938,20 @@ private struct TvPlayActionButtonStyle: ButtonStyle {
 
 /// A service's icon on a Details action button, in its own colours; `systemName` until it loads.
 private struct TvDetailsServiceIcon: View {
-    let url: URL
+    let url: URL?
+    var assetName: String? = nil
     let systemName: String
     let size: CGFloat
     @State private var image: UIImage?
 
     var body: some View {
         ZStack {
-            if let image {
+            if let assetName {
+                Image(assetName)
+                    .resizable()
+                    .scaledToFit()
+                    .clipShape(RoundedRectangle(cornerRadius: size * 0.22, style: .continuous))
+            } else if let image {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFit()
@@ -5841,6 +5963,7 @@ private struct TvDetailsServiceIcon: View {
         }
         .frame(width: size, height: size)
         .task(id: url) {
+            guard let url else { return }
             image = await PosterArtworkCache.shared.image(for: url, maxPixelSize: 160)
         }
     }
@@ -5851,6 +5974,8 @@ private struct TvDetailsActionButton: View {
     let systemName: String
     /// A service's own icon in place of the symbol (AniList), the symbol until it has loaded.
     var iconURL: URL? = nil
+    /// The same from the app's own images (MyAnimeList).
+    var iconAsset: String? = nil
     let accessibilityLabel: String
     var accessibilityHint: String? = nil
     let isPrimary: Bool
@@ -5875,8 +6000,8 @@ private struct TvDetailsActionButton: View {
             action()
         }) {
             HStack(spacing: 16) {
-                if let iconURL {
-                    TvDetailsServiceIcon(url: iconURL, systemName: systemName, size: 44)
+                if iconURL != nil || iconAsset != nil {
+                    TvDetailsServiceIcon(url: iconURL, assetName: iconAsset, systemName: systemName, size: 44)
                         .accessibilityHidden(true)
                 } else {
                     Image(systemName: systemName)

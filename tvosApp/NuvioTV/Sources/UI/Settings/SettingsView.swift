@@ -419,7 +419,7 @@ enum SettingsKey {
         aniListEnabled, aniListTitleLanguage, aniListSeasonMode, aniListHomeRows, aniListSearch,
         aniListHideCinemetaDuplicates, aniListEpisodeDetails, aniListAdult,
         aniListClientID, aniListScrobble, aniListScrobbleCinemeta, aniListListRows, aniListOtherAddons, aniListCatalogs,
-        malEnabled, malClientID, malEpisodeRatings, malScrobble, malAdult, malCatalogs,
+        malEnabled, malClientID, malEpisodeRatings, malScrobble, malAdult, malCatalogs, malDetailsButton, aniListDetailsButton,
         mdbListEnabled, mdbListApiKey, mdbListUseImdb, mdbListUseTmdb,
         mdbListUseTomatoes, mdbListUseMetacritic, mdbListUseTrakt,
         mdbListUseLetterboxd, mdbListUseAudience,
@@ -5428,6 +5428,7 @@ private struct MALOptionsSheet: View {
     @AppStorage(SettingsKey.malEpisodeRatings) private var episodeRatings = true
     @AppStorage(SettingsKey.malScrobble) private var scrobble = true
     @AppStorage(SettingsKey.malAdult) private var adult = false
+    @AppStorage(SettingsKey.malDetailsButton) private var detailsButton = true
     @State private var accountName: String? = MALAccount.login?.userName
     /// The `state` and PKCE verifier of the QR code's address, so the Apple TV takes only its own login.
     @State private var loginState = UUID().uuidString.replacingOccurrences(of: "-", with: "")
@@ -5573,6 +5574,13 @@ private struct MALOptionsSheet: View {
                     title: L10n.string("settings_anilist_scrobble", fallback: "Write Watched Episodes"),
                     subtitle: L10n.string("settings_mal_scrobble_subtitle", fallback: "After an episode is watched to the end, or marked in details. Progress only goes forward"),
                     isOn: $scrobble,
+                    accentColor: accentColor
+                )
+
+                SettingsToggleRow(
+                    title: L10n.string("settings_mal_details_button", fallback: "MAL Button in Details"),
+                    subtitle: L10n.string("settings_mal_details_button_subtitle", fallback: "Your MAL status beside Play: change it, score or remove the title"),
+                    isOn: $detailsButton,
                     accentColor: accentColor
                 )
             } else {
@@ -5774,6 +5782,7 @@ private struct AniListOptionsSheet: View {
     @AppStorage(SettingsKey.aniListHideCinemetaDuplicates) private var hideCinemetaDuplicates = false
     @AppStorage(SettingsKey.aniListEpisodeDetails) private var episodeDetails = true
     @AppStorage(SettingsKey.malEnabled) private var malEnabled = false
+    @AppStorage(SettingsKey.aniListDetailsButton) private var detailsButton = true
     @State private var showingCatalogs = false
     @AppStorage(SettingsKey.aniListAdult) private var adult = false
     @AppStorage(SettingsKey.aniListClientID) private var clientID = ""
@@ -6049,6 +6058,13 @@ private struct AniListOptionsSheet: View {
             isOn: $scrobbleCinemeta,
             accentColor: accentColor,
             isAvailable: scrobble
+        )
+
+        SettingsToggleRow(
+            title: L10n.string("settings_anilist_details_button", fallback: "AniList Button in Details"),
+            subtitle: L10n.string("settings_anilist_details_button_subtitle", fallback: "Your list status beside Play: change it, score, favourite or remove the title"),
+            isOn: $detailsButton,
+            accentColor: accentColor
         )
     }
 
