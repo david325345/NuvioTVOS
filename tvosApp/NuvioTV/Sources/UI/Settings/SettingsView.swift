@@ -5435,6 +5435,9 @@ private struct MALOptionsSheet: View {
     @State private var verifier = MALAccount.makeVerifier()
     @State private var phoneLogin: AniListLoginServer.State?
     @State private var showingCatalogs = false
+    /// Bumped when the Client ID is entered: the field writes it without redrawing this window,
+    /// so the QR code showed only after leaving and coming back.
+    @State private var clientIDRevision = 0
 
     var body: some View {
         ZStack {
@@ -5591,17 +5594,25 @@ private struct MALOptionsSheet: View {
                         fallback: "myanimelist.net/apiconfig → Create ID, App Type \"other\", with the App Redirect URL below"
                     ),
                     placeholder: "0123456789abcdef",
-                    text: $clientID
+                    text: $clientID,
+                    onCommit: { clientIDRevision &+= 1 }
                 )
+                .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification).receive(on: RunLoop.main)) { _ in
+                    let stored = MALSettings.clientID
+                    if stored != clientID.trimmingCharacters(in: .whitespacesAndNewlines) || clientIDRevision == 0 {
+                        clientIDRevision &+= 1
+                    }
+                }
 
                 SettingsInfoRow(
                     title: L10n.string("settings_mal_redirect", fallback: "App Redirect URL"),
                     value: redirect?.absoluteString ?? L10n.string("settings_anilist_redirect_none", fallback: "Connect this Apple TV to your home network")
                 )
 
-                if let redirect, !clientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                let _ = clientIDRevision
+                if let redirect, !currentClientID.isEmpty,
                    let url = MALAccount.authorizeURL(
-                       clientID: clientID.trimmingCharacters(in: .whitespacesAndNewlines),
+                       clientID: currentClientID,
                        verifier: verifier, state: loginState, redirect: redirect
                    ) {
                     SettingsQRCodeCard(
@@ -5610,7 +5621,7 @@ private struct MALOptionsSheet: View {
                     )
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 8)
-                    .task(id: clientID) { await runPhoneLogin(redirect: redirect) }
+                    .task(id: currentClientID) { await runPhoneLogin(redirect: redirect) }
 
                     SettingsInfoRow(
                         title: L10n.string("settings_anilist_phone_login", fallback: "From Your Phone"),
@@ -5626,6 +5637,12 @@ private struct MALOptionsSheet: View {
 
     private var redirect: URL? {
         AniListLoginServer.redirectURL(path: AniListLoginServer.malPath)
+    }
+
+    /// The Client ID as typed, else as stored for this profile.
+    private var currentClientID: String {
+        let typed = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return typed.isEmpty ? MALSettings.clientID : typed
     }
 
     private var phoneLoginText: String {
@@ -5649,7 +5666,7 @@ private struct MALOptionsSheet: View {
         phoneLogin = nil
         let session = UUID()
         let verifier = self.verifier
-        let client = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let client = currentClientID
         AniListLoginServer.shared.start(
             session: session,
             expectedState: loginState,
