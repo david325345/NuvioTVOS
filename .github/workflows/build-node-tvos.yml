@@ -25,12 +25,25 @@ jobs:
     timeout-minutes: 350
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: 4G
+      CCACHE_MAXSIZE: 3G
       CCACHE_SLOPPINESS: pch_defines,time_macros,include_file_mtime,include_file_ctime
       CCACHE_BASEDIR: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
 
+      - name: Free disk space
+        # Node + V8 objects, archives and the compiler cache need ~25 GB.
+        run: |
+          df -h / | tail -1
+          keep="$(xcode-select -p | sed 's#/Contents/Developer##')"
+          for app in /Applications/Xcode*.app; do
+            [ "$app" = "$keep" ] || sudo rm -rf "$app" &
+          done
+          sudo rm -rf "${ANDROID_HOME:-/nonexistent}" ~/Library/Android ~/.android ~/.dotnet /usr/local/share/dotnet \
+            /Users/runner/hostedtoolcache/CodeQL /Users/runner/hostedtoolcache/go /Users/runner/hostedtoolcache/Ruby \
+            /Users/runner/hostedtoolcache/PyPy ~/.ghcup /usr/local/lib/node_modules &
+          wait
+          df -h / | tail -1
       - name: Toolchain
         run: |
           xcodebuild -version
@@ -70,6 +83,7 @@ jobs:
       - name: Report errors
         if: failure()
         run: |
+          df -h / | tail -1
           grep -E "(error|fatal error): " build.log | sed -E 's#^.*/node-src/##' | sort | uniq -c | sort -rn | head -60 \
             | while IFS= read -r line; do echo "::error::$line"; done
           grep -cE "error: " build.log || true

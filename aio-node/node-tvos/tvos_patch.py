@@ -131,6 +131,15 @@ def prepare_script(text):
     text = replace_all('-sdk "iphonesimulator"', f'-sdk "appletvsimulator" TVOS_DEPLOYMENT_TARGET={target}', 1)(text)
     text = text.replace("Release-iphoneos", "Release-appletvos")
     text = text.replace("Release-iphonesimulator", "Release-appletvsimulator")
+    # CI runners have little disk: move the archives instead of copying them
+    # and drop the object files once they are archived.
+    text = replace_all("cp $LIBRARY_PATH/$output_file", "mv $LIBRARY_PATH/$output_file", 2)(text)
+    text = replace_all(
+        "  make -C out v8_compiler BUILDTYPE=Release -j$(getconf _NPROCESSORS_ONLN)\n",
+        "  make -C out v8_compiler BUILDTYPE=Release -j$(getconf _NPROCESSORS_ONLN)\n"
+        "  rm -rf $LIBRARY_PATH/obj.target $LIBRARY_PATH/obj.host\n",
+        2,
+    )(text)
     # Keep compiling after an error, so one CI run lists every tvOS problem.
     text, count = re.subn(r"\n(\s*)make -j\$\(getconf _NPROCESSORS_ONLN\)\n", r"\n\1make -k -j$(getconf _NPROCESSORS_ONLN)\n", text)
     if count != 2:
