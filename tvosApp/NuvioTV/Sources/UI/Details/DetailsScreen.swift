@@ -4392,7 +4392,15 @@ struct TvDetailsContent: View {
                     scrollProxy: scrollProxy
                 )
             },
-            onWatchlistClick: onWatchlistClick,
+            onWatchlistClick: {
+                // An AniList title also goes onto (or off) the viewer's AniList list.
+                if AniListAccount.isLoggedIn,
+                   let entryID = aniListTarget?.entryID ?? AniListMetaBuilder.aniListID(from: openedID ?? meta.id) {
+                    let added = !uiState.isInWatchlist
+                    Task { await AniListAccount.libraryChanged(entryID: entryID, added: added) }
+                }
+                onWatchlistClick()
+            },
             onWatchedClick: onWatchedClick,
             onRateClick: onRateClick != nil ? {
                 stopBackgroundTrailer(manual: false)
@@ -5626,6 +5634,7 @@ private struct TvDetailsActionRow: View {
                 TvDetailsActionButton(
                     title: aniListTitle,
                     systemName: "a.circle.fill",
+                    iconURL: URL(string: AniListMetaBuilder.ratingIcon),
                     accessibilityLabel: aniListTitle.map { "AniList: \($0)" } ?? "AniList",
                     accessibilityHint: "Changes this title on your AniList list",
                     isPrimary: false,
@@ -5806,9 +5815,37 @@ private struct TvPlayActionButtonStyle: ButtonStyle {
     }
 }
 
+/// A service's icon on a Details action button, in its own colours; `systemName` until it loads.
+private struct TvDetailsServiceIcon: View {
+    let url: URL
+    let systemName: String
+    let size: CGFloat
+    @State private var image: UIImage?
+
+    var body: some View {
+        ZStack {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .clipShape(RoundedRectangle(cornerRadius: size * 0.22, style: .continuous))
+            } else {
+                Image(systemName: systemName)
+                    .font(.system(size: size * 0.82, weight: .bold))
+            }
+        }
+        .frame(width: size, height: size)
+        .task(id: url) {
+            image = await PosterArtworkCache.shared.image(for: url, maxPixelSize: 160)
+        }
+    }
+}
+
 private struct TvDetailsActionButton: View {
     let title: String?
     let systemName: String
+    /// A service's own icon in place of the symbol (AniList), the symbol until it has loaded.
+    var iconURL: URL? = nil
     let accessibilityLabel: String
     var accessibilityHint: String? = nil
     let isPrimary: Bool
@@ -5833,9 +5870,14 @@ private struct TvDetailsActionButton: View {
             action()
         }) {
             HStack(spacing: 16) {
-                Image(systemName: systemName)
-                    .font(.system(size: isPrimary ? 30 : 36, weight: .bold))
-                    .accessibilityHidden(true)
+                if let iconURL {
+                    TvDetailsServiceIcon(url: iconURL, systemName: systemName, size: 44)
+                        .accessibilityHidden(true)
+                } else {
+                    Image(systemName: systemName)
+                        .font(.system(size: isPrimary ? 30 : 36, weight: .bold))
+                        .accessibilityHidden(true)
+                }
 
                 if let title {
                     Text(title)

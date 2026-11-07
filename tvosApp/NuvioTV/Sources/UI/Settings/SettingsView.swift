@@ -6240,7 +6240,7 @@ private struct MdbListOptionsSheet: View {
                                 RatingProviderOrderRow(
                                     item: item,
                                     accentColor: accentColor,
-                                    canToggle: item.isAddon ? true : mdbListControlsEnabled,
+                                    canToggle: item.isAddon || item.id == AniListMetaBuilder.ratingSource ? true : mdbListControlsEnabled,
                                     canMoveUp: index > 0,
                                     canMoveDown: index < ratingProviderRows.count - 1,
                                     onToggle: { toggleProvider(item) },
@@ -6330,6 +6330,19 @@ private struct MdbListOptionsSheet: View {
             )
         }
 
+        // AniList's own score (Settings → AniList), switched here like the others but without MDBList.
+        if AniListSettings.isEnabled {
+            items.append(
+                RatingProviderRowItem(
+                    id: AniListMetaBuilder.ratingSource,
+                    title: "AniList",
+                    subtitle: L10n.string("settings_rating_provider_anilist_subtitle", fallback: "AniList average score"),
+                    isAddon: false,
+                    isEnabled: AddonRatingsService.isSourceEnabled(AniListMetaBuilder.ratingSource)
+                )
+            )
+        }
+
         for source in addonRatingSources {
             items.append(
                 RatingProviderRowItem(
@@ -6342,7 +6355,7 @@ private struct MdbListOptionsSheet: View {
             )
         }
 
-        ratingProviderRows = AddonRatingsService.sortRatings(items, by: { $0.id })
+        ratingProviderRows = AddonRatingsService.sortRatings(items, by: { $0.id }, includesDisabled: true)
     }
 
     private func toggleProvider(_ item: RatingProviderRowItem) {
@@ -6350,8 +6363,12 @@ private struct MdbListOptionsSheet: View {
         if let idx = ratingProviderRows.firstIndex(where: { $0.id == item.id }) {
             ratingProviderRows[idx].isEnabled = newEnabled
         }
-        if item.isAddon {
+        if item.isAddon || item.id == AniListMetaBuilder.ratingSource {
             AddonRatingsService.setSourceEnabled(item.id, enabled: newEnabled)
+            if item.id == AniListMetaBuilder.ratingSource {
+                // Shown rows filter it out; let them redraw.
+                NotificationCenter.default.post(name: AddonRatingsService.ratingOrderChangedNotification, object: nil)
+            }
             if let idx = addonRatingSources.firstIndex(where: { $0.source.lowercased() == item.id }) {
                 addonRatingSources[idx].isEnabled = newEnabled
             }

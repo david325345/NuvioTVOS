@@ -496,6 +496,24 @@ final class AniListTests: XCTestCase {
 
     // MARK: Episode labels
 
+    /// Settings → Rating Providers & Order: AniList is one of the rows, moved and switched like the others.
+    func testAniListsScoreCanBeMovedAndSwitchedOff() throws {
+        let suite = "anilist-ratings-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let items = [(source: "anilist", value: 1), (source: "imdb", value: 2), (source: "myanimelist", value: 3)]
+        func shown(includingDisabled: Bool = false) -> [String] {
+            AddonRatingsService.sortRatings(items, by: { $0.source }, defaults: defaults, includesDisabled: includingDisabled).map(\.source)
+        }
+
+        XCTAssertEqual(shown(), ["imdb", "myanimelist", "anilist"])
+        AddonRatingsService.setRatingOrder(["anilist", "imdb", "myanimelist"], defaults: defaults)
+        XCTAssertEqual(shown(), ["anilist", "imdb", "myanimelist"])
+        AddonRatingsService.setSourceEnabled("anilist", enabled: false, defaults: defaults)
+        XCTAssertEqual(shown(), ["imdb", "myanimelist"])
+        XCTAssertEqual(shown(includingDisabled: true), ["anilist", "imdb", "myanimelist"])
+    }
+
     func testAniListEpisodesAreLabelledWithoutTheFirstSeason() {
         XCTAssertEqual(AniListMetaBuilder.episodeCode(id: "anilist:101:1", season: 1, episode: 1), "E1")
         XCTAssertEqual(AniListMetaBuilder.episodeCode(id: "anilist:102:5", season: 2, episode: 5), "S2 E5")

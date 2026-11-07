@@ -505,6 +505,21 @@ enum AniListAccount {
         changed(homeToo: change.status != nil)
     }
 
+    /// The "+" in Details on an AniList title. Added: onto the AniList list as Planning, unless it
+    /// is on a list already. Removed: off the list only while it is still Planning (nothing
+    /// watched); Watching, Completed and the rest stay as they are.
+    static func libraryChanged(entryID: Int, added: Bool) async {
+        guard isLoggedIn else { return }
+        if !hasAsked(entryID) { await refreshStates(ids: [entryID]) }
+        let status = entry(for: entryID)?.status
+        if added {
+            guard status == nil else { return }
+            await setStatus("PLANNING", entryID: entryID)
+        } else if status == "PLANNING" {
+            await remove(entryID: entryID)
+        }
+    }
+
     static func remove(entryID: Int) async {
         guard isLoggedIn, let login, let entry = entry(for: entryID) else { return }
         do {

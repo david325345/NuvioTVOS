@@ -546,7 +546,7 @@ enum AniListService {
     ///   franchise's main entry; one IMDb title stands for every season).
     /// One small request, kept a day.
     static func ratings(for meta: NuvioMeta) async -> [NuvioExternalRating] {
-        guard AniListSettings.isEnabled else { return [] }
+        guard AniListSettings.isEnabled, AddonRatingsService.isSourceEnabled(AniListMetaBuilder.ratingSource) else { return [] }
         let id: Int
         if let own = AniListMetaBuilder.aniListID(from: meta.id) {
             let carried = (meta.externalRatings ?? []).filter { $0.source == AniListMetaBuilder.ratingSource }
@@ -581,6 +581,23 @@ enum AniListService {
         }
         let all = await maps.aniListIDs(tmdbTV: tmdb, imdb: imdb)
         return all.count == 1 ? all.first : nil
+    }
+
+    /// The title as the library services (Trakt, Simkl, MDBList, WeTrakr) know it: an AniList
+    /// title with the IMDb and TMDB ids it maps to (they keep the whole show; Simkl also takes the
+    /// `anilist:` id itself, so it keeps the season). Anything else as it is.
+    static func libraryMeta(for meta: NuvioMeta) async -> NuvioMeta {
+        guard let id = AniListMetaBuilder.aniListID(from: meta.id), meta.imdbId == nil || meta.tmdbId == nil else { return meta }
+        let imdb: String?
+        if let known = meta.imdbId {
+            imdb = known
+        } else {
+            imdb = await trailerIMDbID(metaID: meta.id)
+        }
+        let entry = await AniListOfflineMaps.shared.entry(aniListID: id)
+        let tmdb = meta.tmdbId ?? (meta.isSeries ? entry?.tmdbTV : entry?.tmdbMovie)
+        guard imdb != nil || tmdb != nil else { return meta }
+        return meta.withLibraryIDs(imdbId: imdb, tmdbId: tmdb)
     }
 
     /// The title MDBList and the rating add-ons are asked about: an AniList title by the IMDb id
@@ -698,5 +715,41 @@ enum AniListTitleIndex {
         lock.lock()
         defer { lock.unlock() }
         return entries[metaID.lowercased()]?.related ?? []
+    }
+}
+
+extension NuvioMeta {
+    /// The same title with these IMDb and TMDB ids (for the library services).
+    func withLibraryIDs(imdbId: String?, tmdbId: Int?) -> NuvioMeta {
+        NuvioMeta(
+            id: id,
+            name: name,
+            description: description,
+            posterUrl: posterUrl,
+            backgroundUrl: backgroundUrl,
+            logoUrl: logoUrl,
+            imdbId: imdbId,
+            tmdbId: tmdbId,
+            type: type,
+            year: year,
+            genres: genres,
+            rating: rating,
+            releaseInfo: releaseInfo,
+            runtime: runtime,
+            cast: cast,
+            director: director,
+            writer: writer,
+            certification: certification,
+            country: country,
+            language: language,
+            released: released,
+            status: status,
+            videos: videos,
+            trailerYtIds: trailerYtIds,
+            externalRatings: externalRatings,
+            posterShape: posterShape,
+            isFromAddon: isFromAddon,
+            landscapePosterUrl: landscapePosterUrl
+        )
     }
 }
