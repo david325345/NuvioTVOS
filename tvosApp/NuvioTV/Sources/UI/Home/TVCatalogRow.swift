@@ -654,7 +654,7 @@ struct TVCatalogRow: View {
                     continueUpNextBadgeText: upNextBadgeText,
                     collectionOrigin: id == TVHomeSection.continueWatchingId && progressItem?.isUpNextEntry == false
                         ? collectionOriginsByItemId[item.id] : nil,
-                    showsAniListOrigin: id == TVHomeSection.continueWatchingId,
+                    showsAniListOrigin: id == TVHomeSection.continueWatchingId || AniListService.isListRow(id),
                     showsWatchedBadge: id != TVHomeSection.continueWatchingId && id != TVHomeSection.upcomingId
                         && id != TVHomeSection.calendarTodayId,
                     shouldRequestInitialFocus: shouldRequestInitialFocus,

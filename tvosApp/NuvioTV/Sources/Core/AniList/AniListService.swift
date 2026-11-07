@@ -77,6 +77,12 @@ enum AniListService {
         TVHomeCatalogOrder.catalogSettingsKey(addonId: addonID, contentType: homeContentType, catalogId: rowID)
     }
 
+    /// The viewer's AniList lists on Home ("My Watching"…): their cards carry AniList's mark,
+    /// as in Continue Watching.
+    static func isListRow(_ homeRowID: String) -> Bool {
+        homeRowID.hasPrefix(listRowID("list-"))
+    }
+
     static func listRowID(_ rowID: String) -> String {
         "addon_\(addonID)_\(homeContentType)_\(rowID)"
     }
