@@ -1268,4 +1268,14 @@ final class AniListTests: XCTestCase {
         XCTAssertFalse(AniListMatcher.isCinemetaNumbering("tmdb:203737:2:5", season: 2, episode: 5))
         XCTAssertFalse(AniListMatcher.isCinemetaNumbering(nil, season: 2, episode: 5))
     }
+
+    func testTabsAreNamedByWhatTheyAddToTheSeries() {
+        XCTAssertEqual(AniListMetaBuilder.shortName("Shingeki no Kyojin Season 3 Part 2", base: "Shingeki no Kyojin"), "Season 3 Part 2")
+        XCTAssertEqual(AniListMetaBuilder.shortName("Naruto: Shippuuden", base: "Naruto"), "Shippuuden")
+        XCTAssertEqual(AniListMetaBuilder.shortName("Kono Subarashii Sekai ni Shukufuku wo! 2", base: "Kono Subarashii Sekai ni Shukufuku wo!"), "2")
+        XCTAssertEqual(AniListMetaBuilder.shortName("Narutoverse", base: "Naruto"), "Narutoverse", "a word isn't cut")
+        XCTAssertEqual(AniListMetaBuilder.shortName("Mob Psycho 100 II", base: "Mob Psycho 100"), "II")
+        XCTAssertEqual(AniListMetaBuilder.shortName("Bleach", base: "Ble"), "Bleach", "too little shared")
+        XCTAssertEqual(AniListMetaBuilder.shortName("Re:Zero", base: "Re:Zero"), "")
+    }
 }

@@ -5800,7 +5800,7 @@ private struct TvDetailsAniListMenus: ViewModifier {
         if AniListMetaBuilder.isAniListID(meta.id) {
             let season = meta.videos?.first(where: { AniListMetaBuilder.aniListID(from: $0.id) == target.entryID })?.season
             let tab = season.flatMap { AniListTitleIndex.tabTitle(metaID: meta.id, season: $0) }
-            return "AniList: \(tab ?? meta.name)"
+            return "AniList: \(meta.name)" + (tab.map { " · \($0)" } ?? "")
         }
         return "AniList: \(target.label)"
     }
@@ -8592,6 +8592,10 @@ private struct TvDetailsEpisodes: View {
         // AniList titles name each tab after its AniList entry.
         if let name = AniListTitleIndex.tabTitle(metaID: meta.id, season: season) {
             return name
+        }
+        if AniListMetaBuilder.isAniListID(meta.id) {
+            // AniList's entries aren't seasons.
+            return seasons.count > 1 ? "Part \(season)" : "Episodes"
         }
         return season <= 0 ? "Specials" : "Season \(season)"
     }
