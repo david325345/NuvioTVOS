@@ -5344,6 +5344,32 @@ private struct IntegrationSettingsView: View {
     }
 }
 
+/// A few paragraphs of explanation in a settings window (how to log in, which ids add-ons get);
+/// **bold** and *italic* as Markdown.
+private struct SettingsHelpText: View {
+    let title: String
+    let paragraphs: [String]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundColor(.white.opacity(0.88))
+            ForEach(Array(paragraphs.enumerated()), id: \.offset) { _, paragraph in
+                Text(LocalizedStringKey(paragraph))
+                    .font(.system(size: 19, weight: .regular))
+                    .foregroundColor(.white.opacity(0.62))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
+        .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color.white.opacity(0.05)))
+        .accessibilityElement(children: .combine)
+    }
+}
+
 /// Settings → Integrations → Anime Integrations: AniList and MyAnimeList, each in its own window.
 private struct AnimeIntegrationsSheet: View {
     let accentColor: Color
@@ -5604,6 +5630,16 @@ private struct MALOptionsSheet: View {
                     accentColor: accentColor
                 )
             } else {
+                SettingsHelpText(
+                    title: L10n.string("settings_mal_howto_title", fallback: "How to Log In"),
+                    paragraphs: [
+                        L10n.string("settings_mal_howto_1", fallback: "1. Create a free account at **myanimelist.net/register.php**."),
+                        L10n.string("settings_mal_howto_2", fallback: "2. Open **myanimelist.net/apiconfig** → *Create ID*: App Type **other**, **App Redirect URL** = the address shown below, Homepage URL anything (e.g. github.com/david325345/NuvioTVOS), Non-Commercial, Hobbyist."),
+                        L10n.string("settings_mal_howto_3", fallback: "3. Copy the **Client ID** into the field below."),
+                        L10n.string("settings_mal_howto_4", fallback: "4. Scan the QR code with your phone on the same Wi-Fi, log in to MAL and tap *Allow*.")
+                    ]
+                )
+
                 SettingsTextFieldRow(
                     title: L10n.string("settings_anilist_client_id", fallback: "Client ID"),
                     subtitle: L10n.string(
@@ -5883,6 +5919,16 @@ private struct AniListOptionsSheet: View {
                             accentColor: accentColor,
                             isAvailable: enabled || malEnabled
                         )
+
+                        SettingsHelpText(
+                            title: L10n.string("settings_anilist_ids_title", fallback: "AniList IDs or Converted IDs?"),
+                            paragraphs: [
+                                L10n.string("settings_anilist_ids_1", fallback: "**Add-ons that take anilist: ids get exactly what you opened.** Every season, part, OVA and movie has its own AniList entry, and episodes are numbered the way AniList numbers them, so nothing has to be guessed."),
+                                L10n.string("settings_anilist_ids_2", fallback: "**AniList is the fastest and the widest.** New anime are usually on AniList within hours of their announcement, before IMDb, TheTVDB, TMDB or Kitsu. It also lists ONAs, shorts, specials, donghua and music videos that the others often don't have."),
+                                L10n.string("settings_anilist_ids_3", fallback: "**Converted ids are for add-ons that don't know AniList.** They get a Kitsu, MAL, AniDB, IMDb or TMDB id with season and episode, from the offline tables. That can miss brand-new seasons or number split seasons differently. An episode that can't be placed isn't asked at all rather than asked wrong."),
+                                L10n.string("settings_anilist_ids_4", fallback: "**Recommended:** prefer add-ons that take anilist: ids, and keep conversion on for the rest.")
+                            ]
+                        )
                     }
 
                     titlesGroup
@@ -6113,6 +6159,16 @@ private struct AniListOptionsSheet: View {
 
     @ViewBuilder
     private var loginRows: some View {
+        SettingsHelpText(
+            title: L10n.string("settings_anilist_howto_title", fallback: "How to Log In"),
+            paragraphs: [
+                L10n.string("settings_anilist_howto_1", fallback: "1. Create a free account at **anilist.co/signup**."),
+                L10n.string("settings_anilist_howto_2", fallback: "2. Open **anilist.co/settings/developer** → *Create New Client*. Name it e.g. \"Nuvio\" and set **Redirect URL** to the address shown below."),
+                L10n.string("settings_anilist_howto_3", fallback: "3. Copy the **Client ID** into the field below."),
+                L10n.string("settings_anilist_howto_4", fallback: "4. Scan the QR code with your phone on the same Wi-Fi, log in to AniList and tap *Authorize*. This Apple TV logs in by itself.")
+            ]
+        )
+
         SettingsTextFieldRow(
             title: L10n.string("settings_anilist_client_id", fallback: "Client ID"),
             subtitle: L10n.string(
