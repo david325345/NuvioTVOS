@@ -299,8 +299,10 @@ final class StreamsRepository: ObservableObject {
         let enabledURLs = addonManifestURLs
         // Plugin scrapers run beside the add-ons, one group each (Android parity).
         let pluginTargets = PluginStreamDiscovery.targets(type: type, videoID: videoId)
+        // Fork experiment: AIOStreams is still starting — its group waits for it.
+        let startingAIO = AIOExperiment.startingAddonURL(besides: enabledURLs) != nil
 
-        guard !enabledURLs.isEmpty || !pluginTargets.isEmpty else {
+        guard !enabledURLs.isEmpty || !pluginTargets.isEmpty || startingAIO else {
             state = StreamsDiscoveryState(
                 requestKey: requestKey,
                 revision: state.revision &+ 1,
@@ -336,7 +338,7 @@ final class StreamsRepository: ObservableObject {
             )
         }
 
-        guard !targets.isEmpty || !pluginTargets.isEmpty else {
+        guard !targets.isEmpty || !pluginTargets.isEmpty || startingAIO else {
             state = StreamsDiscoveryState(
                 requestKey: requestKey,
                 revision: state.revision &+ 1,
@@ -359,7 +361,9 @@ final class StreamsRepository: ObservableObject {
             )
         } + pluginTargets.map {
             AddonStreamGroup(addonId: $0.groupID, displayName: $0.displayName, streams: [], isLoading: true, error: nil)
-        }
+        } + (startingAIO
+            ? [AddonStreamGroup(addonId: Self.startingAIOGroupID, displayName: "AIOStreams", streams: [], isLoading: true, error: nil)]
+            : [])
         state = StreamsDiscoveryState(
             requestKey: requestKey,
             revision: state.revision &+ 1,
@@ -373,6 +377,11 @@ final class StreamsRepository: ObservableObject {
             for target in targets {
                 group.addTask {
                     await Self.fetchAddonGroup(target: target, type: type, videoId: videoId)
+                }
+            }
+            if startingAIO {
+                group.addTask {
+                    await Self.fetchStartingAIOGroup(type: type, videoId: videoId)
                 }
             }
             for target in pluginTargets {
@@ -472,6 +481,30 @@ final class StreamsRepository: ObservableObject {
     private struct GroupUpdate {
         let addonId: String
         let group: AddonStreamGroup
+    }
+
+    // Fork experiment: the AIOStreams addon while AIOStreams starts.
+    private static let startingAIOGroupID = "aio.experiment.starting"
+
+    /// Waits (up to 20 s) for AIOStreams to start, then asks its addon like
+    /// any other; the group replaces the waiting one.
+    private static func fetchStartingAIOGroup(type: String, videoId: String) async -> GroupUpdate {
+        let waiting = AddonStreamGroup(addonId: startingAIOGroupID, displayName: "AIOStreams", streams: [], isLoading: false, error: nil)
+        guard let url = await AIOExperiment.waitForAddon(seconds: 20) else {
+            return GroupUpdate(addonId: startingAIOGroupID, group: waiting)
+        }
+        let manifests = await loadManifestsConcurrently(urls: [url])
+        guard let manifest = manifests[url], manifest.supportsResource("stream", type: type, id: videoId) else {
+            return GroupUpdate(addonId: startingAIOGroupID, group: waiting)
+        }
+        let target = StreamAddonTarget(
+            addonId: stableAddonId(manifest: manifest, manifestURL: url),
+            displayName: manifest.displayName ?? CinemetaCatalogRepository.streamAddonName(for: url),
+            manifestURL: url,
+            logo: manifest.logo
+        )
+        let update = await fetchAddonGroup(target: target, type: type, videoId: videoId)
+        return GroupUpdate(addonId: startingAIOGroupID, group: update.group)
     }
 
     /// Stable instance id matching Android: `addon:<manifestId>:<manifestUrl>`.

@@ -21,6 +21,8 @@ import os
 ///
 /// After each start, and after a long time in the background, one stream
 /// request warms AIOStreams up, so the first real search is not the slow one.
+/// A stream search while AIOStreams is still starting waits for its addon
+/// (`startingAddonURL` / `waitForAddon`) instead of leaving it out.
 ///
 /// Everything Node.js prints goes straight to a log file, and a crash or an
 /// exit() leaves a note with the native stack in it, so the next app run can
@@ -118,6 +120,9 @@ final class AIOExperiment: ObservableObject {
     // MARK: - The addon, for CatalogRepository
 
     private nonisolated(unsafe) static var currentAddonURL: URL?
+    /// While AIOStreams starts (or its configuration is checked or restored):
+    /// the address its addon will most likely have.
+    private nonisolated(unsafe) static var pendingAddonURL: URL?
     private nonisolated static let addonLock = NSLock()
 
     /// The AIOStreams addon while it runs and is turned on.
@@ -143,13 +148,43 @@ final class AIOExperiment: ObservableObject {
 
     private func publishAddon() {
         let url = (phase == .running && addonEnabled && configurationVerified) ? manifestURL.flatMap(URL.init(string:)) : nil
+        let coming = url == nil && addonEnabled && (phase == .starting || (phase == .running && checkingConfiguration))
+        let pending = coming ? manifestURL.flatMap(URL.init(string:)) : nil
         Self.addonLock.lock()
         let changed = Self.currentAddonURL != url
         Self.currentAddonURL = url
+        Self.pendingAddonURL = pending
         Self.addonLock.unlock()
         if changed {
             NotificationCenter.default.post(name: Self.addonChangedNotification, object: nil)
         }
+    }
+
+    /// For `StreamsRepository`: while AIOStreams starts, its addon's likely
+    /// address, so a stream search can wait for it instead of leaving it out.
+    nonisolated static func startingAddonURL(besides installed: [URL]) -> URL? {
+        addonLock.lock()
+        let pending = pendingAddonURL
+        addonLock.unlock()
+        guard let pending, let uuid = uuid(fromManifest: pending.absoluteString),
+              !installed.contains(where: { $0.absoluteString.contains("/stremio/\(uuid)/") }) else { return nil }
+        return pending
+    }
+
+    /// The addon once AIOStreams has started and checked its configuration;
+    /// nil when it does not come within `seconds` or AIOStreams stopped.
+    nonisolated static func waitForAddon(seconds: TimeInterval) async -> URL? {
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline, !Task.isCancelled {
+            addonLock.lock()
+            let current = currentAddonURL
+            let pending = pendingAddonURL
+            addonLock.unlock()
+            if let current { return current }
+            if pending == nil { return nil }
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+        return nil
     }
 
     nonisolated static func uuid(fromManifest manifest: String) -> String? {
@@ -201,11 +236,7 @@ final class AIOExperiment: ObservableObject {
             notice = "Not started automatically: the last start did not finish (see Last run). Start it here when you want to try again."
             return
         }
-        // A moment for Nuvio's own start first.
-        Task {
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            start()
-        }
+        start()
     }
 
     func start() {
@@ -301,6 +332,7 @@ final class AIOExperiment: ObservableObject {
         startDate = Date()
         phase = .starting
         notice = nil
+        publishAddon()
         Self.saveRunRecord(kind: kind, ready: false)
         openLog()
         Self.note("start: \(kind == .aio ? "AIOStreams \(packageVersion)" : "Node.js test") · \(Self.deviceDescription()) · \(Self.memoryDescription())")
@@ -374,7 +406,12 @@ final class AIOExperiment: ObservableObject {
         }
         if wasStarting, phase != .starting {
             scheduleStateTimer(every: 5, stateFile: file, backupFile: backupFile)
-            if phase == .running { Task { await checkConfiguration() } }
+            if phase == .running {
+                // The remembered addon at once; checked right after (and taken
+                // back, or restored, if AIOStreams no longer has it).
+                if manifestURL != nil { configurationVerified = true }
+                Task { await checkConfiguration() }
+            }
         }
         publishAddon()
     }
@@ -391,11 +428,17 @@ final class AIOExperiment: ObservableObject {
     func checkConfiguration() async {
         guard phase == .running, !checkingConfiguration else { return }
         checkingConfiguration = true
-        defer { checkingConfiguration = false }
+        defer {
+            checkingConfiguration = false
+            publishAddon()
+        }
         if let manifest = manifestURL, let uuid = Self.uuid(fromManifest: manifest) {
             switch await Self.userExists(uuid) {
             case .some(false):
                 Self.note("configuration \(uuid.prefix(8))… is no longer in AIOStreams")
+                // Searches wait for the restored one instead.
+                configurationVerified = false
+                publishAddon()
             default:
                 configurationVerified = true
                 publishAddon()
