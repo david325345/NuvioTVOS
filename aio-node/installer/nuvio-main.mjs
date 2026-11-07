@@ -7,6 +7,11 @@
 //   NUVIO_STATE_FILE  where the addon address of a saved configuration is written
 //   NUVIO_BACKUP_FILE where a copy of the configuration (with its password) is
 //                     written; Nuvio moves it to the Keychain at once
+//   NUVIO_CONTROL_PORT / NUVIO_CONTROL_TOKEN
+//                     Nuvio's own port (127.0.0.1 only) for versions: check
+//                     for an update, install it for the next start
+//   NUVIO_AIO_HOME, NUVIO_AIO_SOURCE, NUVIO_AIO_CURRENT, NUVIO_AIO_VERSION
+//                     the versions (set by bootstrap.mjs)
 // plus AIOStreams' usual environment (DATABASE_URI, SECRET_KEY, BASE_URL …).
 //
 // The network port is a small proxy in front of AIOStreams. It forwards every
@@ -20,13 +25,19 @@ import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const aioRoot = process.env.AIO_ROOT;
 const aioPort = Number(process.env.PORT || 8770);
 const lanPort = Number(process.env.NUVIO_LAN_PORT || 0);
 const stateFile = process.env.NUVIO_STATE_FILE;
 const backupFile = process.env.NUVIO_BACKUP_FILE;
+const controlPort = Number(process.env.NUVIO_CONTROL_PORT || 0);
+const controlToken = process.env.NUVIO_CONTROL_TOKEN || '';
+const aioHome = process.env.NUVIO_AIO_HOME;
+const aioSource = process.env.NUVIO_AIO_SOURCE || '';
+const currentVersion = process.env.NUVIO_AIO_VERSION || '';
+const here = path.dirname(fileURLToPath(import.meta.url));
 const started = Date.now();
 
 function log(message) {
@@ -188,6 +199,101 @@ function startProxy() {
   originalListen.call(proxy, lanPort, '0.0.0.0', () => log(`configuration page on port ${lanPort}`));
 }
 
+// MARK: versions (Check for updates / Update in Nuvio)
+
+let update = { state: 'idle' };
+
+async function installer() {
+  return import(pathToFileURL(path.join(here, 'image-install.mjs')).href);
+}
+
+function versionsSummary(versions) {
+  const label = (name) => (name && versions.labels && versions.labels[name] && versions.labels[name].tag) || null;
+  return {
+    current: label(versions.current) || currentVersion || null,
+    previous: label(versions.previous),
+    pending: label(versions.pending),
+    source: aioSource || null,
+  };
+}
+
+async function runUpdate() {
+  update = { state: 'running', progress: 'Looking for the newest AIOStreams…' };
+  try {
+    const tools = await installer();
+    const { tag } = await tools.latestVersion(aioSource);
+    if (tag && tag === currentVersion) {
+      update = { state: 'done', upToDate: true, version: tag };
+      log(`AIOStreams ${tag} is the newest`);
+      return;
+    }
+    const result = await tools.install({
+      source: aioSource,
+      tag,
+      home: aioHome,
+      shimsDir: path.join(here, 'shims'),
+      log,
+      onProgress: ({ phase, done, total }) => {
+        update.progress = phase === 'download'
+          ? `Downloading ${tag || ''} — ${(done / 1048576).toFixed(1)}${total ? ` / ${(total / 1048576).toFixed(1)}` : ''} MB`
+          : `Preparing ${tag || ''}…`;
+      },
+    });
+    const versions = tools.readVersions(aioHome);
+    if (result.name === versions.current) {
+      update = { state: 'done', upToDate: true, version: result.tag };
+      return;
+    }
+    versions.pending = result.name;
+    versions.labels[result.name] = { tag: result.tag, source: aioSource || tools.DEFAULT_SOURCE, installedAt: new Date().toISOString() };
+    tools.saveVersions(aioHome, versions);
+    update = { state: 'done', version: result.tag, pending: true };
+    log(`AIOStreams ${result.tag} is installed; it starts with the next start of Nuvio`);
+  } catch (error) {
+    update = { state: 'failed', error: String(error && error.message ? error.message : error) };
+    log(`update failed: ${update.error}`);
+  }
+}
+
+function startControl() {
+  if (!controlPort || !controlToken || !aioHome) return;
+  const server = http.createServer(async (request, response) => {
+    const send = (status, body) => {
+      response.writeHead(status, { 'content-type': 'application/json' });
+      response.end(JSON.stringify(body));
+    };
+    if (request.headers['x-nuvio-token'] !== controlToken) return send(403, { error: 'forbidden' });
+    try {
+      if (request.method === 'GET' && request.url === '/versions') {
+        return send(200, versionsSummary((await installer()).readVersions(aioHome)));
+      }
+      if (request.method === 'POST' && request.url === '/check') {
+        const { tag } = await (await installer()).latestVersion(aioSource);
+        return send(200, { latest: tag, current: currentVersion || null });
+      }
+      if (request.url === '/update') {
+        if (request.method === 'POST' && update.state !== 'running') void runUpdate();
+        return send(request.method === 'POST' ? 202 : 200, update);
+      }
+      send(404, { error: 'not found' });
+    } catch (error) {
+      send(500, { error: String(error && error.message ? error.message : error) });
+    }
+  });
+  server.on('error', (error) => log(`control port ${controlPort}: ${error.message}`));
+  originalListen.call(server, controlPort, '127.0.0.1');
+}
+
+function markReady() {
+  if (!aioHome || !process.env.NUVIO_AIO_CURRENT) return;
+  installer().then((tools) => {
+    const versions = tools.readVersions(aioHome);
+    if (versions.lastReady === process.env.NUVIO_AIO_CURRENT) return;
+    versions.lastReady = process.env.NUVIO_AIO_CURRENT;
+    tools.saveVersions(aioHome, versions);
+  }).catch((error) => log(`versions: ${error.message}`));
+}
+
 async function waitUntilReady() {
   for (let attempt = 0; attempt < 600; attempt++) {
     const ok = await new Promise((resolve) => {
@@ -222,9 +328,10 @@ if (!aioRoot) {
   log('AIO_ROOT is not set');
   throw new Error('AIO_ROOT is not set');
 }
-writeState({ status: 'starting', pid: process.pid, node: process.version, port: aioPort, lanPort });
+writeState({ status: 'starting', pid: process.pid, node: process.version, port: aioPort, lanPort, version: currentVersion || null });
 process.chdir(aioRoot);
 startProxy();
+startControl();
 log(`starting AIOStreams from ${aioRoot} (node ${process.version}, ${process.arch}, jitless: ${process.execArgv.includes('--jitless') || process.versions.mobile ? 'yes' : 'no'})`);
 try {
   await import(pathToFileURL(path.join(aioRoot, 'packages/server/dist/server.js')).href);
@@ -237,6 +344,7 @@ const ready = await waitUntilReady();
 const seconds = ((Date.now() - started) / 1000).toFixed(1);
 const memory = Math.round(process.memoryUsage().rss / 1048576);
 writeState({ status: ready ? 'running' : 'not answering', startupSeconds: Number(seconds), rssMB: memory });
+if (ready) markReady();
 log(ready ? `AIOStreams is ready in ${seconds} s, ${memory} MB` : `AIOStreams did not answer within 5 minutes`);
 setInterval(() => {
   writeState({ rssMB: Math.round(process.memoryUsage().rss / 1048576), heapMB: Math.round(process.memoryUsage().heapUsed / 1048576) });

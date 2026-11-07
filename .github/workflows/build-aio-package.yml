@@ -8,6 +8,7 @@ on:
     branches: [aio-node]
     paths:
       - aio-node/aio-package/**
+      - aio-node/installer/shims/**
       - .github/workflows/build-aio-package.yml
   workflow_dispatch:
     inputs:
@@ -17,7 +18,6 @@ on:
 
 permissions:
   contents: read
-  actions: write   # starts the test IPA build with this package
 
 jobs:
   package:
@@ -40,23 +40,19 @@ jobs:
           cp build.log out/ 2>/dev/null || true
           [ -f out/aio.tar.gz ] && echo "::notice::$(tr -d '\n' < out/nuvio-package.json) · aio.tar.gz $(du -sh out/aio.tar.gz | cut -f1)"
           grep -E "^(shim|note|Native addons|files):" -A3 build.log | head -30 || true
+      - name: Installer (as Nuvio carries it)
+        run: bash aio-node/installer/assemble.sh "$RUNNER_TEMP/installer"
       - name: Smoke test (Node 24, --jitless, no anime database)
         env:
           ANIME_DB_LEVEL_OF_DETAIL: none
-        run: bash aio-node/aio-package/smoke.sh out
+        run: bash aio-node/aio-package/smoke.sh "$RUNNER_TEMP/installer" out/aio.tar.gz
       - name: Smoke test (Node 24, --jitless, anime database "required")
         if: always()
         env:
           ANIME_DB_LEVEL_OF_DETAIL: required
-        run: bash aio-node/aio-package/smoke.sh out
+        run: bash aio-node/aio-package/smoke.sh "$RUNNER_TEMP/installer" out/aio.tar.gz
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: aio-package
           path: out
-      - name: Test IPA with this package
-        # The IPA workflow waits for this run to finish, then takes its package.
-        if: success() && github.ref == 'refs/heads/aio-node'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh workflow run build-aio-ipa.yml -R "$GITHUB_REPOSITORY" --ref aio-node -f aio_run=${{ github.run_id }}

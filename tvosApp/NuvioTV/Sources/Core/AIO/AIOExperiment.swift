@@ -5,11 +5,14 @@ import os
 
 /// Experiment (fork branch `aio-node`, never part of a PR): the original
 /// AIOStreams running inside Nuvio on Apple TV, in Node.js 24 built for tvOS
-/// (nodejs-mobile). The app carries `NodeMobile.framework` and the AIOStreams
-/// package (`AIOPackage/aio.tar.gz` + `bootstrap.mjs`, built by CI from the
-/// AIOStreams release); `bootstrap.mjs` unpacks the package on first start and
-/// runs `nuvio-main.mjs`, which starts AIOStreams on 127.0.0.1 and a proxy for
-/// its configuration page on the network.
+/// (nodejs-mobile). The app carries `NodeMobile.framework` and the installer
+/// (`AIOInstaller`: bootstrap.mjs, image-install.mjs, nuvio-main.mjs, shims);
+/// AIOStreams itself comes from its official Docker image (or another source
+/// set in the sheet): the first start installs the newest version, Update
+/// installs a newer one for the next start, and the previous one stays, to go
+/// back to (automatically when a new version never got ready). `nuvio-main.mjs`
+/// starts AIOStreams on 127.0.0.1 with a proxy for its configuration page on
+/// the network, and a port of Nuvio's own (127.0.0.1 only) for the versions.
 ///
 /// Node can be started once per app run. When the configuration page creates,
 /// loads or saves a configuration, `nuvio-main.mjs` writes its addon address
@@ -41,6 +44,14 @@ final class AIOExperiment: ObservableObject {
     private nonisolated static let manifestKey = "aio.experiment.manifest"
     private nonisolated static let detailedLogKey = "aio.experiment.detailedLog"
     private nonisolated static let backupDefaultsKey = "aio.experiment.backup"
+    private nonisolated static let sourceKey = "aio.experiment.source"
+    private nonisolated static let usePreviousKey = "aio.experiment.usePrevious"
+    private nonisolated static let versionKey = "aio.experiment.version"
+    /// AIOStreams' official image.
+    nonisolated static let defaultSource = "ghcr.io/viren070/aiostreams"
+    /// Nuvio's own port in nuvio-main.mjs (versions), 127.0.0.1 only.
+    nonisolated static let controlPort = 8771
+    private let controlToken = UUID().uuidString
     /// The movie the warm-up asks for (The Matrix).
     private nonisolated static let warmUpID = "tt0133093"
 
@@ -81,6 +92,15 @@ final class AIOExperiment: ObservableObject {
     @Published private(set) var autoStart: Bool
     @Published private(set) var addonEnabled: Bool
     @Published private(set) var detailedLog: Bool
+    /// Where AIOStreams comes from: an image or a package address.
+    @Published private(set) var source: String
+    @Published private(set) var installProgress: String?
+    @Published private(set) var previousVersion: String?
+    @Published private(set) var pendingVersion: String?
+    @Published private(set) var latestVersion: String?
+    @Published private(set) var updateStatus: String?
+    @Published private(set) var updating = false
+    @Published private(set) var usePreviousAtNextStart = false
 
     private var stateTimer: Timer?
     private var logTimer: Timer?
@@ -102,7 +122,9 @@ final class AIOExperiment: ObservableObject {
         addonEnabled = UserDefaults.standard.object(forKey: Self.addonKey) as? Bool ?? true
         detailedLog = UserDefaults.standard.bool(forKey: Self.detailedLogKey)
         manifestURL = UserDefaults.standard.string(forKey: Self.manifestKey)
-        packageVersion = Self.packageInfo()
+        source = UserDefaults.standard.string(forKey: Self.sourceKey) ?? Self.defaultSource
+        packageVersion = UserDefaults.standard.string(forKey: Self.versionKey) ?? ""
+        usePreviousAtNextStart = UserDefaults.standard.bool(forKey: Self.usePreviousKey)
         hasBackup = Self.loadBackup() != nil
         loadPreviousRun()
         let center = NotificationCenter.default
@@ -222,9 +244,19 @@ final class AIOExperiment: ObservableObject {
         return "http://\(host):\(Self.lanPort)/stremio/configure"
     }
 
-    nonisolated static var isBundled: Bool {
-        Bundle.main.url(forResource: "aio", withExtension: "tar.gz") != nil
-            && Bundle.main.url(forResource: "bootstrap", withExtension: "mjs") != nil
+    /// The installer in the app (AIOStreams itself is downloaded).
+    nonisolated static var installer: URL? {
+        guard let folder = Bundle.main.url(forResource: "AIOInstaller", withExtension: nil),
+              FileManager.default.fileExists(atPath: folder.appendingPathComponent("bootstrap.mjs").path) else { return nil }
+        return folder
+    }
+
+    nonisolated static var isBundled: Bool { installer != nil }
+
+    /// Where the AIOStreams versions live (versions.json and a folder each).
+    nonisolated static var versionsHome: URL? {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("AIOStreams-versions", isDirectory: true)
     }
 
     // MARK: - Start
@@ -241,11 +273,11 @@ final class AIOExperiment: ObservableObject {
 
     func start() {
         guard !started else { return }
-        guard let package = Bundle.main.url(forResource: "aio", withExtension: "tar.gz"),
-              let bootstrap = Bundle.main.url(forResource: "bootstrap", withExtension: "mjs") else {
-            phase = .unavailable("The AIOStreams package is not in this build.")
+        guard let installer = Self.installer, let home = Self.versionsHome else {
+            phase = .unavailable("The AIOStreams installer is not in this build.")
             return
         }
+        let bootstrap = installer.appendingPathComponent("bootstrap.mjs")
         guard let nodeStart = Self.nodeStartFunction() else {
             phase = .unavailable("Node.js (NodeMobile.framework) is not in this build.")
             return
@@ -263,10 +295,11 @@ final class AIOExperiment: ObservableObject {
             dataDirectory = caches.appendingPathComponent("AIOStreams", isDirectory: true)
             try? fileManager.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
         }
-        let install = caches.appendingPathComponent("AIOStreams-package", isDirectory: true)
+        // Earlier builds carried the package and unpacked it here.
+        try? fileManager.removeItem(at: caches.appendingPathComponent("AIOStreams-package", isDirectory: true))
         let cache = caches.appendingPathComponent("AIOStreams-cache", isDirectory: true)
         let compileCache = caches.appendingPathComponent("AIOStreams-compile-cache", isDirectory: true)
-        for directory in [install, cache, compileCache] {
+        for directory in [home, cache, compileCache] {
             try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         }
         let stateFile = dataDirectory.appendingPathComponent("nuvio-state.json")
@@ -294,7 +327,18 @@ final class AIOExperiment: ObservableObject {
             "LOG_LEVEL": detailedLog ? "info" : "warn",
             // process.exit() would close Nuvio: nuvio-main.mjs turns it into a stop.
             "NUVIO_EMBEDDED": "1",
+            // Versions: installed in home from the source, switched by bootstrap.mjs.
+            "NUVIO_AIO_HOME": home.path,
+            "NUVIO_AIO_SOURCE": source,
+            "NUVIO_AIO_USE_PREVIOUS": usePreviousAtNextStart ? "1" : "0",
+            "NUVIO_AIO_LAST_START_FAILED": lastStartUnfinished ? "1" : "0",
+            "NUVIO_CONTROL_PORT": String(Self.controlPort),
+            "NUVIO_CONTROL_TOKEN": controlToken,
         ]
+        if usePreviousAtNextStart {
+            usePreviousAtNextStart = false
+            UserDefaults.standard.removeObject(forKey: Self.usePreviousKey)
+        }
         for (name, value) in environment {
             setenv(name, value, 1)
         }
@@ -306,7 +350,7 @@ final class AIOExperiment: ObservableObject {
         launch(
             .aio,
             nodeStart: nodeStart,
-            arguments: ["node", "--max-old-space-size=1024", bootstrap.path, package.path, install.path],
+            arguments: ["node", "--max-old-space-size=1024", bootstrap.path],
             stateFile: stateFile,
             backupFile: backupFile
         )
@@ -387,6 +431,11 @@ final class AIOExperiment: ObservableObject {
             default: break
             }
         }
+        installProgress = state["status"] as? String == "installing" ? state["installing"] as? String : nil
+        if let version = state["version"] as? String, !version.isEmpty, version != packageVersion {
+            packageVersion = version
+            UserDefaults.standard.set(version, forKey: Self.versionKey)
+        }
         if let seconds = state["startupSeconds"] as? Double { startupSeconds = seconds }
         if let rss = state["rssMB"] as? Int { nodeMemoryMB = rss }
         if let manifest = state["manifest"] as? String, manifest != lastStateManifest {
@@ -411,6 +460,7 @@ final class AIOExperiment: ObservableObject {
                 // back, or restored, if AIOStreams no longer has it).
                 if manifestURL != nil { configurationVerified = true }
                 Task { await checkConfiguration() }
+                Task { await refreshVersions() }
             }
         }
         publishAddon()
@@ -568,6 +618,105 @@ final class AIOExperiment: ObservableObject {
         guard let stored else { return nil }
         let data = (try? (stored as NSData).decompressed(using: .zlib) as Data) ?? stored
         return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+    // MARK: - Versions (nuvio-main.mjs, Nuvio's own port)
+
+    private func control(_ method: String, _ path: String, timeout: TimeInterval = 30) async -> [String: Any]? {
+        guard let url = URL(string: "http://127.0.0.1:\(Self.controlPort)\(path)") else { return nil }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.timeoutInterval = timeout
+        request.setValue(controlToken, forHTTPHeaderField: "x-nuvio-token")
+        guard let (data, _) = try? await URLSession.shared.data(for: request) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+
+    func refreshVersions() async {
+        guard phase == .running, let versions = await control("GET", "/versions") else { return }
+        if let current = versions["current"] as? String, !current.isEmpty, current != packageVersion {
+            packageVersion = current
+            UserDefaults.standard.set(current, forKey: Self.versionKey)
+        }
+        previousVersion = versions["previous"] as? String
+        pendingVersion = versions["pending"] as? String
+    }
+
+    /// The newest version the source offers.
+    func checkForUpdates() async {
+        guard phase == .running else {
+            updateStatus = "Start AIOStreams first"
+            return
+        }
+        updateStatus = "Checking…"
+        guard let answer = await control("POST", "/check", timeout: 60) else {
+            updateStatus = "Could not check (see the log)"
+            return
+        }
+        if let error = answer["error"] as? String {
+            updateStatus = "Could not check: \(error)"
+            return
+        }
+        latestVersion = answer["latest"] as? String
+        if let latest = latestVersion, latest == packageVersion {
+            updateStatus = "\(latest) is the newest"
+        } else if let latest = latestVersion {
+            updateStatus = pendingVersion == latest ? "\(latest) is installed — restart Nuvio to use it" : "\(latest) is available"
+        } else {
+            updateStatus = "The source does not say its version"
+        }
+    }
+
+    /// Installs the newest version for the next start; AIOStreams keeps running.
+    func update() async {
+        guard phase == .running, !updating else { return }
+        updating = true
+        defer { updating = false }
+        guard await control("POST", "/update") != nil else {
+            updateStatus = "Could not start the update (see the log)"
+            return
+        }
+        for _ in 0..<1200 {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard let state = await control("GET", "/update") else { continue }
+            switch state["state"] as? String {
+            case "running":
+                updateStatus = state["progress"] as? String ?? "Updating…"
+            case "done":
+                let version = state["version"] as? String ?? ""
+                if state["upToDate"] as? Bool == true {
+                    updateStatus = "\(version) is the newest"
+                } else {
+                    pendingVersion = version
+                    updateStatus = "\(version) is installed — restart Nuvio to use it"
+                }
+                await refreshVersions()
+                return
+            default:
+                updateStatus = "Update failed: \(state["error"] as? String ?? "see the log")"
+                return
+            }
+        }
+        updateStatus = "The update did not finish in 20 minutes (see the log)"
+    }
+
+    /// The previous version from the next start of Nuvio.
+    func usePreviousVersion() {
+        usePreviousAtNextStart = true
+        UserDefaults.standard.set(true, forKey: Self.usePreviousKey)
+        updateStatus = "\(previousVersion ?? "The previous version") starts with the next start of Nuvio"
+    }
+
+    /// From the next start (and for Update).
+    func setSource(_ value: String) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        source = trimmed.isEmpty ? Self.defaultSource : trimmed
+        UserDefaults.standard.set(source, forKey: Self.sourceKey)
+        updateStatus = "Source changed — it applies from the next start of Nuvio"
+    }
+
+    func resetSource() {
+        setSource(Self.defaultSource)
     }
 
     // MARK: - Warm-up
@@ -842,15 +991,6 @@ final class AIOExperiment: ObservableObject {
         let secret = bytes.map { String(format: "%02x", $0) }.joined()
         UserDefaults.standard.set(secret, forKey: secretKey)
         return secret
-    }
-
-    private nonisolated static func packageInfo() -> String {
-        guard let url = Bundle.main.url(forResource: "nuvio-package", withExtension: "json"),
-              let data = try? Data(contentsOf: url),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return "" }
-        let version = object["aiostreams"] as? String ?? ""
-        let commit = object["commit"] as? String ?? ""
-        return commit.isEmpty ? version : "\(version) (\(commit))"
     }
 
     private nonisolated static func appFootprintMB() -> Int? {

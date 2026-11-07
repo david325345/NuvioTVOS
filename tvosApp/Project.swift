@@ -146,10 +146,10 @@ let appTarget: Target = .target(
         "NuvioTV/Resources/SceneModels/YuNet.mlpackage",
         "NuvioTV/Resources/SceneModels/SFace-LICENSE.txt",
         "NuvioTV/Resources/SceneModels/YuNet-LICENSE.txt",
-        // AIOStreams experiment (fork branch aio-node): the package CI built.
-        "NuvioTV/AIOPackage/aio.tar.gz",
-        "NuvioTV/AIOPackage/bootstrap.mjs",
-        "NuvioTV/AIOPackage/nuvio-package.json",
+        // AIOStreams experiment (fork branch aio-node): the installer, as a
+        // folder (CI puts it together: aio-node/installer/assemble.sh).
+        // AIOStreams itself is downloaded from its official image.
+        .folderReference(path: "NuvioTV/AIOInstaller"),
     ],
     entitlements: .file(path: "NuvioTV/NuvioTV.entitlements"),
     scripts: [

@@ -18731,6 +18731,7 @@ private struct AIOExperimentSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var aio = AIOExperiment.shared
+    @State private var sourceDraft = ""
 
     var body: some View {
         SettingsFeatureSettingsSheet(
@@ -18795,6 +18796,62 @@ private struct AIOExperimentSheet: View {
                     accentColor: accentColor
                 )
 
+                Text("Version")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundColor(.white)
+
+                SettingsActionRow(
+                    title: "Check for updates",
+                    subtitle: versionLine,
+                    value: "Check",
+                    accentColor: accentColor
+                ) {
+                    Task { await aio.checkForUpdates() }
+                }
+
+                if aio.phase == .running {
+                    SettingsActionRow(
+                        title: "Update AIOStreams",
+                        subtitle: aio.updateStatus ?? "Installs the newest version from the source while this one keeps running; it starts with the next start of Nuvio",
+                        value: aio.updating ? "…" : "Update",
+                        accentColor: accentColor
+                    ) {
+                        Task { await aio.update() }
+                    }
+                }
+
+                if let previous = aio.previousVersion, !aio.usePreviousAtNextStart {
+                    SettingsActionRow(
+                        title: "Use the previous version",
+                        subtitle: "\(previous), from the next start of Nuvio",
+                        value: "Use",
+                        accentColor: accentColor
+                    ) {
+                        aio.usePreviousVersion()
+                    }
+                }
+
+                SettingsTextFieldRow(
+                    title: "Source",
+                    subtitle: "AIOStreams' official image, another image or the address of a package (aio.tar.gz) — from the next start",
+                    placeholder: AIOExperiment.defaultSource,
+                    text: $sourceDraft,
+                    fieldWidth: 560,
+                    onCommit: { aio.setSource(sourceDraft) }
+                )
+
+                if aio.source != AIOExperiment.defaultSource {
+                    SettingsActionRow(
+                        title: "Restore the default source",
+                        subtitle: AIOExperiment.defaultSource,
+                        value: "Restore",
+                        accentColor: accentColor
+                    ) {
+                        aio.resetSource()
+                        sourceDraft = aio.source
+                    }
+                }
+
                 SettingsToggleRow(
                     title: "Detailed AIOStreams log",
                     subtitle: "Every request in the log, not only warnings and errors (from the next start)",
@@ -18849,7 +18906,10 @@ private struct AIOExperimentSheet: View {
             }
             .settingsEntryAnchor()
         }
-        .onAppear { aio.setLogVisible(true) }
+        .onAppear {
+            aio.setLogVisible(true)
+            sourceDraft = aio.source
+        }
         .onDisappear { aio.setLogVisible(false) }
     }
 
@@ -18883,7 +18943,7 @@ private struct AIOExperimentSheet: View {
     private var statusText: String {
         switch aio.phase {
         case .stopped: return "Not running"
-        case .starting: return aio.runKind == .nodeTest ? "Testing Node.js…" : "Starting…"
+        case .starting: return aio.runKind == .nodeTest ? "Testing Node.js…" : (aio.installProgress ?? "Starting…")
         case .running: return "Running"
         case .notAnswering: return "Started, but not answering"
         case .exited(let code) where aio.runKind == .nodeTest:
@@ -18899,6 +18959,14 @@ private struct AIOExperimentSheet: View {
         case .starting, .stopped: return .white
         default: return .red
         }
+    }
+
+    private var versionLine: String {
+        var parts = ["Installed: \(aio.packageVersion.isEmpty ? "none yet" : aio.packageVersion)"]
+        if let pending = aio.pendingVersion { parts.append("\(pending) after a restart") }
+        if let latest = aio.latestVersion { parts.append("newest: \(latest)") }
+        if let status = aio.updateStatus, aio.phase != .running { parts.append(status) }
+        return parts.joined(separator: " · ")
     }
 
     private var details: String {

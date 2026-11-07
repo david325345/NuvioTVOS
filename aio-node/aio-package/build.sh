@@ -9,9 +9,9 @@
 #     pnpm's install out in real folders, the way npm does (no-symlinks.py
 #     then checks that none is left),
 #   - native addons, which Apple TV can't load, are swapped for the shims in
-#     shims/ (better-sqlite3 → node:sqlite, bcrypt → bcryptjs, yencode → off),
-#   - nuvio-main.mjs is added,
-# and everything goes into one aio.tar.gz that bootstrap.mjs unpacks on the TV.
+#     installer/shims/ (better-sqlite3 → node:sqlite, bcrypt → bcryptjs, yencode → off),
+# and everything goes into one aio.tar.gz — a package Nuvio can install
+# instead of the official image (aio-node/installer).
 # The AIOStreams code itself is not changed.
 set -euo pipefail
 
@@ -80,7 +80,7 @@ for entry in better-sqlite3:better-sqlite3 bcrypt:bcrypt yencode:yencode fsmux-f
   while IFS= read -r -d '' dir; do
     found=1
     rm -rf "$dir"
-    cp -R "$HERE/shims/$shim" "$dir"
+    cp -R "$HERE/../installer/shims/$shim" "$dir"
     if [ "$shim" = bcrypt ]; then
       mkdir -p "$dir/node_modules"
       cp -R "$bcryptjs_dir/bcryptjs" "$dir/node_modules/bcryptjs"
@@ -101,13 +101,11 @@ fi
 find "$STAGE/node_modules" -name '*.d.ts' -type f -delete
 find "$STAGE/node_modules" \( -name '*.map' -o -name '*.md' -o -name 'CHANGELOG*' \) -type f -delete
 
-cp "$HERE/nuvio-main.mjs" "$STAGE/nuvio-main.mjs"
 cat > "$STAGE/nuvio-package.json" <<JSON
 { "aiostreams": "$AIO_TAG", "commit": "$COMMIT", "built": "$(date -u +%Y-%m-%dT%H:%M:%SZ)" }
 JSON
 
 # GNU tar: PAX for long paths, hard links stored as files.
 tar --format=pax --hard-dereference -C "$STAGE" -czf "$OUT/aio.tar.gz" .
-cp "$HERE/bootstrap.mjs" "$OUT/bootstrap.mjs"
 cp "$STAGE/nuvio-package.json" "$OUT/nuvio-package.json"
 echo "files: $(find "$STAGE" -type f | wc -l), unpacked: $(du -sh "$STAGE" | cut -f1), aio.tar.gz: $(du -sh "$OUT/aio.tar.gz" | cut -f1)"

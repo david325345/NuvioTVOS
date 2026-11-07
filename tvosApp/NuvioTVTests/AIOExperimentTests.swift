@@ -2,8 +2,9 @@
 //  AIOExperimentTests.swift
 //  NuvioTVTests
 //
-//  Fork branch aio-node only: starts the original AIOStreams in Node.js inside
-//  the app on the tvOS simulator, saves a configuration like its page does and
+//  Fork branch aio-node only: installs the original AIOStreams from its official
+//  image and starts it in Node.js inside the app on the tvOS simulator, as on
+//  Apple TV; checks the version and for updates, saves a configuration like its page does and
 //  asks the resulting addon for streams; then checks the backup, the warm-up
 //  and that a configuration AIOStreams lost comes back from the backup.
 //  Prints the timings and the log.
@@ -22,7 +23,7 @@ final class AIOExperimentTests: XCTestCase {
         aio.start()
         aio.setLogVisible(true)
 
-        try await waitUntil(seconds: 300) {
+        try await waitUntil(seconds: 600) {
             switch aio.phase {
             case .starting, .stopped: return false
             default: return true
@@ -33,6 +34,13 @@ final class AIOExperimentTests: XCTestCase {
             XCTFail("AIOStreams did not start: \(aio.phase)")
             return
         }
+
+        // Installed from the official image; Nuvio's version port answers.
+        await aio.refreshVersions()
+        XCTAssertFalse(aio.packageVersion.isEmpty, "installed version")
+        await aio.checkForUpdates()
+        note("AIO-TEST installed \(aio.packageVersion) · newest \(aio.latestVersion ?? "?") · \(aio.updateStatus ?? "")")
+        XCTAssertNotNil(aio.latestVersion, "check for updates")
 
         let local = "http://127.0.0.1:\(AIOExperiment.aioPort)"
         let page = "http://127.0.0.1:\(AIOExperiment.lanPort)"
@@ -129,13 +137,13 @@ final class AIOExperimentTests: XCTestCase {
         note("AIO-TEST log so far:\n" + AIOExperiment.shared.logLines.suffix(40).joined(separator: "\n"))
     }
 
-    /// The starter template from the unpacked package.
+    /// The starter template from the installed version.
     private func configuration() throws -> Data {
-        let caches = try XCTUnwrap(FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first)
-        let packages = caches.appendingPathComponent("AIOStreams-package", isDirectory: true)
-        let installed = try FileManager.default.contentsOfDirectory(atPath: packages.path).first { !$0.hasSuffix(".partial") }
-        let template = packages
-            .appendingPathComponent(try XCTUnwrap(installed))
+        let home = try XCTUnwrap(AIOExperiment.versionsHome)
+        let versions = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: home.appendingPathComponent("versions.json"))) as? [String: Any])
+        let current = try XCTUnwrap(versions["current"] as? String)
+        let template = home
+            .appendingPathComponent(current)
             .appendingPathComponent("resources/templates/debrid-starter.json")
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: template)) as? [String: Any])
         var config = try XCTUnwrap(object["config"] as? [String: Any])

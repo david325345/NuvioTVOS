@@ -1,7 +1,8 @@
 name: AIOStreams test build (fork experiment)
 
 # Fork only, never part of a PR: the IPA of the aio-node branch, with Node.js
-# for tvOS and the original AIOStreams inside. Its own app — "Nuvio AIO",
+# for tvOS and the installer for the original AIOStreams (downloaded from its
+# official image on the TV: aio-node/installer). Its own app — "Nuvio AIO",
 # com.pyksel.nuviotvos.aio — so it installs next to Nuvio and the Nuvio Test
 # builds (plugins, AniList).
 on:
@@ -9,12 +10,9 @@ on:
     branches: [aio-node]
     paths:
       - tvosApp/**
+      - aio-node/installer/**
       - .github/workflows/build-aio-ipa.yml
   workflow_dispatch:
-    inputs:
-      aio_run:
-        description: Run of build-aio-package.yml to take the package from (empty = newest successful)
-        required: false
 
 permissions:
   contents: read
@@ -28,31 +26,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: Node.js for tvOS and the AIOStreams package
-        # The newest successful runs of build-node-tvos.yml and build-aio-package.yml.
+      - name: Node.js for tvOS and the AIOStreams installer
+        # The newest build-node-tvos.yml run with both slices; the installer from aio-node/installer.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          latest() {
-            gh run list -R "$GITHUB_REPOSITORY" --workflow "$1" --branch aio-node --status success --limit 1 \
-              --json databaseId --jq '.[0].databaseId // empty'
-          }
-          aio_run="${{ github.event.inputs.aio_run }}"
-          if [ -n "$aio_run" ]; then
-            # Started by that package run: wait until it has finished.
-            state=""
-            for _ in $(seq 1 90); do
-              state=$(gh run view "$aio_run" -R "$GITHUB_REPOSITORY" --json status,conclusion --jq '.status + "/" + .conclusion')
-              [ "${state%%/*}" = completed ] && break
-              sleep 10
-            done
-            [ "$state" = completed/success ] || { echo "::error::AIOStreams package run $aio_run: $state"; exit 1; }
-          else
-            aio_run=$(latest build-aio-package.yml)
-          fi
-          [ -n "$aio_run" ] || { echo "::error::No successful AIOStreams package build yet"; exit 1; }
-          gh run download "$aio_run" -R "$GITHUB_REPOSITORY" -n aio-package -D tvosApp/NuvioTV/AIOPackage
+          bash aio-node/installer/assemble.sh tvosApp/NuvioTV/AIOInstaller
           # Node.js: the newest build-node-tvos.yml run with both framework slices.
           node_run=""
           for id in $(gh run list -R "$GITHUB_REPOSITORY" --workflow build-node-tvos.yml --branch aio-node --limit 10 \
@@ -80,8 +60,8 @@ jobs:
           done
           mkdir -p Vendor/NodeMobile
           xcodebuild -create-xcframework -framework "$device" -framework "$simulator" -output Vendor/NodeMobile/NodeMobile.xcframework
-          ls -la Vendor/NodeMobile tvosApp/NuvioTV/AIOPackage
-          echo "::notice::Node.js run $node_run ($(du -sh Vendor/NodeMobile/NodeMobile.xcframework | cut -f1)) · AIOStreams $(tr -d '\n' < tvosApp/NuvioTV/AIOPackage/nuvio-package.json) from run $aio_run"
+          ls -la Vendor/NodeMobile tvosApp/NuvioTV/AIOInstaller
+          echo "::notice::Node.js run $node_run ($(du -sh Vendor/NodeMobile/NodeMobile.xcframework | cut -f1)) · AIOStreams installer $(du -sh tvosApp/NuvioTV/AIOInstaller | cut -f1) (AIOStreams itself from its official image)"
       - name: Install Tuist
         run: brew install tuist
       - name: Make it a separate app (Nuvio AIO)
@@ -153,31 +133,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: Node.js for tvOS and the AIOStreams package
-        # The newest successful runs of build-node-tvos.yml and build-aio-package.yml.
+      - name: Node.js for tvOS and the AIOStreams installer
+        # The newest build-node-tvos.yml run with both slices; the installer from aio-node/installer.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          latest() {
-            gh run list -R "$GITHUB_REPOSITORY" --workflow "$1" --branch aio-node --status success --limit 1 \
-              --json databaseId --jq '.[0].databaseId // empty'
-          }
-          aio_run="${{ github.event.inputs.aio_run }}"
-          if [ -n "$aio_run" ]; then
-            # Started by that package run: wait until it has finished.
-            state=""
-            for _ in $(seq 1 90); do
-              state=$(gh run view "$aio_run" -R "$GITHUB_REPOSITORY" --json status,conclusion --jq '.status + "/" + .conclusion')
-              [ "${state%%/*}" = completed ] && break
-              sleep 10
-            done
-            [ "$state" = completed/success ] || { echo "::error::AIOStreams package run $aio_run: $state"; exit 1; }
-          else
-            aio_run=$(latest build-aio-package.yml)
-          fi
-          [ -n "$aio_run" ] || { echo "::error::No successful AIOStreams package build yet"; exit 1; }
-          gh run download "$aio_run" -R "$GITHUB_REPOSITORY" -n aio-package -D tvosApp/NuvioTV/AIOPackage
+          bash aio-node/installer/assemble.sh tvosApp/NuvioTV/AIOInstaller
           # Node.js: the newest build-node-tvos.yml run with both framework slices.
           node_run=""
           for id in $(gh run list -R "$GITHUB_REPOSITORY" --workflow build-node-tvos.yml --branch aio-node --limit 10 \
@@ -205,8 +167,8 @@ jobs:
           done
           mkdir -p Vendor/NodeMobile
           xcodebuild -create-xcframework -framework "$device" -framework "$simulator" -output Vendor/NodeMobile/NodeMobile.xcframework
-          ls -la Vendor/NodeMobile tvosApp/NuvioTV/AIOPackage
-          echo "::notice::Node.js run $node_run ($(du -sh Vendor/NodeMobile/NodeMobile.xcframework | cut -f1)) · AIOStreams $(tr -d '\n' < tvosApp/NuvioTV/AIOPackage/nuvio-package.json) from run $aio_run"
+          ls -la Vendor/NodeMobile tvosApp/NuvioTV/AIOInstaller
+          echo "::notice::Node.js run $node_run ($(du -sh Vendor/NodeMobile/NodeMobile.xcframework | cut -f1)) · AIOStreams installer $(du -sh tvosApp/NuvioTV/AIOInstaller | cut -f1) (AIOStreams itself from its official image)"
       - name: Install Tuist
         run: brew install tuist
       - name: Generate Xcode project

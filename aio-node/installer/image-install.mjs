@@ -1,11 +1,9 @@
-// Prepares the original AIOStreams for Nuvio on Apple TV straight from its
-// official Docker image — what Nuvio itself is to do on the TV, so it needs no
-// build of ours: only Node's own modules, nothing to install first.
+// Installs the original AIOStreams for Nuvio on Apple TV, inside Nuvio's own
+// Node.js: from AIOStreams' official Docker image (the default) or from a
+// ready package (aio.tar.gz). Only Node's own modules — nothing to install
+// first. Used by bootstrap.mjs (first start) and nuvio-main.mjs (Update).
 //
-//   node image-install.mjs --image ghcr.io/viren070/aiostreams:v2.37.0 \
-//     --work <scratch dir> --out <package dir> --shims <shims dir> \
-//     --nuvio-main <nuvio-main.mjs> [--bcryptjs <bcryptjs package dir>]
-//
+// From an image:
 // 1. Asks the registry for the image (anonymous token, arm64 variant) and
 //    finds the layer with the application: AIOStreams' Dockerfile copies the
 //    whole /app in one step (COPY --from=runtime /runtime /app).
@@ -15,69 +13,48 @@
 //    does for the CI build): each package once, other versions nested where
 //    Node.js finds them, forwarding packages for AIOStreams' own packages;
 //    only what the server needs, nothing of the web frontend's.
-// 4. Swaps native addons for the shims, adds nuvio-main.mjs.
+// 4. Swaps native addons for the shims.
+//
+// Each version gets its own folder in the home folder; versions.json there
+// says which one is current, the previous one and one waiting for the next
+// start (an update).
+//
+// CLI (tests): node image-install.mjs --source <image or package> --home <dir> --shims <dir> [--tag <tag>]
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
-import { Readable, Writable } from 'node:stream';
+import crypto from 'node:crypto';
+import { Readable } from 'node:stream';
+import { Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { pathToFileURL } from 'node:url';
 
-const started = Date.now();
-const log = (text) => console.log(`[image] ${text}`);
+export const DEFAULT_SOURCE = 'ghcr.io/viren070/aiostreams';
+const COMPLETE = '.nuvio-complete';
 const seconds = (since) => `${((Date.now() - since) / 1000).toFixed(1)} s`;
 const mb = (bytes) => `${(bytes / 1048576).toFixed(1)} MB`;
 
-const options = {};
-for (let i = 2; i < process.argv.length; i += 2) options[process.argv[i].replace(/^--/, '')] = process.argv[i + 1];
-if (!options.image && options.layer) options.image = 'local:layer';
-for (const name of ['image', 'work', 'out', 'shims', 'nuvio-main']) {
-  if (!options[name]) throw new Error(`--${name} is required`);
-}
+// MARK: sources
 
-// MARK: registry
-
-function parseImage(reference) {
-  const at = reference.lastIndexOf(':');
+/** An image (registry/repository[:tag]) or a package (https://…/aio.tar.gz or a file). */
+export function parseSource(source) {
+  const text = String(source || DEFAULT_SOURCE).trim() || DEFAULT_SOURCE;
+  if (/^https?:\/\//i.test(text) && /\.(tar\.gz|tgz)(\?.*)?$/i.test(text)) return { kind: 'package', url: text };
+  if (text.startsWith('/') || text.startsWith('file://')) return { kind: 'package', file: text.replace(/^file:\/\//, '') };
+  const reference = text.replace(/^(https?|docker):\/\//i, '').replace(/\/+$/, '');
   const slash = reference.indexOf('/');
-  const tag = at > slash ? reference.slice(at + 1) : 'latest';
-  const name = at > slash ? reference.slice(0, at) : reference;
+  const colon = reference.lastIndexOf(':');
+  const tag = colon > slash ? reference.slice(colon + 1) : null;
+  const name = colon > slash ? reference.slice(0, colon) : reference;
   const first = name.slice(0, name.indexOf('/'));
-  const hasRegistry = first.includes('.') || first.includes(':');
+  const hasRegistry = first.includes('.') || first.includes(':') || first === 'localhost';
   const registry = hasRegistry ? first : 'registry-1.docker.io';
   let repository = hasRegistry ? name.slice(first.length + 1) : name;
   if (!hasRegistry && !repository.includes('/')) repository = `library/${repository}`;
-  return { registry, repository, tag };
+  return { kind: 'image', registry, repository, tag };
 }
 
-const image = parseImage(options.image);
-let token = null;
-
-async function registry(pathname, accept) {
-  const url = `https://${image.registry}/v2/${image.repository}/${pathname}`;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const headers = { 'user-agent': 'Nuvio-AIOStreams' };
-    if (accept) headers.accept = accept;
-    if (token) headers.authorization = `Bearer ${token}`;
-    const response = await fetch(url, { headers, redirect: 'follow' });
-    if (response.status === 401 && !token) {
-      // Bearer realm="…",service="…",scope="…" — an anonymous pull token.
-      const challenge = response.headers.get('www-authenticate') || '';
-      const fields = Object.fromEntries([...challenge.matchAll(/(\w+)="([^"]*)"/g)].map((m) => [m[1], m[2]]));
-      if (!fields.realm) throw new Error(`registry wants authentication: ${challenge}`);
-      const tokenURL = new URL(fields.realm);
-      if (fields.service) tokenURL.searchParams.set('service', fields.service);
-      tokenURL.searchParams.set('scope', fields.scope || `repository:${image.repository}:pull`);
-      const answer = await fetch(tokenURL);
-      if (!answer.ok) throw new Error(`token: HTTP ${answer.status}`);
-      const body = await answer.json();
-      token = body.token || body.access_token;
-      continue;
-    }
-    if (!response.ok) throw new Error(`${pathname}: HTTP ${response.status}`);
-    return response;
-  }
-  throw new Error(`${pathname}: no access`);
-}
+// MARK: registry
 
 const MANIFESTS = [
   'application/vnd.oci.image.index.v1+json',
@@ -86,25 +63,98 @@ const MANIFESTS = [
   'application/vnd.docker.distribution.manifest.v2+json',
 ].join(', ');
 
-async function findAppLayer() {
-  let manifest = await (await registry(`manifests/${image.tag}`, MANIFESTS)).json();
+function registryClient(image) {
+  let token = null;
+  async function request(pathname, accept) {
+    const url = pathname.startsWith('http') ? pathname : `https://${image.registry}/v2/${image.repository}/${pathname}`;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const headers = { 'user-agent': 'Nuvio-AIOStreams' };
+      if (accept) headers.accept = accept;
+      if (token) headers.authorization = `Bearer ${token}`;
+      const response = await fetch(url, { headers, redirect: 'follow' });
+      if (response.status === 401 && !token) {
+        // Bearer realm="…",service="…",scope="…" — an anonymous pull token.
+        const challenge = response.headers.get('www-authenticate') || '';
+        const fields = Object.fromEntries([...challenge.matchAll(/(\w+)="([^"]*)"/g)].map((m) => [m[1], m[2]]));
+        if (!fields.realm) throw new Error(`the registry wants a login: ${challenge}`);
+        const tokenURL = new URL(fields.realm);
+        if (fields.service) tokenURL.searchParams.set('service', fields.service);
+        tokenURL.searchParams.set('scope', fields.scope || `repository:${image.repository}:pull`);
+        const answer = await fetch(tokenURL);
+        if (!answer.ok) throw new Error(`registry token: HTTP ${answer.status}`);
+        const body = await answer.json();
+        token = body.token || body.access_token;
+        continue;
+      }
+      if (!response.ok) throw new Error(`${image.registry}/${image.repository}: ${pathname.split('?')[0]}: HTTP ${response.status}`);
+      return response;
+    }
+    throw new Error(`${image.registry}/${image.repository}: no access`);
+  }
+  return { request };
+}
+
+const semver = (tag) => {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)$/.exec(tag);
+  return match ? match.slice(1).map(Number) : null;
+};
+const newer = (a, b) => { for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] > b[i]; return false; };
+
+/** The newest release tag of an image (vX.Y.Z, no betas or nightlies). */
+async function newestTag(image) {
+  const client = registryClient(image);
+  let best = null;
+  let next = 'tags/list?n=1000';
+  for (let page = 0; next && page < 20; page++) {
+    const response = await client.request(next);
+    const body = await response.json();
+    for (const tag of body.tags || []) {
+      const version = semver(tag);
+      if (version && (!best || newer(version, best.version))) best = { tag, version };
+    }
+    const link = response.headers.get('link');
+    const match = link && /<([^>]+)>;\s*rel="next"/.exec(link);
+    next = match ? (match[1].startsWith('http') ? match[1] : new URL(match[1], `https://${image.registry}`).href) : null;
+  }
+  if (!best) throw new Error(`no release tags in ${image.registry}/${image.repository}`);
+  return best.tag;
+}
+
+/** The version the source offers now: { tag } (null tag: a package that does not say). */
+export async function latestVersion(source) {
+  const parsed = parseSource(source);
+  if (parsed.kind === 'image') return { tag: parsed.tag || await newestTag(parsed) };
+  // A package may have its nuvio-package.json next to it.
+  try {
+    if (parsed.url) {
+      const info = await fetch(parsed.url.replace(/[^/?]+(\?.*)?$/, 'nuvio-package.json'));
+      if (info.ok) return { tag: (await info.json()).aiostreams || null };
+    } else {
+      const info = path.join(path.dirname(parsed.file), 'nuvio-package.json');
+      if (fs.existsSync(info)) return { tag: JSON.parse(fs.readFileSync(info, 'utf8')).aiostreams || null };
+    }
+  } catch {}
+  return { tag: null };
+}
+
+async function findAppLayer(image, tag, log) {
+  const client = registryClient(image);
+  let manifest = await (await client.request(`manifests/${tag}`, MANIFESTS)).json();
   if (manifest.manifests) {
     const platforms = manifest.manifests.filter((entry) => entry.platform && entry.platform.os === 'linux');
     const chosen = platforms.find((entry) => entry.platform.architecture === 'arm64')
       || platforms.find((entry) => entry.platform.architecture === 'amd64');
     if (!chosen) throw new Error('no linux variant in the image');
-    log(`variants: ${platforms.map((entry) => entry.platform.architecture + (entry.platform.variant ? `/${entry.platform.variant}` : '')).join(', ')} → ${chosen.platform.architecture}`);
-    manifest = await (await registry(`manifests/${chosen.digest}`, MANIFESTS)).json();
+    manifest = await (await client.request(`manifests/${chosen.digest}`, MANIFESTS)).json();
   }
-  const config = await (await registry(`blobs/${manifest.config.digest}`)).json();
+  const config = await (await client.request(`blobs/${manifest.config.digest}`)).json();
   const history = (config.history || []).filter((entry) => !entry.empty_layer);
   const layers = manifest.layers.map((layer, index) => ({ ...layer, index, createdBy: history[index] ? history[index].created_by || '' : '' }));
-  for (const layer of layers) log(`layer ${layer.index}: ${mb(layer.size)} · ${layer.createdBy.replace(/\s+/g, ' ').slice(0, 110)}`);
   // The application: the last layer that copies into /app.
-  const app = [...layers].reverse().find((layer) => /COPY .*\/app\b|COPY .* \/app\s*$|COPY .* \/app\/?\s*#/.test(layer.createdBy) && /runtime|\/app/.test(layer.createdBy));
-  if (!app) throw new Error('no /app layer found in the image history');
-  log(`application layer: ${app.index} (${mb(app.size)}, ${app.mediaType})`);
-  return { app, digest: manifest.config.digest };
+  const app = [...layers].reverse().find((layer) => /COPY\b.*\s\/app\/?(\s|$)/.test(layer.createdBy));
+  if (!app) throw new Error('no /app layer in the image history');
+  log(`${image.repository}:${tag}: application layer ${mb(app.size)} (of ${layers.length})`);
+  return { client, app, digest: manifest.config.digest };
 }
 
 // MARK: tar (app/ only; symlinks noted, never created)
@@ -324,7 +374,7 @@ class Tree {
 // MARK: flatten (as flatten.py)
 
 // workspace: real path of each AIOStreams package in the tree → its place in the package.
-function flatten(tree, stage, workspace) {
+function flatten(tree, stage, workspace, log) {
   const store = 'node_modules/.pnpm';
 
   const dependencies = (real) => {
@@ -435,91 +485,191 @@ function moveInto(source, target) {
   fs.renameSync(source, target);
 }
 
-// MARK: main
+// MARK: shims and clean-up
 
-fs.rmSync(options.work, { recursive: true, force: true });
-fs.rmSync(options.out, { recursive: true, force: true });
-const unpacked = path.join(options.work, 'app');
-fs.mkdirSync(unpacked, { recursive: true });
+const SHIMS = { 'better-sqlite3': 'better-sqlite3', bcrypt: 'bcrypt', yencode: 'yencode', '@viren070/fsmux-fuse': 'fsmux-fuse' };
 
-// --layer <file>: a layer already on disk (tests), no registry.
-const { app, digest } = options.layer ? { app: null, digest: 'local' } : await findAppLayer();
-let since = Date.now();
-const body = options.layer
-  ? fs.createReadStream(options.layer)
-  : Readable.fromWeb((await registry(`blobs/${app.digest}`)).body);
-const extractor = new LayerExtractor(unpacked, 'app/');
-let downloaded = 0;
-await pipeline(
-  body,
-  async function* (source) { for await (const chunk of source) { downloaded += chunk.length; yield chunk; } },
-  app && /zstd/.test(app.mediaType || '') ? zlib.createZstdDecompress() : zlib.createGunzip(),
-  extractor
-);
-log(`downloaded ${mb(downloaded)} and unpacked ${extractor.files} files (${mb(extractor.bytes)}), ${extractor.links.size} symlinks noted, in ${seconds(since)}`);
-
-since = Date.now();
-const tree = new Tree(unpacked, extractor.links);
-log(`node_modules layout: ${fs.existsSync(path.join(unpacked, 'node_modules/.pnpm')) ? 'pnpm (symlinks into node_modules/.pnpm)' : 'flat'}`);
-const stage = path.resolve(options.out);
-fs.mkdirSync(stage, { recursive: true });
-// AIOStreams' own packages (those with a package.json).
-const workspace = new Map();
-for (const name of tree.names('packages')) {
-  if (fs.existsSync(path.join(unpacked, 'packages', name, 'package.json'))) workspace.set(`packages/${name}`, path.join(stage, 'packages', name));
-}
-log(`AIOStreams packages: ${[...workspace.keys()].join(', ')}`);
-flatten(tree, stage, workspace);
-// The rest of the application as it is; the packages' own node_modules held
-// only symlinks (or a build cache), replaced by the layout above.
-fs.rmSync(path.join(unpacked, 'node_modules'), { recursive: true, force: true });
-for (const name of fs.readdirSync(path.join(unpacked, 'packages'))) {
-  fs.rmSync(path.join(unpacked, 'packages', name, 'node_modules'), { recursive: true, force: true });
-}
-for (const name of fs.readdirSync(unpacked)) moveInto(path.join(unpacked, name), path.join(stage, name));
-log(`node_modules laid out in ${seconds(since)}`);
-
-// Native addons → shims.
-since = Date.now();
-const shims = { 'better-sqlite3': 'better-sqlite3', bcrypt: 'bcrypt', yencode: 'yencode', '@viren070/fsmux-fuse': 'fsmux-fuse' };
-const walk = (folder, visit) => {
+function walk(folder, visit) {
   for (const entry of fs.readdirSync(folder, { withFileTypes: true })) {
     const full = path.join(folder, entry.name);
     if (visit(full, entry) !== false && entry.isDirectory()) walk(full, visit);
   }
-};
-walk(stage, (full, entry) => {
-  if (!entry.isDirectory()) return;
-  const relative = path.relative(stage, full).split(path.sep).join('/');
-  for (const [name, shim] of Object.entries(shims)) {
-    if (relative === `node_modules/${name}` || relative.endsWith(`/node_modules/${name}`)) {
-      fs.rmSync(full, { recursive: true, force: true });
-      fs.cpSync(path.join(options.shims, shim), full, { recursive: true });
-      if (shim === 'bcrypt' && options.bcryptjs) fs.cpSync(options.bcryptjs, path.join(full, 'node_modules', 'bcryptjs'), { recursive: true });
-      log(`shim: ${name} → ${relative}`);
-      return false;
+}
+
+function applyShims(stage, shimsDir, log) {
+  walk(stage, (full, entry) => {
+    if (!entry.isDirectory()) return true;
+    const relative = path.relative(stage, full).split(path.sep).join('/');
+    for (const [name, shim] of Object.entries(SHIMS)) {
+      if (relative === `node_modules/${name}` || relative.endsWith(`/node_modules/${name}`)) {
+        fs.rmSync(full, { recursive: true, force: true });
+        fs.cpSync(path.join(shimsDir, shim), full, { recursive: true });
+        log(`shim: ${name}`);
+        return false;
+      }
+    }
+    return true;
+  });
+  const native = [];
+  walk(stage, (full, entry) => {
+    if (entry.isFile() && (entry.name.endsWith('.node') || entry.name.endsWith('.d.ts') || entry.name.endsWith('.map'))) {
+      if (entry.name.endsWith('.node')) native.push(path.relative(stage, full));
+      fs.rmSync(full);
+    }
+    return true;
+  });
+  if (native.length) log(`native addons removed (they cannot load on Apple TV): ${native.length}`);
+}
+
+// MARK: versions
+
+export function readVersions(home) {
+  try {
+    return { labels: {}, ...JSON.parse(fs.readFileSync(path.join(home, 'versions.json'), 'utf8')) };
+  } catch {
+    return { labels: {} };
+  }
+}
+
+export function saveVersions(home, versions) {
+  fs.mkdirSync(home, { recursive: true });
+  fs.writeFileSync(path.join(home, 'versions.json.tmp'), JSON.stringify(versions, null, 2));
+  fs.renameSync(path.join(home, 'versions.json.tmp'), path.join(home, 'versions.json'));
+}
+
+export function isInstalled(home, name) {
+  return Boolean(name) && fs.existsSync(path.join(home, name, COMPLETE));
+}
+
+// MARK: install
+
+async function download(body, total, extractor, decompress, onProgress) {
+  let done = 0;
+  let reported = 0;
+  const hash = crypto.createHash('sha256');
+  await pipeline(
+    body,
+    async function* (source) {
+      for await (const chunk of source) {
+        done += chunk.length;
+        hash.update(chunk);
+        if (onProgress && Date.now() - reported > 1000) {
+          reported = Date.now();
+          onProgress({ phase: 'download', done, total });
+        }
+        yield chunk;
+      }
+    },
+    decompress,
+    extractor
+  );
+  if (onProgress) onProgress({ phase: 'download', done, total: total || done });
+  return { bytes: done, sha256: hash.digest('hex') };
+}
+
+/**
+ * Installs one version from the source into its own folder of `home`
+ * (nothing is switched: the caller decides). Returns { name, tag }.
+ */
+export async function install({ source, tag, home, shimsDir, log = () => {}, onProgress }) {
+  const started = Date.now();
+  const parsed = parseSource(source);
+  fs.mkdirSync(home, { recursive: true });
+  const work = path.join(home, `.install-${process.pid}-${Date.now()}`);
+  fs.rmSync(work, { recursive: true, force: true });
+  const stage = path.join(work, 'package');
+  try {
+    let name;
+    let info;
+    if (parsed.kind === 'image') {
+      if (!tag) throw new Error('no version to install');
+      const { client, app, digest } = await findAppLayer(parsed, tag, log);
+      name = `${tag}-${digest.replace(/^sha256:/, '').slice(0, 8)}`.replace(/[^\w.-]/g, '_');
+      if (isInstalled(home, name)) {
+        log(`${tag} is installed already`);
+        return { name, tag };
+      }
+      const unpacked = path.join(work, 'app');
+      fs.mkdirSync(unpacked, { recursive: true });
+      const response = await client.request(`blobs/${app.digest}`);
+      const extractor = new LayerExtractor(unpacked, 'app/');
+      const decompress = /zstd/.test(app.mediaType || '') ? zlib.createZstdDecompress() : zlib.createGunzip();
+      const fetched = await download(Readable.fromWeb(response.body), app.size, extractor, decompress, onProgress);
+      log(`downloaded ${mb(fetched.bytes)}, ${extractor.files} files, ${extractor.links.size} symlinks noted, in ${seconds(started)}`);
+      if (onProgress) onProgress({ phase: 'prepare' });
+      const prepared = Date.now();
+      const tree = new Tree(unpacked, extractor.links);
+      fs.mkdirSync(stage, { recursive: true });
+      const workspace = new Map();
+      for (const entry of tree.names('packages')) {
+        if (fs.existsSync(path.join(unpacked, 'packages', entry, 'package.json'))) workspace.set(`packages/${entry}`, path.join(stage, 'packages', entry));
+      }
+      flatten(tree, stage, workspace, log);
+      fs.rmSync(path.join(unpacked, 'node_modules'), { recursive: true, force: true });
+      for (const entry of fs.readdirSync(path.join(unpacked, 'packages'))) {
+        fs.rmSync(path.join(unpacked, 'packages', entry, 'node_modules'), { recursive: true, force: true });
+      }
+      for (const entry of fs.readdirSync(unpacked)) moveInto(path.join(unpacked, entry), path.join(stage, entry));
+      applyShims(stage, shimsDir, log);
+      info = { aiostreams: tag, source: `${parsed.registry}/${parsed.repository}:${tag}`, image: digest };
+      log(`prepared in ${seconds(prepared)}`);
+    } else {
+      // A ready package (no symlinks, shims in): only unpacked.
+      fs.mkdirSync(stage, { recursive: true });
+      const extractor = new LayerExtractor(stage, '');
+      let body;
+      let total = 0;
+      if (parsed.url) {
+        const response = await fetch(parsed.url, { headers: { 'user-agent': 'Nuvio-AIOStreams' } });
+        if (!response.ok) throw new Error(`${parsed.url}: HTTP ${response.status}`);
+        total = Number(response.headers.get('content-length') || 0);
+        body = Readable.fromWeb(response.body);
+      } else {
+        total = fs.statSync(parsed.file).size;
+        body = fs.createReadStream(parsed.file);
+      }
+      const fetched = await download(body, total, extractor, zlib.createGunzip(), onProgress);
+      if (extractor.links.size) log(`${extractor.links.size} symlinks in the package were left out`);
+      let own = {};
+      try { own = JSON.parse(fs.readFileSync(path.join(stage, 'nuvio-package.json'), 'utf8')); } catch {}
+      tag = own.aiostreams || tag || 'package';
+      name = `${tag}-${fetched.sha256.slice(0, 8)}`.replace(/[^\w.-]/g, '_');
+      info = { ...own, aiostreams: tag, source: parsed.url || parsed.file, sha256: fetched.sha256 };
+      if (isInstalled(home, name)) {
+        log(`${tag} is installed already`);
+        return { name, tag };
+      }
+    }
+    fs.writeFileSync(path.join(stage, 'nuvio-package.json'), JSON.stringify({ ...info, installed: new Date().toISOString() }));
+    fs.writeFileSync(path.join(stage, COMPLETE), new Date().toISOString());
+    fs.rmSync(path.join(home, name), { recursive: true, force: true });
+    fs.renameSync(stage, path.join(home, name));
+    log(`AIOStreams ${tag} installed in ${seconds(started)}`);
+    return { name, tag };
+  } finally {
+    fs.rmSync(work, { recursive: true, force: true });
+  }
+}
+
+/** Removes version folders that versions.json no longer names, and unfinished installs. */
+export function cleanUp(home, versions) {
+  const keep = new Set([versions.current, versions.previous, versions.pending].filter(Boolean));
+  for (const entry of fs.readdirSync(home)) {
+    if (entry === 'versions.json' || keep.has(entry)) continue;
+    if (entry.startsWith('.install-') || fs.statSync(path.join(home, entry)).isDirectory()) {
+      fs.rmSync(path.join(home, entry), { recursive: true, force: true });
     }
   }
-  return true;
-});
-const native = [];
-walk(stage, (full, entry) => {
-  if (entry.isFile() && (entry.name.endsWith('.node') || entry.name.endsWith('.d.ts') || entry.name.endsWith('.map'))) {
-    if (entry.name.endsWith('.node')) native.push(path.relative(stage, full));
-    fs.rmSync(full);
-  }
-});
-if (native.length) log(`native addons removed (they cannot load on Apple TV): ${native.join(', ')}`);
-fs.copyFileSync(options['nuvio-main'], path.join(stage, 'nuvio-main.mjs'));
-fs.writeFileSync(path.join(stage, 'nuvio-package.json'), JSON.stringify({ aiostreams: image.tag, source: options.image, image: digest, built: new Date().toISOString() }));
-fs.rmSync(options.work, { recursive: true, force: true });
+  for (const name of Object.keys(versions.labels || {})) if (!keep.has(name)) delete versions.labels[name];
+}
 
-let files = 0;
-let bytes = 0;
-let symlinks = 0;
-walk(stage, (full, entry) => {
-  if (entry.isSymbolicLink()) symlinks++;
-  else if (entry.isFile()) { files++; bytes += fs.statSync(full).size; }
-});
-log(`package: ${files} files, ${mb(bytes)}, ${symlinks} symlinks · shims in ${seconds(since)} · total ${seconds(started)}`);
-if (symlinks) process.exitCode = 1;
+// MARK: CLI (tests)
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const options = {};
+  for (let i = 2; i < process.argv.length; i += 2) options[process.argv[i].replace(/^--/, '')] = process.argv[i + 1];
+  const log = (text) => console.log(`[install] ${text}`);
+  const tag = options.tag || (await latestVersion(options.source)).tag;
+  const result = await install({ source: options.source, tag, home: options.home, shimsDir: options.shims, log });
+  console.log(JSON.stringify(result));
+}

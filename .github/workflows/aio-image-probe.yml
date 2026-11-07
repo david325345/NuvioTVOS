@@ -1,20 +1,21 @@
 name: AIOStreams from the official image (fork experiment)
 
-# Fork only, never part of a PR: prepares AIOStreams for Nuvio on Apple TV
-# straight from its official Docker image, the way Nuvio itself would on the
-# TV (aio-node/image/image-install.mjs: registry, the /app layer, node_modules
-# without symlinks, shims) — with Node.js 24 as on the TV (JIT off,
-# WebAssembly through polywasm) — and runs the result like smoke.sh does.
+# Fork only, never part of a PR: installs and runs AIOStreams straight from its
+# official Docker image the way Nuvio does on the TV — bootstrap.mjs and
+# image-install.mjs from aio-node/installer, Node.js 24 as on Apple TV (no JIT,
+# WebAssembly through polywasm) — through smoke.sh: a pinned version and the
+# newest one (the default source).
 on:
   push:
     branches: [aio-node]
     paths:
-      - aio-node/image/**
+      - aio-node/installer/**
+      - aio-node/aio-package/smoke.sh
       - .github/workflows/aio-image-probe.yml
   workflow_dispatch:
     inputs:
       tag:
-        description: AIOStreams image tag
+        description: AIOStreams image tag for the pinned run
         required: false
         default: v2.37.0
 
@@ -23,58 +24,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
+      # Not TAG: AIOStreams refuses to start when TAG is set (its own, read-only).
       AIO_IMAGE_TAG: ${{ github.event.inputs.tag || 'v2.37.0' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: Node.js as on Apple TV (no JIT, polywasm)
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/wasm" "$RUNNER_TEMP/bcryptjs"
-          (cd "$RUNNER_TEMP/wasm" && npm install --silent --no-package-lock polywasm >/dev/null)
-          cat > "$RUNNER_TEMP/wasm/preload.mjs" <<'JS'
-          import { createRequire } from 'node:module';
-          const require = createRequire(import.meta.url);
-          const { WebAssembly } = require('polywasm');
-          WebAssembly.LinkError ??= class LinkError extends Error {};
-          WebAssembly.RuntimeError ??= class RuntimeError extends Error {};
-          globalThis.WebAssembly = WebAssembly;
-          JS
-          (cd "$RUNNER_TEMP/bcryptjs" && npm pack --silent bcryptjs@3 >/dev/null && tar xzf bcryptjs-*.tgz && mv package bcryptjs)
-      - name: Prepare AIOStreams from ghcr.io/viren070/aiostreams:${{ env.AIO_IMAGE_TAG }}
-        env:
-          UNDICI_NO_WASM_SIMD: "1"
-        run: |
-          set -o pipefail
-          node --jitless --import "$RUNNER_TEMP/wasm/preload.mjs" aio-node/image/image-install.mjs \
-            --image "ghcr.io/viren070/aiostreams:$AIO_IMAGE_TAG" --work "$RUNNER_TEMP/work" --out "$RUNNER_TEMP/package" \
-            --shims aio-node/aio-package/shims --nuvio-main aio-node/aio-package/nuvio-main.mjs \
-            --bcryptjs "$RUNNER_TEMP/bcryptjs/bcryptjs" 2>&1 | tee probe.log
-          grep -E "^\[image\] (application layer|downloaded|node_modules layout|flatten|package)" probe.log | while IFS= read -r line; do echo "::notice::$line"; done
-          echo "symlinks left: $(find "$RUNNER_TEMP/package" -type l | wc -l)"
-      - name: As a package for bootstrap.mjs
-        run: |
-          set -euo pipefail
-          mkdir -p out
-          tar --format=pax -C "$RUNNER_TEMP/package" -czf out/aio.tar.gz .
-          cp aio-node/aio-package/bootstrap.mjs out/
-          cp "$RUNNER_TEMP/package/nuvio-package.json" out/
-          echo "::notice::aio.tar.gz $(du -sh out/aio.tar.gz | cut -f1), $(find "$RUNNER_TEMP/package" -type f | wc -l) files, $(du -sh "$RUNNER_TEMP/package" | cut -f1) unpacked"
-      - name: Smoke test (no anime database)
+      - name: Installer (as Nuvio carries it)
+        run: bash aio-node/installer/assemble.sh "$RUNNER_TEMP/installer"
+      - name: Pinned version (ghcr.io/viren070/aiostreams:${{ env.AIO_IMAGE_TAG }})
         env:
           ANIME_DB_LEVEL_OF_DETAIL: none
-        run: bash aio-node/aio-package/smoke.sh out
-      - name: Smoke test (anime database "required")
+        run: bash aio-node/aio-package/smoke.sh "$RUNNER_TEMP/installer" "ghcr.io/viren070/aiostreams:$AIO_IMAGE_TAG"
+      - name: Newest version (the default source)
         if: always()
         env:
           ANIME_DB_LEVEL_OF_DETAIL: required
-        run: bash aio-node/aio-package/smoke.sh out
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: aio-image-probe
-          path: |
-            probe.log
-            out/nuvio-package.json
+        run: bash aio-node/aio-package/smoke.sh "$RUNNER_TEMP/installer" ghcr.io/viren070/aiostreams

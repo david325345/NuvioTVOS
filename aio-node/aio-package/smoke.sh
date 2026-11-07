@@ -1,14 +1,21 @@
 #!/usr/bin/env bash
-# Runs the AIOStreams package the way Nuvio does on Apple TV — bootstrap.mjs,
-# Node 24 with the JIT off (--jitless), the shims instead of native addons —
-# and checks the configuration page, saving a configuration (the addon address
-# lands in the state file) and a stream request.
+# Installs and runs AIOStreams the way Nuvio does on Apple TV — bootstrap.mjs
+# from the installer folder (aio-node/installer/assemble.sh), Node 24 with the
+# JIT off (--jitless), the shims instead of native addons — and checks the
+# configuration page, saving a configuration (the addon address lands in the
+# state file), a stream request and Nuvio's version port.
 #
-#   aio-node/aio-package/smoke.sh <dir with aio.tar.gz and bootstrap.mjs>
+#   aio-node/aio-package/smoke.sh <installer folder> <source: image or aio.tar.gz>
 set -uo pipefail
 
-PACKAGE=$(cd "${1:?package dir}" && pwd)
+INSTALLER=$(cd "${1:?installer folder}" && pwd)
+SOURCE=${2:?source}
+[ -f "$SOURCE" ] && SOURCE=$(cd "$(dirname "$SOURCE")" && pwd)/$(basename "$SOURCE")
 RUN=$(mktemp -d)
+export NUVIO_AIO_HOME="$RUN/home"
+export NUVIO_AIO_SOURCE="$SOURCE"
+export NUVIO_CONTROL_PORT=18771
+export NUVIO_CONTROL_TOKEN=smoke
 export NODE_ENV=production
 export PORT=18770
 export NUVIO_LAN_PORT=18767
@@ -48,15 +55,15 @@ JS
 export UNDICI_NO_WASM_SIMD=1
 
 started=$(date +%s)
-node --jitless --max-old-space-size=1024 --import "$RUN/wasm/preload.mjs" "$PACKAGE/bootstrap.mjs" "$PACKAGE/aio.tar.gz" "$RUN/install" > "$RUN/aio.log" 2>&1 &
+node --jitless --max-old-space-size=1024 --import "$RUN/wasm/preload.mjs" "$INSTALLER/bootstrap.mjs" > "$RUN/aio.log" 2>&1 &
 PID=$!
-for _ in $(seq 1 300); do
+for _ in $(seq 1 600); do
   grep -q '"status": "running"' "$NUVIO_STATE_FILE" 2>/dev/null && break
   grep -qE '"status": "(not answering|failed)"' "$NUVIO_STATE_FILE" 2>/dev/null && break
   kill -0 $PID 2>/dev/null || break
   sleep 1
 done
-echo "startup (unpacking included): $(( $(date +%s) - started )) s"
+echo "startup (installing included): $(( $(date +%s) - started )) s"
 cat "$NUVIO_STATE_FILE" 2>/dev/null || { echo "no state file"; failed=1; }
 
 check "health" 200 "$LAN/api/v1/health"
@@ -68,7 +75,7 @@ check "status" 200 "$LAN/api/v1/status"
 node -e '
 const fs = require("fs");
 const root = process.argv[1];
-const dir = fs.readdirSync(root).find((name) => !name.endsWith(".partial"));
+const dir = JSON.parse(fs.readFileSync(`${root}/versions.json`, "utf8")).current;
 const template = JSON.parse(fs.readFileSync(`${root}/${dir}/resources/templates/debrid-starter.json`, "utf8"));
 const config = template.config;
 config.presets = config.presets.filter((preset) => preset.type === "torrentio");
@@ -79,7 +86,7 @@ for (const key of ["titleMatching", "yearMatching", "digitalReleaseFilter"]) {
   if (config[key]) config[key].enabled = false;
 }
 fs.writeFileSync(process.argv[2], JSON.stringify({ config, password: "nuvio-smoke-test" }));
-' "$RUN/install" "$RUN/config.json"
+' "$NUVIO_AIO_HOME" "$RUN/config.json"
 status=$(curl -s -o "$RUN/created" -w '%{http_code}' --max-time 120 -H 'content-type: application/json' \
   --data-binary "@$RUN/config.json" "$LAN/api/v1/user")
 echo "save configuration: HTTP $status"; head -c 400 "$RUN/created"; echo
@@ -97,6 +104,12 @@ if [ -n "$MANIFEST" ]; then
 else
   echo "FAIL no addon address in the state file"; failed=1
 fi
+
+CONTROL="http://127.0.0.1:$NUVIO_CONTROL_PORT"
+echo "versions: $(curl -s -H "x-nuvio-token: $NUVIO_CONTROL_TOKEN" "$CONTROL/versions")"
+echo "check for updates: $(curl -s -X POST -H "x-nuvio-token: $NUVIO_CONTROL_TOKEN" "$CONTROL/check")"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$CONTROL/versions")" = 403 ] && echo "ok   version port refuses requests without the token" \
+  || { echo "FAIL version port without the token"; failed=1; }
 
 echo "memory after requests: $(ps -o rss= -p $PID 2>/dev/null | awk '{printf "%d MB", $1/1024}')"
 sleep 60
