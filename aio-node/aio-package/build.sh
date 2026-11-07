@@ -4,7 +4,10 @@
 #   AIO_TAG=v2.37.0 aio-node/aio-package/build.sh <work dir> <output dir>
 #
 # Same steps and layout as AIOStreams' own Dockerfile (packages/server/dist,
-# packages/frontend/dist, resources, node_modules with pnpm's symlinks), then:
+# packages/frontend/dist, resources, node_modules), then:
+#   - no symlinks: Apple TV does not let apps create them, so node_modules is
+#     pnpm's hoisted layout (real folders) and no-symlinks.py turns the links
+#     to AIOStreams' own packages into forwarding packages,
 #   - native addons, which Apple TV can't load, are swapped for the shims in
 #     shims/ (better-sqlite3 → node:sqlite, bcrypt → bcryptjs, yencode → off),
 #   - nuvio-main.mjs is added,
@@ -35,9 +38,10 @@ pnpm install --frozen-lockfile
 pnpm run metadata || echo "note: metadata.json was not generated"
 pnpm run build
 
-# Production dependencies of the server and what it uses, as in the image.
+# Production dependencies of the server and what it uses, as in the image —
+# hoisted (real folders, like npm), because Apple TV refuses symlinks.
 rm -rf node_modules packages/*/node_modules
-pnpm install --prod --frozen-lockfile --filter '@aiostreams/server...'
+pnpm install --prod --frozen-lockfile --filter '@aiostreams/server...' --config.node-linker=hoisted
 
 STAGE="$WORK/stage"
 rm -rf "$STAGE"
@@ -62,8 +66,10 @@ for web in frontend web; do
 done
 cp -a node_modules "$STAGE/node_modules"
 
-# Native addons → shims. A shim replaces the package's own directory in
-# pnpm's store, so every symlink to it keeps working.
+# No symlinks at all (forwarding packages for AIOStreams' own, .bin dropped).
+python3 "$HERE/no-symlinks.py" "$STAGE"
+
+# Native addons → shims, wherever the package is in node_modules.
 bcryptjs_dir="$WORK/bcryptjs"
 rm -rf "$bcryptjs_dir" && mkdir -p "$bcryptjs_dir"
 (cd "$bcryptjs_dir" && npm pack --silent bcryptjs@3 >/dev/null && tar xzf bcryptjs-*.tgz && mv package bcryptjs)
@@ -81,7 +87,7 @@ for entry in better-sqlite3:better-sqlite3 bcrypt:bcrypt yencode:yencode fsmux-f
       cp -R "$bcryptjs_dir/bcryptjs" "$dir/node_modules/bcryptjs"
     fi
     echo "shim: $package → ${dir#$STAGE/}"
-  done < <(find "$STAGE/node_modules/.pnpm" -mindepth 3 -maxdepth 4 -type d -path "*/node_modules/$package" -print0)
+  done < <(find "$STAGE" -type d -path "*/node_modules/$package" -prune -print0)
   [ "$found" = 1 ] || echo "note: $package is not among the production dependencies"
 done
 

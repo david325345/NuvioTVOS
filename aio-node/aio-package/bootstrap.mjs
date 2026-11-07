@@ -3,9 +3,11 @@
 //   node bootstrap.mjs <aio.tar.gz> <install dir>
 //
 // Unpacks the AIOStreams package (a tar.gz with the same layout as the
-// official Docker image, symlinks included) into <install dir>/<package id>
-// unless it is there already, removes older versions, and starts
-// nuvio-main.mjs from it. Only Node's own modules: nothing else exists yet.
+// official Docker image, without symlinks: Apple TV refuses them) into
+// <install dir>/<package id> unless it is there already, removes older
+// versions, and starts nuvio-main.mjs from it. Only Node's own modules:
+// nothing else exists yet. A failure here is reported, not fatal: an
+// uncaught error would make Node.js close the whole app.
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
@@ -36,6 +38,8 @@ class TarExtractor extends Writable {
     this.longName = null;
     this.longLink = null;
     this.files = 0;
+    this.links = []; // symlinks the system refused, copied after unpacking
+    this.copiedLinks = 0;
   }
 
   target(name) {
@@ -83,8 +87,12 @@ class TarExtractor extends Writable {
       fs.mkdirSync(target, { recursive: true });
     } else if (type === '2') {
       fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.rmSync(target, { force: true });
-      fs.symlinkSync(link, target);
+      fs.rmSync(target, { recursive: true, force: true });
+      try {
+        fs.symlinkSync(link, target);
+      } catch {
+        this.links.push({ link, target });
+      }
     } else if (type === '1') {
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.rmSync(target, { force: true });
@@ -128,6 +136,31 @@ class TarExtractor extends Writable {
     }
   }
 
+  // tvOS refuses symlinks (EPERM): a copy of the target instead, once
+  // everything is unpacked (repeated while links point to other links).
+  copyLinks() {
+    let pending = this.links;
+    while (pending.length) {
+      const waiting = [];
+      for (const item of pending) {
+        const source = path.resolve(path.dirname(item.target), item.link);
+        if (source !== this.root && !source.startsWith(this.root + path.sep)) {
+          console.log(`[nuvio] link outside the package skipped: ${item.link}`);
+        } else if (fs.existsSync(source)) {
+          fs.cpSync(source, item.target, { recursive: true, dereference: true });
+          this.copiedLinks++;
+        } else {
+          waiting.push(item);
+        }
+      }
+      if (waiting.length === pending.length) {
+        for (const item of waiting) console.log(`[nuvio] link without a target: ${path.relative(this.root, item.target)} → ${item.link}`);
+        break;
+      }
+      pending = waiting;
+    }
+  }
+
   _write(chunk, encoding, callback) {
     try {
       this.buffer = this.buffer.length ? Buffer.concat([this.buffer, chunk]) : chunk;
@@ -161,25 +194,46 @@ class TarExtractor extends Writable {
   }
 }
 
-const id = packageId(packagePath);
-const root = path.join(installDir, id);
-const marker = path.join(root, '.nuvio-complete');
-if (!fs.existsSync(marker)) {
-  const started = Date.now();
-  const temporary = `${root}.partial`;
-  fs.rmSync(temporary, { recursive: true, force: true });
-  fs.mkdirSync(temporary, { recursive: true });
-  console.log(`[nuvio] unpacking ${path.basename(packagePath)} (${Math.round(fs.statSync(packagePath).size / 1048576)} MB)…`);
-  const extractor = new TarExtractor(temporary);
-  await pipeline(fs.createReadStream(packagePath), zlib.createGunzip(), extractor);
-  fs.writeFileSync(path.join(temporary, '.nuvio-complete'), new Date().toISOString());
-  fs.rmSync(root, { recursive: true, force: true });
-  fs.renameSync(temporary, root);
-  console.log(`[nuvio] unpacked ${extractor.files} files in ${((Date.now() - started) / 1000).toFixed(1)} s`);
-}
-for (const name of fs.readdirSync(installDir)) {
-  if (name !== id) fs.rmSync(path.join(installDir, name), { recursive: true, force: true });
+function reportFailure(error) {
+  console.log(`[nuvio] AIOStreams could not be started: ${error && error.stack ? error.stack : error}`);
+  if (process.env.NUVIO_STATE_FILE) {
+    try {
+      fs.writeFileSync(process.env.NUVIO_STATE_FILE, JSON.stringify({
+        status: 'failed',
+        error: String((error && error.message) || error).slice(0, 300),
+      }));
+    } catch {}
+  }
+  process.exitCode = 1;
 }
 
-process.env.AIO_ROOT = root;
-await import(pathToFileURL(path.join(root, 'nuvio-main.mjs')).href);
+try {
+  const id = packageId(packagePath);
+  const root = path.join(installDir, id);
+  const marker = path.join(root, '.nuvio-complete');
+  if (!fs.existsSync(marker)) {
+    const started = Date.now();
+    const temporary = `${root}.partial`;
+    fs.rmSync(temporary, { recursive: true, force: true });
+    fs.mkdirSync(temporary, { recursive: true });
+    console.log(`[nuvio] unpacking ${path.basename(packagePath)} (${Math.round(fs.statSync(packagePath).size / 1048576)} MB)…`);
+    const extractor = new TarExtractor(temporary);
+    await pipeline(fs.createReadStream(packagePath), zlib.createGunzip(), extractor);
+    if (extractor.links.length) {
+      extractor.copyLinks();
+      console.log(`[nuvio] ${extractor.links.length} symlinks refused by the system, ${extractor.copiedLinks} copied instead`);
+    }
+    fs.writeFileSync(path.join(temporary, '.nuvio-complete'), new Date().toISOString());
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.renameSync(temporary, root);
+    console.log(`[nuvio] unpacked ${extractor.files} files in ${((Date.now() - started) / 1000).toFixed(1)} s`);
+  }
+  for (const name of fs.readdirSync(installDir)) {
+    if (name !== id) fs.rmSync(path.join(installDir, name), { recursive: true, force: true });
+  }
+
+  process.env.AIO_ROOT = root;
+  await import(pathToFileURL(path.join(root, 'nuvio-main.mjs')).href);
+} catch (error) {
+  reportFailure(error);
+}

@@ -15,6 +15,10 @@ on:
         description: AIOStreams tag (empty = latest)
         required: false
 
+permissions:
+  contents: read
+  actions: write   # starts the test IPA build with this package
+
 jobs:
   package:
     runs-on: ubuntu-latest
@@ -50,3 +54,9 @@ jobs:
         with:
           name: aio-package
           path: out
+      - name: Test IPA with this package
+        # The IPA workflow waits for this run to finish, then takes its package.
+        if: success() && github.ref == 'refs/heads/aio-node'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run build-aio-ipa.yml -R "$GITHUB_REPOSITORY" --ref aio-node -f aio_run=${{ github.run_id }}

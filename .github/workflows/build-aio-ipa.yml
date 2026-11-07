@@ -11,6 +11,10 @@ on:
       - tvosApp/**
       - .github/workflows/build-aio-ipa.yml
   workflow_dispatch:
+    inputs:
+      aio_run:
+        description: Run of build-aio-package.yml to take the package from (empty = newest successful)
+        required: false
 
 permissions:
   contents: read
@@ -34,7 +38,19 @@ jobs:
             gh run list -R "$GITHUB_REPOSITORY" --workflow "$1" --branch aio-node --status success --limit 1 \
               --json databaseId --jq '.[0].databaseId // empty'
           }
-          aio_run=$(latest build-aio-package.yml)
+          aio_run="${{ github.event.inputs.aio_run }}"
+          if [ -n "$aio_run" ]; then
+            # Started by that package run: wait until it has finished.
+            state=""
+            for _ in $(seq 1 90); do
+              state=$(gh run view "$aio_run" -R "$GITHUB_REPOSITORY" --json status,conclusion --jq '.status + "/" + .conclusion')
+              [ "${state%%/*}" = completed ] && break
+              sleep 10
+            done
+            [ "$state" = completed/success ] || { echo "::error::AIOStreams package run $aio_run: $state"; exit 1; }
+          else
+            aio_run=$(latest build-aio-package.yml)
+          fi
           [ -n "$aio_run" ] || { echo "::error::No successful AIOStreams package build yet"; exit 1; }
           gh run download "$aio_run" -R "$GITHUB_REPOSITORY" -n aio-package -D tvosApp/NuvioTV/AIOPackage
           # Node.js: the newest build-node-tvos.yml run with both framework slices.
@@ -147,7 +163,19 @@ jobs:
             gh run list -R "$GITHUB_REPOSITORY" --workflow "$1" --branch aio-node --status success --limit 1 \
               --json databaseId --jq '.[0].databaseId // empty'
           }
-          aio_run=$(latest build-aio-package.yml)
+          aio_run="${{ github.event.inputs.aio_run }}"
+          if [ -n "$aio_run" ]; then
+            # Started by that package run: wait until it has finished.
+            state=""
+            for _ in $(seq 1 90); do
+              state=$(gh run view "$aio_run" -R "$GITHUB_REPOSITORY" --json status,conclusion --jq '.status + "/" + .conclusion')
+              [ "${state%%/*}" = completed ] && break
+              sleep 10
+            done
+            [ "$state" = completed/success ] || { echo "::error::AIOStreams package run $aio_run: $state"; exit 1; }
+          else
+            aio_run=$(latest build-aio-package.yml)
+          fi
           [ -n "$aio_run" ] || { echo "::error::No successful AIOStreams package build yet"; exit 1; }
           gh run download "$aio_run" -R "$GITHUB_REPOSITORY" -n aio-package -D tvosApp/NuvioTV/AIOPackage
           # Node.js: the newest build-node-tvos.yml run with both framework slices.
