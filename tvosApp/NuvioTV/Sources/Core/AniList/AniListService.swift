@@ -619,7 +619,7 @@ enum AniListService {
     ///   franchise's main entry; one IMDb title stands for every season).
     /// One small request, kept a day.
     static func ratings(for meta: NuvioMeta) async -> [NuvioExternalRating] {
-        guard AniListSettings.isEnabled, AddonRatingsService.isSourceEnabled(AniListMetaBuilder.ratingSource) else { return [] }
+        guard AniListSettings.showsScore, AddonRatingsService.isSourceEnabled(AniListMetaBuilder.ratingSource) else { return [] }
         let id: Int
         if let own = AniListMetaBuilder.aniListID(from: meta.id) {
             let carried = (meta.externalRatings ?? []).filter { $0.source == AniListMetaBuilder.ratingSource }

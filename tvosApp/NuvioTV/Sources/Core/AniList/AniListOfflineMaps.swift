@@ -232,7 +232,7 @@ actor AniListOfflineMaps {
 
     /// Starts a download when the tables are missing or a week old (and AniList is on).
     func refreshIfStale(force: Bool = false) {
-        guard AniListSettings.opensTitles, refreshing == nil else { return }
+        guard AniListSettings.needsOfflineTables, refreshing == nil else { return }
         if !force {
             if let index, Date().timeIntervalSince(index.builtAt) < Self.maxAge { return }
             if let lastFailure, Date().timeIntervalSince(lastFailure) < Self.retryAfter { return }

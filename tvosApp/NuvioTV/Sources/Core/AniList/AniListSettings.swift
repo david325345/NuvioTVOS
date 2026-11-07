@@ -89,6 +89,18 @@ enum AniListSettings {
         return rowID.hasPrefix(prefix) ? String(rowID.dropFirst(prefix.count)) : nil
     }
 
+    /// AniList's average score beside the others, for anime from Cinemeta too. Works with AniList
+    /// off; never switched, it follows AniList being on.
+    static var showsScore: Bool {
+        let store = ProfileSettings.current
+        return store.object(forKey: SettingsKey.aniListScore) == nil ? isEnabled(in: store) : store.bool(forKey: SettingsKey.aniListScore)
+    }
+
+    /// The offline tables are needed: for AniList's or MAL's titles, or only for their scores.
+    static var needsOfflineTables: Bool {
+        opensTitles || showsScore || MALSettings.usesOwnScore || MALSettings.showsEpisodeRatings
+    }
+
     /// AniList titles open, play and convert their ids: with AniList on, or MyAnimeList on (its
     /// titles open as the AniList titles they map to).
     static var opensTitles: Bool { isEnabled || MALSettings.isEnabled }

@@ -419,7 +419,7 @@ enum SettingsKey {
         aniListEnabled, aniListTitleLanguage, aniListSeasonMode, aniListHomeRows, aniListSearch,
         aniListHideCinemetaDuplicates, aniListEpisodeDetails, aniListAdult,
         aniListClientID, aniListScrobble, aniListScrobbleCinemeta, aniListListRows, aniListOtherAddons, aniListCatalogs,
-        malEnabled, malClientID, malEpisodeRatings, malScrobble, malAdult, malCatalogs, malDetailsButton, aniListDetailsButton, malPlusStatus, aniListPlusStatus,
+        malEnabled, malClientID, malEpisodeRatings, malScrobble, malAdult, malCatalogs, malDetailsButton, aniListDetailsButton, malPlusStatus, aniListPlusStatus, malSeriesScore, aniListScore,
         mdbListEnabled, mdbListApiKey, mdbListUseImdb, mdbListUseTmdb,
         mdbListUseTomatoes, mdbListUseMetacritic, mdbListUseTrakt,
         mdbListUseLetterboxd, mdbListUseAudience,
@@ -5452,7 +5452,8 @@ private struct MALOptionsSheet: View {
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
     @AppStorage(SettingsKey.malEnabled) private var enabled = false
     @AppStorage(SettingsKey.malClientID) private var clientID = ""
-    @AppStorage(SettingsKey.malEpisodeRatings) private var episodeRatings = true
+    @AppStorage(SettingsKey.malEpisodeRatings) private var episodeRatingsSetting: Bool?
+    @AppStorage(SettingsKey.malSeriesScore) private var seriesScoreSetting: Bool?
     @AppStorage(SettingsKey.malScrobble) private var scrobble = true
     @AppStorage(SettingsKey.malAdult) private var adult = false
     @AppStorage(SettingsKey.malDetailsButton) private var detailsButton = true
@@ -5532,24 +5533,26 @@ private struct MALOptionsSheet: View {
             title: L10n.string("settings_mal_section_ratings", fallback: "Ratings"),
             subtitle: L10n.string("settings_mal_section_ratings_subtitle", fallback: "Shown where the MyAnimeList rating is on (Rating Providers & Order)")
         ) {
-            SettingsInfoRow(
-                title: L10n.string("settings_mal_series_score", fallback: "Series Score"),
-                value: L10n.string("settings_mal_series_score_value", fallback: "From MAL instead of MDBList; MDBList's when MAL has none")
+            SettingsToggleRow(
+                title: L10n.string("settings_mal_series_score", fallback: "Series Score from MAL"),
+                subtitle: L10n.string(
+                    "settings_mal_series_score_subtitle",
+                    fallback: "MAL's score straight from MAL instead of MDBList's copy (MDBList's when MAL has none). Works with MyAnimeList off"
+                ),
+                isOn: Binding(get: { seriesScoreSetting ?? enabled }, set: { seriesScoreSetting = $0 }),
+                accentColor: accentColor
             )
 
             SettingsToggleRow(
                 title: L10n.string("settings_mal_episode_ratings", fallback: "MAL Episode Ratings"),
                 subtitle: L10n.string(
                     "settings_mal_episode_ratings_subtitle",
-                    fallback: "Each episode's MyAnimeList score (1–5) on episode cards. For AniList anime and anime from Cinemeta"
+                    fallback: "Each episode's MyAnimeList score (1–5) on episode cards, for AniList anime and anime from Cinemeta. Works with MyAnimeList off"
                 ),
-                isOn: $episodeRatings,
-                accentColor: accentColor,
-                isAvailable: enabled
+                isOn: Binding(get: { episodeRatingsSetting ?? enabled }, set: { episodeRatingsSetting = $0 }),
+                accentColor: accentColor
             )
         }
-        .opacity(enabled ? 1 : 0.46)
-        .disabled(!enabled)
     }
 
     @ViewBuilder
@@ -5862,6 +5865,7 @@ private struct AniListOptionsSheet: View {
     @AppStorage(SettingsKey.aniListEpisodeDetails) private var episodeDetails = true
     @AppStorage(SettingsKey.malEnabled) private var malEnabled = false
     @AppStorage(SettingsKey.aniListDetailsButton) private var detailsButton = true
+    @AppStorage(SettingsKey.aniListScore) private var aniListScoreSetting: Bool?
     @AppStorage(SettingsKey.aniListPlusStatus) private var plusStatus = AniListSettings.PlusStatus.planning.rawValue
     @State private var showingCatalogs = false
     @AppStorage(SettingsKey.aniListAdult) private var adult = false
@@ -5915,6 +5919,16 @@ private struct AniListOptionsSheet: View {
                             title: L10n.string("settings_anilist_enable", fallback: "Enable AniList"),
                             subtitle: L10n.string("settings_anilist_enable_subtitle", fallback: "Catalogs, search and details of anime from AniList"),
                             isOn: $enabled,
+                            accentColor: accentColor
+                        )
+
+                        SettingsToggleRow(
+                            title: L10n.string("settings_anilist_score", fallback: "AniList Score"),
+                            subtitle: L10n.string(
+                                "settings_anilist_score_subtitle",
+                                fallback: "AniList's average score beside the other ratings, for anime from Cinemeta too. Works with AniList off; order it in Rating Providers & Order"
+                            ),
+                            isOn: Binding(get: { aniListScoreSetting ?? enabled }, set: { aniListScoreSetting = $0 }),
                             accentColor: accentColor
                         )
 
@@ -6919,8 +6933,9 @@ private struct MdbListOptionsSheet: View {
             )
         }
 
-        // AniList's own score (Settings → AniList), switched here like the others but without MDBList.
-        if AniListSettings.isEnabled {
+        // AniList's own score (Settings → AniList → AniList Score), switched here like the others
+        // but without MDBList; listed whether or not AniList is on.
+        do {
             items.append(
                 RatingProviderRowItem(
                     id: AniListMetaBuilder.ratingSource,
