@@ -1395,7 +1395,7 @@ private struct CalendarEntryCard: View {
                         }
                     }
                 }
-                MarqueeText(entry.title, font: .system(size: 26, weight: .bold), color: .white, isActive: isFocused)
+                MarqueeText(entry.title, size: 26, weight: .bold, color: .white, isActive: isFocused)
                 if let subtitle {
                     Text(subtitle)
                         .font(.system(size: 20))

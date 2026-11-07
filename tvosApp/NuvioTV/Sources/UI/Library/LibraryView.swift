@@ -1018,7 +1018,7 @@ struct LibraryItemButton: View {
                 
                 if posterLabels {
                     VStack(alignment: .leading, spacing: 3) {
-                        MarqueeText(item.name, font: .system(size: 20, weight: .semibold),
+                        MarqueeText(item.name, size: 20, weight: .semibold,
                                     color: showsFocusedAppearance ? .white : .white.opacity(0.78),
                                     isActive: showsFocusedAppearance)
                         Text(subtitle)

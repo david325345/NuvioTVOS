@@ -480,7 +480,7 @@ struct PosterCard: View {
             if showsPosterTitle {
                 MarqueeText(
                     meta.name,
-                    font: .system(size: effectiveHomeLayout == "Compact" ? 18 : 20, weight: showsFocusedAppearance ? .semibold : .medium),
+                    size: effectiveHomeLayout == "Compact" ? 18 : 20, weight: showsFocusedAppearance ? .semibold : .medium,
                     color: titleColor,
                     isActive: showsFocusedAppearance
                 )
@@ -527,7 +527,7 @@ struct PosterCard: View {
                 if continueEpisodeText != nil {
                     continueLandscapeSummary
                 } else if continueProgress != nil || continueRemainingText != nil {
-                    MarqueeText(meta.name, font: .system(size: 28, weight: .semibold), color: .white,
+                    MarqueeText(meta.name, size: 28, weight: .semibold, color: .white,
                                 isActive: showsFocusedAppearance, minimumScaleFactor: 0.82)
                         .frame(maxWidth: cardWidth * 0.82, alignment: .leading)
                         .padding(EdgeInsets(top: 22, leading: 22, bottom: 54, trailing: 22))
@@ -555,15 +555,15 @@ struct PosterCard: View {
     private var continueLandscapeSummary: some View {
         VStack(alignment: .leading, spacing: 3) {
             if let continueEpisodeText {
-                MarqueeText(continueEpisodeText, font: .system(size: 25, weight: .medium), color: .white,
+                MarqueeText(continueEpisodeText, size: 25, weight: .medium, color: .white,
                             isActive: showsFocusedAppearance)
             }
 
-            MarqueeText(meta.name, font: .system(size: 28, weight: .semibold), color: .white,
+            MarqueeText(meta.name, size: 28, weight: .semibold, color: .white,
                         isActive: showsFocusedAppearance, minimumScaleFactor: 0.82)
 
             if let continueEpisodeTitleText, !continueEpisodeTitleText.isEmpty {
-                MarqueeText(continueEpisodeTitleText, font: .system(size: 23, weight: .medium), color: .white.opacity(0.66),
+                MarqueeText(continueEpisodeTitleText, size: 23, weight: .medium, color: .white.opacity(0.66),
                             isActive: showsFocusedAppearance, minimumScaleFactor: 0.82)
             }
         }
@@ -1578,7 +1578,7 @@ struct PosterGridCard: View {
 
             if posterLabels || forceShowLabels {
                 VStack(alignment: .leading, spacing: 3) {
-                    MarqueeText(meta.name, font: .system(size: 20, weight: .semibold),
+                    MarqueeText(meta.name, size: 20, weight: .semibold,
                                 color: showsFocusedAppearance ? .white : .white.opacity(0.78),
                                 isActive: showsFocusedAppearance)
                     Text(subtitle)

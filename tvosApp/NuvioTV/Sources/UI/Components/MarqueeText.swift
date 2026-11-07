@@ -1,40 +1,111 @@
 import SwiftUI
+import UIKit
 
 /// One line of text that shows its end when it doesn't fit: while `isActive` (the focused card),
 /// after a moment it scrolls to the end, rests there, goes back, and again — as tvOS scrolls a
 /// focused title. Inactive, or text that fits, is the usual one line ending in "…". Nothing moves
-/// with Reduce Motion on (Settings → Accessibility → Motion). Only the active line is measured.
+/// with Reduce Motion on (Settings → Accessibility → Motion).
+///
+/// Worked out from the clock rather than kept in state: the line's width comes from the font, the
+/// box's from the layout, and where the text is from the time since the card got focus, so there
+/// is nothing to measure late or to start and stop. Only the focused line redraws while it moves.
 struct MarqueeText: View {
     let text: String
-    var font: Font
-    var color: Color
-    var isActive: Bool
+    let size: CGFloat
+    let weight: Font.Weight
+    let color: Color
+    let isActive: Bool
     /// As `minimumScaleFactor`: the text shrinks this far before it counts as not fitting, and
     /// scrolls at that size.
-    var minimumScaleFactor: CGFloat = 1
+    let minimumScaleFactor: CGFloat
     /// Where text that fits sits; scrolling text starts at the leading edge.
-    var alignment: Alignment = .leading
+    let alignment: Alignment
 
-    static let startDelay: Double = 1.2
+    static let startDelay: TimeInterval = 1.2
     static let pointsPerSecond: CGFloat = 45
-    static let restAtEnds: Double = 1.6
-    static let returnDuration: Double = 0.6
+    static let restAtEnds: TimeInterval = 1.6
+    static let returnDuration: TimeInterval = 0.6
     static let edgeFade: CGFloat = 14
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var fullWidth: CGFloat = 0
-    @State private var boxWidth: CGFloat = 0
-    @State private var scrolling = false
-    @State private var offset: CGFloat = 0
+    @State private var activeSince: Date?
 
-    init(_ text: String, font: Font, color: Color, isActive: Bool, minimumScaleFactor: CGFloat = 1, alignment: Alignment = .leading) {
+    init(
+        _ text: String,
+        size: CGFloat,
+        weight: Font.Weight = .regular,
+        color: Color,
+        isActive: Bool,
+        minimumScaleFactor: CGFloat = 1,
+        alignment: Alignment = .leading
+    ) {
         self.text = text
-        self.font = font
+        self.size = size
+        self.weight = weight
         self.color = color
         self.isActive = isActive
         self.minimumScaleFactor = minimumScaleFactor
         self.alignment = alignment
     }
+
+    var body: some View {
+        let lineWidth = Self.width(of: text, size: size, weight: weight)
+        GeometryReader { box in
+            let overflow = Self.overflow(fullWidth: lineWidth, boxWidth: box.size.width, scale: minimumScaleFactor)
+            let moving = isActive && overflow > 0 && !reduceMotion
+            TimelineView(.animation(minimumInterval: nil, paused: !moving)) { context in
+                let elapsed = activeSince.map { context.date.timeIntervalSince($0) } ?? 0
+                let scrolled = moving && elapsed >= Self.startDelay
+                line(
+                    boxWidth: box.size.width,
+                    scrolled: scrolled,
+                    offset: scrolled ? Self.position(elapsed: elapsed, distance: overflow + Self.edgeFade) : 0
+                )
+            }
+        }
+        .frame(height: Self.lineHeight(size: size, weight: weight))
+        .onChange(of: isActive, initial: true) { _, active in
+            activeSince = active ? Date() : nil
+        }
+    }
+
+    @ViewBuilder
+    private func line(boxWidth: CGFloat, scrolled: Bool, offset: CGFloat) -> some View {
+        ZStack(alignment: scrolled ? .leading : alignment) {
+            if scrolled {
+                Text(text)
+                    .font(.system(size: size, weight: weight))
+                    .foregroundColor(color)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .scaleEffect(minimumScaleFactor, anchor: .leading)
+                    .offset(x: -offset)
+            } else {
+                Text(text)
+                    .font(.system(size: size, weight: weight))
+                    .foregroundColor(color)
+                    .lineLimit(1)
+                    .minimumScaleFactor(minimumScaleFactor)
+            }
+        }
+        .frame(width: boxWidth, alignment: scrolled ? .leading : alignment)
+        .clipped()
+        .mask {
+            if scrolled {
+                HStack(spacing: 0) {
+                    LinearGradient(colors: [.clear, .black], startPoint: .leading, endPoint: .trailing)
+                        .frame(width: offset > 0 ? Self.edgeFade : 0)
+                    Rectangle()
+                    LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
+                        .frame(width: Self.edgeFade)
+                }
+            } else {
+                Rectangle()
+            }
+        }
+    }
+
+    // MARK: Pure parts (tests)
 
     /// How far the text runs past its box at the size it scrolls at; 0 = it fits.
     static func overflow(fullWidth: CGFloat, boxWidth: CGFloat, scale: CGFloat) -> CGFloat {
@@ -42,111 +113,45 @@ struct MarqueeText: View {
         return max(0, (fullWidth * scale - boxWidth).rounded(.up))
     }
 
-    private var overflow: CGFloat {
-        Self.overflow(fullWidth: fullWidth, boxWidth: boxWidth, scale: minimumScaleFactor)
+    /// How far the text has scrolled `elapsed` seconds after the card got focus: still for
+    /// `startDelay`, then out to `distance` at `pointsPerSecond`, a rest, back in
+    /// `returnDuration`, a rest, and again.
+    static func position(elapsed: TimeInterval, distance: CGFloat) -> CGFloat {
+        guard distance > 0, elapsed > startDelay else { return 0 }
+        let out = Double(distance / pointsPerSecond)
+        let cycle = out + restAtEnds + returnDuration + restAtEnds
+        let t = (elapsed - startDelay).truncatingRemainder(dividingBy: cycle)
+        if t < out { return distance * CGFloat(t / out) }
+        if t < out + restAtEnds { return distance }
+        if t < out + restAtEnds + returnDuration {
+            let progress = (t - out - restAtEnds) / returnDuration
+            let eased = progress * progress * (3 - 2 * progress)
+            return distance * CGFloat(1 - eased)
+        }
+        return 0
     }
 
-    private var moves: Bool {
-        isActive && overflow > 0 && !reduceMotion
+    /// The width of `text` on one line in the system font, as SwiftUI draws `.system(size:weight:)`.
+    static func width(of text: String, size: CGFloat, weight: Font.Weight) -> CGFloat {
+        let font = UIFont.systemFont(ofSize: size, weight: uiWeight(weight))
+        return ceil((text as NSString).size(withAttributes: [.font: font]).width)
     }
 
-    var body: some View {
-        ZStack(alignment: scrolling ? .leading : alignment) {
-            // The line's full height, so scrolling at a smaller size doesn't move what's around it.
-            Text(" ").font(font).hidden()
-            Text(text)
-                .font(font)
-                .foregroundColor(color)
-                .lineLimit(1)
-                .minimumScaleFactor(minimumScaleFactor)
-                .opacity(scrolling ? 0 : 1)
-            // Already there while focused, so the first move animates instead of appearing.
-            if isActive && overflow > 0 {
-                Text(text)
-                    .font(font)
-                    .foregroundColor(color)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .scaleEffect(minimumScaleFactor, anchor: .leading)
-                    .offset(x: -offset)
-                    .opacity(scrolling ? 1 : 0)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: scrolling ? .leading : alignment)
-        .clipped()
-        .mask(fadeMask)
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
-            boxWidth = width
-        }
-        .background {
-            if isActive { lineMeasure }
-        }
-        .task(id: MarqueeKey(text: text, moves: moves, overflow: overflow)) {
-            await run()
-        }
+    static func lineHeight(size: CGFloat, weight: Font.Weight) -> CGFloat {
+        ceil(UIFont.systemFont(ofSize: size, weight: uiWeight(weight)).lineHeight)
     }
 
-    /// The whole line's width, never shown.
-    private var lineMeasure: some View {
-        Text(text)
-            .font(font)
-            .lineLimit(1)
-            .fixedSize(horizontal: true, vertical: false)
-            .hidden()
-            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
-                fullWidth = width
-            }
-            .frame(width: 0, alignment: .leading)
-    }
-
-    @ViewBuilder
-    private var fadeMask: some View {
-        if scrolling {
-            HStack(spacing: 0) {
-                LinearGradient(colors: [.clear, .black], startPoint: .leading, endPoint: .trailing)
-                    .frame(width: offset > 0 ? Self.edgeFade : 0)
-                Rectangle()
-                LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
-                    .frame(width: Self.edgeFade)
-            }
-        } else {
-            Rectangle()
+    private static func uiWeight(_ weight: Font.Weight) -> UIFont.Weight {
+        switch weight {
+        case .ultraLight: return .ultraLight
+        case .thin: return .thin
+        case .light: return .light
+        case .medium: return .medium
+        case .semibold: return .semibold
+        case .bold: return .bold
+        case .heavy: return .heavy
+        case .black: return .black
+        default: return .regular
         }
     }
-
-    /// Back to the start at once, then (while it moves) to the end and back, until cancelled.
-    private func run() async {
-        var reset = Transaction()
-        reset.disablesAnimations = true
-        withTransaction(reset) {
-            offset = 0
-            scrolling = false
-        }
-        guard moves else { return }
-        guard await pause(Self.startDelay) else { return }
-        withTransaction(reset) { scrolling = true }
-        // Let it draw at the start before it moves.
-        guard await pause(0.05) else { return }
-        // A little past the end, so the last letter clears the fade.
-        let distance = overflow + Self.edgeFade
-        let duration = Double(distance / Self.pointsPerSecond)
-        while !Task.isCancelled {
-            withAnimation(.linear(duration: duration)) { offset = distance }
-            guard await pause(duration + Self.restAtEnds) else { return }
-            withAnimation(.easeInOut(duration: Self.returnDuration)) { offset = 0 }
-            guard await pause(Self.returnDuration + Self.restAtEnds) else { return }
-        }
-    }
-
-    /// false when cancelled (the card lost focus, the text changed).
-    private func pause(_ seconds: Double) async -> Bool {
-        try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
-        return !Task.isCancelled
-    }
-}
-
-private struct MarqueeKey: Hashable {
-    let text: String
-    let moves: Bool
-    let overflow: CGFloat
 }
