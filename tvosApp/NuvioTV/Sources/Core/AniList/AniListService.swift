@@ -408,12 +408,13 @@ enum AniListService {
         guard let meta = AniListMetaBuilder.meta(tabs: tabs, episodes: episodes, language: language, artwork: artwork) else {
             throw DetailsError.notFound
         }
-        AniListTitleIndex.store(
-            metaID: meta.id,
-            tabTitles: tabs.count > 1 ? AniListMetaBuilder.tabTitles(tabs, language: language) : [:],
-            seasonByEntry: Dictionary(uniqueKeysWithValues: tabs.enumerated().map { ($1.id, $0 + 1) }),
-            related: AniListMetaBuilder.related(tabs: tabs, language: language)
-        )
+        let tabTitles = AniListMetaBuilder.tabTitles(tabs, language: language)
+        let seasonByEntry = Dictionary(uniqueKeysWithValues: tabs.enumerated().map { ($1.id, $0 + 1) })
+        let related = AniListMetaBuilder.related(tabs: tabs, language: language)
+        // Under the series' id and its entries' too, however the title was opened.
+        for key in Set([meta.id, id] + tabs.map { AniListMetaBuilder.metaID($0.id) }) {
+            AniListTitleIndex.store(metaID: key, tabTitles: tabTitles, seasonByEntry: seasonByEntry, related: related)
+        }
         return meta
     }
 

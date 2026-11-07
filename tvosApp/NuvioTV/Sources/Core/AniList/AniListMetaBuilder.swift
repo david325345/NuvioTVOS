@@ -510,11 +510,44 @@ enum AniListMetaBuilder {
     }
 
     /// Names of the tabs, by season number.
+    /// The tabs' names: each entry's own, without what it shares with the first ("Shingeki no
+    /// Kyojin Season 3 Part 2" → "Season 3 Part 2 · 2019"), the first by its format ("TV ·
+    /// 2013"). A title of one entry says what it is: "TV · 12 episodes · 2023". Never "Season N":
+    /// AniList's entries aren't seasons.
     static func tabTitles(_ tabs: [AniListMedia], language: AniListSettings.TitleLanguage) -> [Int: String] {
+        let names = tabs.map { title($0.title, language: language) }
+        guard let base = names.first else { return [:] }
+        if tabs.count == 1, let only = tabs.first {
+            return [1: singleTitle(only)]
+        }
         var titles: [Int: String] = [:]
         for (index, media) in tabs.enumerated() {
-            titles[index + 1] = title(media.title, language: language)
+            let short = index == 0 ? "" : shortName(names[index], base: base)
+            let label = short.isEmpty ? (formatLabel(media.format) ?? names[index]) : short
+            titles[index + 1] = [label, year(media).map { String($0) }].compactMap { $0 }.joined(separator: " · ")
         }
         return titles
+    }
+
+    static func singleTitle(_ media: AniListMedia) -> String {
+        var parts: [String] = [formatLabel(media.format) ?? "TV"]
+        if let count = media.episodes, count > 1 { parts.append("\(count) episodes") }
+        if let year = year(media) { parts.append(String(year)) }
+        return parts.joined(separator: " · ")
+    }
+
+    /// `name` without the words it shares with `base` at its start; all of it when they share
+    /// fewer than four letters, or it would be left empty for another reason.
+    static func shortName(_ name: String, base: String) -> String {
+        let a = Array(name), b = Array(base)
+        var shared = 0
+        while shared < a.count, shared < b.count, a[shared].lowercased() == b[shared].lowercased() { shared += 1 }
+        // Back to the end of a word: "Naruto" doesn't cut "Narutoverse".
+        if shared < a.count, shared > 0, a[shared].isLetter || a[shared].isNumber, a[shared - 1].isLetter || a[shared - 1].isNumber {
+            while shared > 0, a[shared - 1].isLetter || a[shared - 1].isNumber { shared -= 1 }
+        }
+        guard shared >= 4 else { return name }
+        let rest = String(a[shared...]).trimmingCharacters(in: CharacterSet(charactersIn: " :-–—~,.!?").union(.whitespaces))
+        return rest.isEmpty ? "" : rest
     }
 }
