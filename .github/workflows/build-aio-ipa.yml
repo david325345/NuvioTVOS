@@ -188,6 +188,35 @@ jobs:
           }
           trap 'report' ERR
           bash scripts/test-tvos.sh -only-testing:NuvioTVTests/AIOExperimentTests
+      - name: Why the app stopped
+        if: failure()
+        run: |
+          set +e
+          for framework in Vendor/NodeMobile/NodeMobile.xcframework/*/NodeMobile.framework; do
+            echo "== $framework"; xcrun vtool -show-build "$framework/NodeMobile" | head -12; otool -L "$framework/NodeMobile" | head -20
+          done
+          echo "== crash reports"; ls -lt ~/Library/Logs/DiagnosticReports/ 2>/dev/null | head -10
+          report=$(ls -t ~/Library/Logs/DiagnosticReports/NuvioTV* 2>/dev/null | head -1)
+          if [ -n "$report" ]; then
+            python3 - "$report" <<'PY'
+          import json, sys
+          text = open(sys.argv[1]).read()
+          header, _, body = text.partition("\n")
+          data = json.loads(body)
+          print("exception:", json.dumps(data.get("exception")))
+          print("termination:", json.dumps(data.get("termination"))[:1500])
+          print("asi:", json.dumps(data.get("asi"))[:1500])
+          images = data.get("usedImages", [])
+          for thread in data.get("threads", []):
+              if thread.get("triggered"):
+                  for frame in thread.get("frames", [])[:25]:
+                      image = images[frame.get("imageIndex", 0)] if images else {}
+                      print("  ", image.get("name", "?"), frame.get("symbol", ""), frame.get("imageOffset", ""))
+          PY
+          fi
+          echo "== launch on the simulator"
+          xcrun simctl list devices booted
+          timeout 60 xcrun simctl launch --console-pty booted com.pyksel.nuviotvos 2>&1 | tail -60
       - name: What AIOStreams did
         if: always()
         env:
