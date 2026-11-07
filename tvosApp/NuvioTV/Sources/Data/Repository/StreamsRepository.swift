@@ -448,21 +448,25 @@ final class StreamsRepository: ObservableObject {
         let requestId: String
     }
 
-    /// Kitsu / IMDb ids of an AniList title, looked up only when some add-on doesn't take its
-    /// anilist: id but offers `resource`.
+    /// Other ids of a title for add-ons that don't take its own but offer `resource`: an AniList
+    /// title's Kitsu, MAL, AniDB, IMDb and TMDB ids; a Cinemeta anime's AniList, Kitsu, MAL and
+    /// AniDB ones.
     nonisolated static func aniListAlternatives(
         for videoId: String,
         type: String,
         resource: String,
         manifests: [StreamAddonManifest]
     ) async -> [String] {
-        guard AniListMetaBuilder.isAniListID(videoId) else { return [] }
         let someoneNeeds = manifests.contains { manifest in
             !manifest.supportsResource(resource, type: type, id: videoId)
                 && (manifest.resources ?? []).contains { $0.name.caseInsensitiveCompare(resource) == .orderedSame }
         }
         guard someoneNeeds else { return [] }
-        return await AniListStreamIds.alternatives(for: videoId)
+        if AniListMetaBuilder.isAniListID(videoId) {
+            return await AniListStreamIds.alternatives(for: videoId)
+        }
+        // A Cinemeta anime, for add-ons that take only anime ids (kitsu:, anilist:, mal:, anidb:).
+        return await AniListStreamIds.cinemetaAlternatives(for: videoId)
     }
 
     private struct GroupUpdate {

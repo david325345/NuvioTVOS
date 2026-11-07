@@ -16,6 +16,22 @@ enum AniListService {
         emoji: nil
     )
 
+    /// MyAnimeList's mark on cards of MAL's rows.
+    static let malBadge = CollectionOriginPresentation(
+        reference: CollectionOriginReference(collectionID: "myanimelist", folderID: "myanimelist"),
+        title: "MyAnimeList",
+        imageURLs: ["asset:\(MALEpisodeRatings.assetName)"],
+        emoji: nil
+    )
+
+    /// The mark a Home row's cards carry: AniList's on AniList's rows (its catalogs and the
+    /// viewer's lists), MyAnimeList's on MAL's; nil on any other row.
+    static func sourceBadge(rowID: String) -> CollectionOriginPresentation? {
+        let prefix = "addon_\(addonID)_\(homeContentType)_"
+        guard rowID.hasPrefix(prefix) else { return nil }
+        return rowID.dropFirst(prefix.count).hasPrefix(MALCatalogs.idPrefix) ? malBadge : searchBadge
+    }
+
     static let catalogTTL: TimeInterval = 6 * 3600
     static let searchTTL: TimeInterval = 3600
     /// Entries still airing (or not yet) are asked again after an hour, finished ones after a week.
@@ -75,6 +91,12 @@ enum AniListService {
 
     static func listSettingsKey(_ rowID: String) -> String {
         TVHomeCatalogOrder.catalogSettingsKey(addonId: addonID, contentType: homeContentType, catalogId: rowID)
+    }
+
+    /// The viewer's AniList lists on Home ("My Watching"…): their cards carry AniList's mark,
+    /// as in Continue Watching.
+    static func isListRow(_ homeRowID: String) -> Bool {
+        homeRowID.hasPrefix(listRowID("list-"))
     }
 
     static func listRowID(_ rowID: String) -> String {

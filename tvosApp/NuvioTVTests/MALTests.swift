@@ -114,4 +114,18 @@ final class MALTests: XCTestCase {
         let fresh = TopShelfRatingsStore.Record(badges: [], fetchedAt: now.addingTimeInterval(-10 * 60))
         XCTAssertTrue(TopShelfRatingsStore.isFresh(fresh, now: now))
     }
+
+    func testTopShelfTakesIMDbsOwnTrailerWhenTrailerioHasNone() throws {
+        let json = Data("""
+        {"data":{"title":{"latestTrailer":{"id":"vi1","name":{"value":"Official Trailer"},"playbackURLs":[
+          {"url":"https://imdb-video.media-imdb.com/a/480.mp4","videoMimeType":"MP4","videoDefinition":"DEF_480p"},
+          {"url":"https://imdb-video.media-imdb.com/a/1080.mp4","videoMimeType":"MP4","videoDefinition":"DEF_1080p"},
+          {"url":"https://imdb-video.media-imdb.com/a/hls.m3u8","videoMimeType":"M3U8","videoDefinition":"DEF_AUTO"}]},
+         "primaryVideos":{"edges":[{"node":{"id":"vi2","name":{"value":"Vertical clip"},"playbackURLs":[{"url":"https://x/v.mp4","videoMimeType":"MP4","videoDefinition":"DEF_1080p"}]}}]}}}}
+        """.utf8)
+        let link = try XCTUnwrap(TopShelfTrailerResolver.imdbLink(from: json))
+        XCTAssertEqual(link.url, "https://imdb-video.media-imdb.com/a/1080.mp4")
+        XCTAssertEqual(link.provider, "IMDb 1080p")
+        XCTAssertNil(TopShelfTrailerResolver.imdbLink(from: Data(#"{"data":{"title":{}}}"#.utf8)))
+    }
 }

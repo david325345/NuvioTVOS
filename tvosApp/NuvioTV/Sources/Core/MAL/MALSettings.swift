@@ -10,6 +10,8 @@ extension SettingsKey {
     static let aniListCatalogs = "nuvio.tv.settings.integrations.aniListCatalogs"
     static let malDetailsButton = "nuvio.tv.settings.integrations.malDetailsButton"
     static let aniListDetailsButton = "nuvio.tv.settings.integrations.aniListDetailsButton"
+    static let malPlusStatus = "nuvio.tv.settings.integrations.malPlusStatus"
+    static let aniListPlusStatus = "nuvio.tv.settings.integrations.aniListPlusStatus"
 }
 
 /// Settings → Integrations → Anime Integrations → MyAnimeList. MAL titles open as the AniList
@@ -42,6 +44,25 @@ enum MALSettings {
 
     static var showsAdult: Bool {
         bool(SettingsKey.malAdult, default: false)
+    }
+
+    /// What "+" in details writes to the viewer's MAL list.
+    enum PlusStatus: String, CaseIterable {
+        case planToWatch = "plan_to_watch"
+        case watching
+        case off
+
+        var label: String {
+            switch self {
+            case .planToWatch: return "Plan to Watch"
+            case .watching: return "Watching"
+            case .off: return "Nothing"
+            }
+        }
+    }
+
+    static var plusStatus: PlusStatus {
+        PlusStatus(rawValue: ProfileSettings.current.string(forKey: SettingsKey.malPlusStatus) ?? "") ?? .planToWatch
     }
 
     /// The MAL button in details (status, score, remove), when logged in.

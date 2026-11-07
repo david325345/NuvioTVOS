@@ -195,6 +195,8 @@ struct PosterCard: View {
     /// Continue Watching: AniList's mark on an AniList title (as in Search) when no collection
     /// mark is shown.
     var showsAniListOrigin: Bool = false
+    /// The mark of the service a row comes from (AniList, MyAnimeList).
+    var sourceBadge: CollectionOriginPresentation? = nil
     var showsWatchedBadge: Bool = true
     var shouldRequestInitialFocus: Bool = false
     var onInitialFocusRequested: (() -> Void)? = nil
@@ -595,6 +597,7 @@ struct PosterCard: View {
     /// else AniList's on an AniList title where asked.
     private var shownOrigin: CollectionOriginPresentation? {
         if let collectionOrigin, !continueIsUpNext { return collectionOrigin }
+        if let sourceBadge { return sourceBadge }
         if showsAniListOrigin, AniListMetaBuilder.isAniListID(meta.id) { return AniListService.searchBadge }
         return nil
     }
@@ -1485,6 +1488,8 @@ struct TrailerPreviewPlayer: View {
 struct PosterGridCard: View {
     let meta: NuvioMeta
     var customPosterScreen: CustomPosterScreen = .search
+    /// The mark of the service the row comes from (AniList, MyAnimeList).
+    var sourceBadge: CollectionOriginPresentation? = nil
     var width: CGFloat = 210
     var height: CGFloat = 315
     var externalFocus: FocusState<String?>.Binding? = nil
@@ -1567,8 +1572,9 @@ struct PosterGridCard: View {
             .overlay(alignment: .bottomTrailing) {
                 // Settings → Integrations → AniList: tells AniList's results from the add-ons'
                 // copies of the same anime in Search.
-                if customPosterScreen == .search, AniListMetaBuilder.isAniListID(meta.id) {
-                    CollectionOriginBadge(origin: AniListService.searchBadge)
+                if let badge = sourceBadge
+                    ?? (customPosterScreen == .search && AniListMetaBuilder.isAniListID(meta.id) ? AniListService.searchBadge : nil) {
+                    CollectionOriginBadge(origin: badge)
                         .padding(10)
                 }
             }
