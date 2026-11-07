@@ -573,41 +573,109 @@ enum AniListAccount {
 
     // MARK: Lists on Home
 
-    /// The Home rows made of the viewer's lists, each with the statuses it shows.
-    static let listRows: [(id: String, title: String, statuses: [String])] = [
-        ("list-watching", "Watching", ["CURRENT", "REPEATING"]),
-        ("list-planning", "Planning", ["PLANNING"]),
-        ("list-paused", "Paused", ["PAUSED"]),
-    ]
+    /// The Home rows made of the viewer's lists (AniList Catalogs → My AniList), each with the
+    /// statuses it shows; a custom list by its name; Favourites asked apart.
+    static var listRows: [(id: String, title: String, statuses: [String])] {
+        AniListCatalogs.chosen().compactMap { choice in
+            if choice.id.hasPrefix(AniListCatalogs.customListPrefix) {
+                return (choice.id, choice.title, allStatuses)
+            }
+            guard let statuses = AniListCatalogs.listStatuses[choice.id] else { return nil }
+            return (choice.id, choice.title, statuses)
+        }
+    }
+
+    static let allStatuses = ["CURRENT", "PLANNING", "COMPLETED", "DROPPED", "PAUSED", "REPEATING"]
 
     static let listTTL: TimeInterval = 5 * 60
 
     private static func listVariables(_ login: Login) -> [String: Any?] {
-        ["userId": login.viewerID, "statuses": listRows.flatMap(\.statuses)]
+        let statuses = Set(listRows.flatMap(\.statuses))
+        return ["userId": login.viewerID, "statuses": allStatuses.filter { statuses.contains($0) }]
     }
 
     /// The viewer's entries by row id, last changed first. Kept five minutes, and dropped
     /// whenever Nuvio changes the list.
     static func listEntries() async -> [String: [AniListListEntry]]? {
         guard isLoggedIn, let login else { return nil }
+        let rows = listRows
+        var byRow: [String: [AniListListEntry]] = [:]
+        if rows.contains(where: { $0.id == AniListCatalogs.favouritesRowID }) {
+            byRow[AniListCatalogs.favouritesRowID] = await favourites(login).map { AniListListEntry(id: 0, mediaId: $0.id, media: $0) }
+        }
+        guard rows.contains(where: { !$0.statuses.isEmpty }) else { return byRow }
         guard let answer = try? await AniListClient.shared.answer(AniListQueries.lists, variables: listVariables(login), ttl: listTTL, token: login.token),
               let lists = try? decoder.decode(AniListListCollectionResponse.self, from: answer.data).data?.MediaListCollection?.lists else {
-            return nil
+            return byRow.isEmpty ? nil : byRow
         }
         let all = lists.filter { $0.isCustomList != true }.flatMap { $0.entries ?? [] }
         store(entries: all, media: all.compactMap(\.media), asked: [])
-        var byRow: [String: [AniListListEntry]] = [:]
-        for row in listRows {
-            byRow[row.id] = all
-                .filter { row.statuses.contains($0.status ?? "") }
-                .sorted { ($0.updatedAt ?? 0) > ($1.updatedAt ?? 0) }
+        for row in rows where !row.statuses.isEmpty {
+            let source: [AniListListEntry]
+            if row.id.hasPrefix(AniListCatalogs.customListPrefix) {
+                let name = String(row.id.dropFirst(AniListCatalogs.customListPrefix.count))
+                source = lists.filter { $0.isCustomList == true && $0.name == name }.flatMap { $0.entries ?? [] }
+            } else {
+                source = all.filter { row.statuses.contains($0.status ?? "") }
+            }
+            byRow[row.id] = source.sorted { ($0.updatedAt ?? 0) > ($1.updatedAt ?? 0) }
         }
         return byRow
     }
 
+    /// The viewer's entries with these statuses, whatever Home shows (the calendar's follows).
+    static func entries(statuses: [String]) async -> [AniListListEntry]? {
+        guard isLoggedIn, let login else { return nil }
+        let variables: [String: Any?] = ["userId": login.viewerID, "statuses": statuses]
+        guard let answer = try? await AniListClient.shared.answer(AniListQueries.lists, variables: variables, ttl: listTTL, token: login.token),
+              let lists = try? decoder.decode(AniListListCollectionResponse.self, from: answer.data).data?.MediaListCollection?.lists else {
+            return nil
+        }
+        return lists.filter { $0.isCustomList != true }.flatMap { $0.entries ?? [] }
+    }
+
+    /// The names of the viewer's custom lists, for the catalog window.
+    static func customListNames() async -> [String] {
+        guard isLoggedIn, let login else { return [] }
+        let variables: [String: Any?] = ["userId": login.viewerID, "statuses": allStatuses]
+        guard let answer = try? await AniListClient.shared.answer(AniListQueries.lists, variables: variables, ttl: listTTL, token: login.token),
+              let lists = try? decoder.decode(AniListListCollectionResponse.self, from: answer.data).data?.MediaListCollection?.lists else {
+            return []
+        }
+        var names: [String] = []
+        for list in lists where list.isCustomList == true {
+            if let name = list.name, !name.isEmpty, !names.contains(name) { names.append(name) }
+        }
+        return names
+    }
+
+    private static func favourites(_ login: Login) async -> [AniListMedia] {
+        struct Response: Decodable {
+            struct Nodes: Decodable { var nodes: [AniListMedia]? = nil }
+            struct Favourites: Decodable { var anime: Nodes? = nil }
+            struct Viewer: Decodable { var favourites: Favourites? = nil }
+            struct DataField: Decodable { var User: Viewer? = nil }
+            var data: DataField? = nil
+        }
+        guard let answer = try? await AniListClient.shared.answer(
+            AniListQueries.favourites, variables: ["userId": login.viewerID, "page": 1], ttl: listTTL, token: login.token
+        ) else { return [] }
+        return (try? decoder.decode(Response.self, from: answer.data))?.data?.User?.favourites?.anime?.nodes ?? []
+    }
+
     static func forgetLists() {
         guard let login else { return }
-        Task { await AniListClient.shared.forget(AniListQueries.lists, variables: listVariables(login), token: login.token) }
+        let variants: [[String: Any?]] = [
+            listVariables(login),
+            ["userId": login.viewerID, "statuses": ["CURRENT", "REPEATING", "PLANNING", "PAUSED"]],
+            ["userId": login.viewerID, "statuses": allStatuses],
+        ]
+        Task {
+            for variables in variants {
+                await AniListClient.shared.forget(AniListQueries.lists, variables: variables, token: login.token)
+            }
+            await AniListClient.shared.forget(AniListQueries.favourites, variables: ["userId": login.viewerID, "page": 1], token: login.token)
+        }
     }
 }
 

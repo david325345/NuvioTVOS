@@ -263,7 +263,7 @@ enum AniListScrobbler {
             }
             return nil
         }
-        guard AniListSettings.scrobblesCinemeta else { return nil }
+        guard AniListSettings.scrobblesCinemeta || MALSettings.scrobbles else { return nil }
         guard let match = await AniListMatcher.match(
             meta: meta,
             season: video?.season ?? season,
@@ -276,7 +276,7 @@ enum AniListScrobbler {
 
     /// After an episode or film is watched to the end in the player.
     static func recordPlayback(meta: NuvioMeta, video: NuvioVideo?, season: Int?, episode: Int?) {
-        guard AniListSettings.scrobbles else { return }
+        guard AniListSettings.scrobbles || MALSettings.scrobbles else { return }
         Task.detached(priority: .utility) {
             guard let target = await target(meta: meta, video: video, season: season, episode: episode) else {
                 if !AniListMetaBuilder.isAniListID(meta.id), AniListSettings.scrobblesCinemeta, meta.isAnime {
@@ -284,27 +284,38 @@ enum AniListScrobbler {
                 }
                 return
             }
-            await AniListAccount.perform(.watched(episode: target.episode, byPlaying: true), entryID: target.entryID, reason: "Watched \(target.label)")
+            if AniListSettings.scrobbles {
+                await AniListAccount.perform(.watched(episode: target.episode, byPlaying: true), entryID: target.entryID, reason: "Watched \(target.label)")
+            }
+            // And on MyAnimeList, when logged in there too.
+            await MALAccount.watched(aniListID: target.entryID, episode: target.episode)
         }
     }
 
     /// An episode marked watched or unwatched in details ("up to" marks the same: AniList
     /// counts episodes, so everything before is watched too).
     static func markEpisode(meta: NuvioMeta, video: NuvioVideo, watched: Bool) {
-        guard AniListSettings.scrobbles else { return }
+        guard AniListSettings.scrobbles || MALSettings.scrobbles else { return }
         Task.detached(priority: .utility) {
             guard let target = await target(meta: meta, video: video, season: video.season, episode: video.episode) else { return }
             let action: AniListAccount.Action = watched
                 ? .watched(episode: target.episode, byPlaying: false)
                 : .unwatched(episode: target.episode)
-            await AniListAccount.perform(action, entryID: target.entryID, reason: watched ? "Marked \(target.label) watched" : "Marked \(target.label) unwatched")
+            if AniListSettings.scrobbles {
+                await AniListAccount.perform(action, entryID: target.entryID, reason: watched ? "Marked \(target.label) watched" : "Marked \(target.label) unwatched")
+            }
+            if watched {
+                await MALAccount.watched(aniListID: target.entryID, episode: target.episode)
+            } else {
+                await MALAccount.unwatched(aniListID: target.entryID, episode: target.episode)
+            }
         }
     }
 
     /// A whole season marked: each AniList entry in it goes to its last (or before its first)
     /// episode in that season.
     static func markSeason(meta: NuvioMeta, videos: [NuvioVideo], watched: Bool) {
-        guard AniListSettings.scrobbles, !videos.isEmpty else { return }
+        guard AniListSettings.scrobbles || MALSettings.scrobbles, !videos.isEmpty else { return }
         Task.detached(priority: .utility) {
             var byEntry: [Int: [Int]] = [:]
             for video in videos.sorted(by: { $0.episode < $1.episode }) {
@@ -316,7 +327,14 @@ enum AniListScrobbler {
                 let action: AniListAccount.Action = watched
                     ? .watched(episode: last, byPlaying: false)
                     : .unwatched(episode: first)
-                await AniListAccount.perform(action, entryID: entryID, reason: watched ? "Marked a season watched" : "Marked a season unwatched")
+                if AniListSettings.scrobbles {
+                    await AniListAccount.perform(action, entryID: entryID, reason: watched ? "Marked a season watched" : "Marked a season unwatched")
+                }
+                if watched {
+                    await MALAccount.watched(aniListID: entryID, episode: last)
+                } else {
+                    await MALAccount.unwatched(aniListID: entryID, episode: first)
+                }
             }
         }
     }

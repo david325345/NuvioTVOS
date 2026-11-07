@@ -170,7 +170,7 @@ enum TopShelfAniListBridge {
     }
 
     static func enriched(_ entry: TopShelfEntry) async -> TopShelfEntry {
-        guard AniListSettings.isEnabled, AniListMetaBuilder.isAniListID(entry.contentId) else { return entry }
+        guard AniListSettings.opensTitles, AniListMetaBuilder.isAniListID(entry.contentId) else { return entry }
         let card = NuvioMeta(
             id: entry.contentId,
             name: entry.title,

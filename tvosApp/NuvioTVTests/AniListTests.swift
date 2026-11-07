@@ -230,14 +230,54 @@ final class AniListTests: XCTestCase {
 
     func testTheHomeQueryDeclaresOnlyTheVariablesItsRowsUse() {
         let trendingOnly = AniListQueries.homeRows([AniListHomeRow.row(id: "trending")!])
-        XCTAssertTrue(trendingOnly.contains("trending: Page"))
+        XCTAssertTrue(trendingOnly.contains("r_trending: Page"))
         XCTAssertFalse(trendingOnly.contains("$season"))
         XCTAssertFalse(trendingOnly.contains("$nextSeason"))
 
-        let all = AniListQueries.homeRows(AniListHomeRow.all)
+        let all = AniListQueries.homeRows(AniListHomeRow.standard)
         XCTAssertTrue(all.contains("$season: MediaSeason"))
         XCTAssertTrue(all.contains("$nextSeason: MediaSeason"))
-        XCTAssertEqual(AniListHomeRow.all.map(\.id), ["trending", "season", "nextseason", "popular", "top"])
+        XCTAssertEqual(AniListHomeRow.standard.map(\.id), ["trending", "season", "nextseason", "popular", "top"])
+
+        // A studio row asks Studio, which has no adult filter.
+        let studio = AniListQueries.homeRows([AniListHomeRow.row(id: "studio-MAPPA")!])
+        XCTAssertTrue(studio.contains(#"r_studio_MAPPA: Studio(search: "MAPPA")"#))
+        XCTAssertFalse(studio.contains("$isAdult"))
+    }
+
+    func testEveryCatalogIdSaysHowItIsAsked() {
+        XCTAssertEqual(AniListHomeRow.row(id: "genre-Slice of Life")?.arguments, #"genre: "Slice of Life", sort: [POPULARITY_DESC]"#)
+        XCTAssertEqual(AniListHomeRow.row(id: "genre-Slice of Life")?.alias, "r_genre_Slice_of_Life")
+        XCTAssertEqual(AniListHomeRow.row(id: "tag-Isekai")?.arguments, #"tag: "Isekai", minimumTagRank: 60, sort: [POPULARITY_DESC]"#)
+        XCTAssertEqual(AniListHomeRow.row(id: "format-MOVIE")?.arguments, "format: MOVIE, sort: [POPULARITY_DESC]")
+        XCTAssertNil(AniListHomeRow.row(id: "format-NOPE"), "only AniList's formats")
+        XCTAssertEqual(AniListHomeRow.row(id: "country-CN")?.arguments, #"countryOfOrigin: "CN", sort: [POPULARITY_DESC]"#)
+        XCTAssertEqual(AniListHomeRow.row(id: "studio-Kyoto Animation")?.studio, "Kyoto Animation")
+        XCTAssertEqual(AniListHomeRow.row(id: "airing")?.arguments, "status: RELEASING, sort: [POPULARITY_DESC]")
+        XCTAssertNil(AniListHomeRow.row(id: "unknown"))
+        XCTAssertEqual(AniListQueries.quoted(#"say "hi""#), #""say \"hi\"""#)
+
+        let page = AniListQueries.rowPage(AniListHomeRow.row(id: "trending")!, withGenre: true)
+        XCTAssertTrue(page.contains("genre: $genre"))
+        XCTAssertFalse(AniListQueries.rowPage(AniListHomeRow.row(id: "genre-Action")!, withGenre: true).contains("$genre"))
+    }
+
+    func testTheCatalogChoiceIsKeptInOrder() {
+        let a = AnimeCatalogChoice(id: "tag-Isekai", title: "Isekai")
+        let b = AnimeCatalogChoice(id: "genre-Action", title: "Action")
+        var chosen = AnimeCatalogSelection.toggled(a, in: [])
+        chosen = AnimeCatalogSelection.toggled(b, in: chosen)
+        XCTAssertEqual(chosen.map(\.id), ["tag-Isekai", "genre-Action"])
+        XCTAssertEqual(AnimeCatalogSelection.toggled(a, in: chosen).map(\.id), ["genre-Action"])
+        XCTAssertEqual(AnimeCatalogSelection.decode(AnimeCatalogSelection.encode(chosen)), chosen)
+        XCTAssertEqual(AnimeCatalogSelection.signature(chosen), AnimeCatalogSelection.signature(chosen))
+    }
+
+    func testStudioTitlesReadAsAPage() throws {
+        let json = Data(#"{"data":{"r_studio_MAPPA":{"media":{"nodes":[{"id":1}]}},"r_trending":{"media":[{"id":2}]}}}"#.utf8)
+        let pages = try JSONDecoder().decode(AniListAliasedPagesResponse.self, from: json).data ?? [:]
+        XCTAssertEqual(pages["r_studio_MAPPA"]?.media?.map(\.id), [1])
+        XCTAssertEqual(pages["r_trending"]?.media?.map(\.id), [2])
     }
 
     func testCinemetaDuplicatesAreRecognisedByNameAndYear() {

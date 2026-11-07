@@ -14,7 +14,6 @@ extension SettingsKey {
     static let aniListScrobbleCinemeta = "nuvio.tv.settings.integrations.aniListScrobbleCinemeta"
     static let aniListListRows = "nuvio.tv.settings.integrations.aniListListRows"
     static let aniListOtherAddons = "nuvio.tv.settings.integrations.aniListOtherAddons"
-    static let aniListMALEpisodeRatings = "nuvio.tv.settings.integrations.aniListMALEpisodeRatings"
 }
 
 /// Settings → Integrations → AniList. Anime from AniList keep their `anilist:` ids everywhere,
@@ -63,9 +62,16 @@ enum AniListSettings {
         SeasonMode(rawValue: ProfileSettings.current.string(forKey: SettingsKey.aniListSeasonMode) ?? "") ?? .merged
     }
 
+    /// Whether Home has any row of AniList's or MyAnimeList's (both come under AniList's add-on
+    /// id): AniList Catalogs, MAL Catalogs.
     static func showsHomeRows(in store: UserDefaults = ProfileSettings.current) -> Bool {
-        isEnabled(in: store) && bool(SettingsKey.aniListHomeRows, default: true, in: store)
+        (isEnabled(in: store) && !AniListCatalogs.chosen(in: store).isEmpty)
+            || (MALSettings.isEnabled(in: store) && !MALCatalogs.chosen(in: store).isEmpty)
     }
+
+    /// AniList titles open, play and convert their ids: with AniList on, or MyAnimeList on (its
+    /// titles open as the AniList titles they map to).
+    static var opensTitles: Bool { isEnabled || MALSettings.isEnabled }
 
     static var showsHomeRows: Bool { showsHomeRows(in: ProfileSettings.current) }
 
@@ -79,11 +85,6 @@ enum AniListSettings {
 
     static var usesEpisodeDetails: Bool {
         bool(SettingsKey.aniListEpisodeDetails, default: true)
-    }
-
-    /// Each anime episode's MyAnimeList score (1–5) on episode cards, from Tenrai (`MALEpisodeRatings`).
-    static var showsMALEpisodeRatings: Bool {
-        isEnabled && bool(SettingsKey.aniListMALEpisodeRatings, default: true)
     }
 
     static var showsAdult: Bool {
@@ -112,15 +113,17 @@ enum AniListSettings {
 
     /// The viewer's lists (Watching, Planning, Paused) as Home rows.
     static var showsListRows: Bool {
-        showsHomeRows && AniListAccount.isLoggedIn && bool(SettingsKey.aniListListRows, default: true)
+        AniListAccount.isLoggedIn && AniListCatalogs.hasLists()
     }
 
     /// What Home and Search read from these settings. It is part of their source signatures, so
     /// turning AniList on or changing what it shows reloads Home and drops cached search results.
     static var sourceSignature: String {
-        guard isEnabled else { return "anilist:off" }
+        guard isEnabled || MALSettings.isEnabled else { return "anilist:off" }
         return [
-            "anilist:on",
+            isEnabled ? "anilist:on" : "anilist:mal-only",
+            MALSettings.isEnabled ? "mal:\(MALCatalogs.signature())" : "mal:off",
+            "catalogs:\(AnimeCatalogSelection.signature(AniListCatalogs.chosen()))",
             showsHomeRows ? "rows" : "norows",
             searchesAniList ? "search" : "nosearch",
             hidesCinemetaDuplicates ? "dedupe" : "all",

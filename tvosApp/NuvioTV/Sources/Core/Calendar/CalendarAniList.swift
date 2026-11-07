@@ -38,9 +38,9 @@ struct CalendarAniList: Sendable {
                 try await AniListClient.shared.query(query, variables: variables, ttl: ttl, notesStatus: false)
             },
             listIDs: {
-                guard let rows = await AniListAccount.listEntries() else { return nil }
+                guard let entries = await AniListAccount.entries(statuses: ["CURRENT", "REPEATING", "PLANNING", "PAUSED"]) else { return nil }
                 var statuses: [Int: String] = [:]
-                for entry in rows.values.flatMap({ $0 }) { statuses[entry.mediaId] = entry.status ?? "" }
+                for entry in entries { statuses[entry.mediaId] = entry.status ?? "" }
                 return statuses
             },
             includesPlanning: CalendarOptions.aniListPlanning(in: store),
