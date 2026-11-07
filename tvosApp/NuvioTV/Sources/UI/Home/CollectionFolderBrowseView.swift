@@ -1191,7 +1191,7 @@ struct CollectionFolderResultCard: View {
 
                 if posterLabels {
                     VStack(alignment: .leading, spacing: 3) {
-                        MarqueeText(meta.name, font: .system(size: 20, weight: .semibold),
+                        MarqueeText(meta.name, size: 20, weight: .semibold,
                                     color: focused ? .white : .white.opacity(0.78), isActive: focused)
                         Text(subtitle)
                             .font(.system(size: 16, weight: .medium))
