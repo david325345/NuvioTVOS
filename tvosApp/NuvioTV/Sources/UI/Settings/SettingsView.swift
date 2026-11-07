@@ -5631,6 +5631,15 @@ private struct MALOptionsSheet: View {
                 )
             } else {
                 SettingsHelpText(
+                    title: L10n.string("settings_mal_why_title", fallback: "Why Log In?"),
+                    paragraphs: [
+                        L10n.string("settings_mal_why_1", fallback: "**Without logging in:** MAL catalogs on Home (top lists, seasons, airing days, genres, themes, studios, dubs, streaming services…) and MAL scores of series and episodes, from Tenrai, with no account or key needed."),
+                        L10n.string("settings_mal_why_2", fallback: "**Logged in, you also get:** your MAL lists as Home rows (Watching, Completed, On-Hold, Dropped, Plan to Watch); watched episodes written to your MAL by themselves, progress only forward; \"+\" in details adding to your list; the MAL button in details (status, score, remove)."),
+                        L10n.string("settings_mal_why_3", fallback: "**Good to know:** the account is free. The login stays on this Apple TV for this profile and renews itself; after a month without using Nuvio you log in again. Nuvio writes to your MAL only when you finish an episode, mark one, press \"+\" or use the MAL button.")
+                    ]
+                )
+
+                SettingsHelpText(
                     title: L10n.string("settings_mal_howto_title", fallback: "How to Log In"),
                     paragraphs: [
                         L10n.string("settings_mal_howto_1", fallback: "1. Create a free account at **myanimelist.net/register.php**."),
@@ -6159,6 +6168,15 @@ private struct AniListOptionsSheet: View {
 
     @ViewBuilder
     private var loginRows: some View {
+        SettingsHelpText(
+            title: L10n.string("settings_anilist_why_title", fallback: "Why Log In?"),
+            paragraphs: [
+                L10n.string("settings_anilist_why_1", fallback: "**Without logging in:** AniList catalogs on Home (trending, seasons, genres, tags, studios…), search, details with episodes and AniList scores, the calendar's AniList anime, and streams from add-ons by anilist: ids or converted ids. All of it works with AniList on, no account needed."),
+                L10n.string("settings_anilist_why_2", fallback: "**Logged in, you also get:** your lists as Home rows (Watching, Planning, Completed, Favourites, custom lists…); watched episodes written to your AniList by themselves, progress only forward; \"+\" in details adding to your list; the AniList button in details (status, score, favourite); the calendar following your lists, with premieres from Planning."),
+                L10n.string("settings_anilist_why_3", fallback: "**Good to know:** the account is free and setting it up takes a few minutes. The login stays on this Apple TV for this profile. Nuvio writes to your AniList only when you finish an episode, mark one, press \"+\" or use the AniList button.")
+            ]
+        )
+
         SettingsHelpText(
             title: L10n.string("settings_anilist_howto_title", fallback: "How to Log In"),
             paragraphs: [
