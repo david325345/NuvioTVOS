@@ -54,7 +54,9 @@ jobs:
             before=$(du -sh "$framework/NodeMobile" | cut -f1)
             xcrun strip -S -x "$framework/NodeMobile"
             echo "$(basename "$(dirname "$framework")"): NodeMobile $before → $(du -sh "$framework/NodeMobile" | cut -f1)"
-            nm -gU "$framework/NodeMobile" | grep -q " _node_start$" || { echo "::error::node_start missing in $framework"; exit 1; }
+            # awk reads all of nm's output: no SIGPIPE under pipefail.
+            nm -gU "$framework/NodeMobile" | awk '$3 == "_node_start" { found = 1 } END { exit !found }' \
+              || { echo "::error::node_start missing in $framework"; exit 1; }
           done
           mkdir -p Vendor/NodeMobile
           xcodebuild -create-xcframework -framework "$device" -framework "$simulator" -output Vendor/NodeMobile/NodeMobile.xcframework
@@ -161,7 +163,9 @@ jobs:
             before=$(du -sh "$framework/NodeMobile" | cut -f1)
             xcrun strip -S -x "$framework/NodeMobile"
             echo "$(basename "$(dirname "$framework")"): NodeMobile $before → $(du -sh "$framework/NodeMobile" | cut -f1)"
-            nm -gU "$framework/NodeMobile" | grep -q " _node_start$" || { echo "::error::node_start missing in $framework"; exit 1; }
+            # awk reads all of nm's output: no SIGPIPE under pipefail.
+            nm -gU "$framework/NodeMobile" | awk '$3 == "_node_start" { found = 1 } END { exit !found }' \
+              || { echo "::error::node_start missing in $framework"; exit 1; }
           done
           mkdir -p Vendor/NodeMobile
           xcodebuild -create-xcframework -framework "$device" -framework "$simulator" -output Vendor/NodeMobile/NodeMobile.xcframework
