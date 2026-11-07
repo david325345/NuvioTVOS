@@ -1,0 +1,41 @@
+name: AIOStreams package for Apple TV (fork experiment)
+
+# Fork only, never part of a PR: builds the original AIOStreams (latest
+# release unless a tag is given) for Nuvio's embedded Node.js on Apple TV and
+# runs it once with the JIT off, as on the TV. See aio-node/aio-package/.
+on:
+  push:
+    branches: [aio-node]
+    paths:
+      - aio-node/aio-package/**
+      - .github/workflows/build-aio-package.yml
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: AIOStreams tag (empty = latest)
+        required: false
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Build
+        env:
+          AIO_TAG: ${{ github.event.inputs.tag }}
+        run: bash aio-node/aio-package/build.sh "$RUNNER_TEMP/aio-work" out 2>&1 | tee build.log
+      - name: Notes
+        run: |
+          echo "::notice::$(cat out/nuvio-package.json | tr -d '\n') · aio.tar.gz $(du -sh out/aio.tar.gz | cut -f1)"
+          grep -E "^(shim|note|Native addons|files):" -A3 build.log | head -30 || true
+      - name: Smoke test (Node 24, --jitless)
+        run: bash aio-node/aio-package/smoke.sh out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: aio-package
+          path: out
