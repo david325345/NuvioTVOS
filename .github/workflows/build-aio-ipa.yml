@@ -187,6 +187,8 @@ jobs:
         env:
           NUVIO_TEST_ARTIFACTS: ${{ runner.temp }}/nuvio-tests
           NUVIO_DERIVED_DATA: ${{ runner.temp }}/NuvioTVDerivedData
+          # xcodebuild hands TEST_RUNNER_* to the tests without the prefix.
+          TEST_RUNNER_AIO_REPORT: ${{ runner.temp }}/nuvio-tests/aio-report.txt
         run: |
           set -o pipefail
           report() {
@@ -230,8 +232,30 @@ jobs:
         env:
           NUVIO_TEST_ARTIFACTS: ${{ runner.temp }}/nuvio-tests
         run: |
-          grep -h "AIO-TEST" "$NUVIO_TEST_ARTIFACTS"/*.log 2>/dev/null | head -20 | while IFS= read -r line; do echo "::notice::$line"; done
-          grep -h -A80 "AIO-TEST log" "$NUVIO_TEST_ARTIFACTS"/*.log 2>/dev/null | tail -120 || true
+          set +e
+          results="$NUVIO_TEST_ARTIFACTS/Tests.xcresult"
+          # Passed, failed or skipped, per test.
+          xcrun xcresulttool get test-results tests --path "$results" --format json > "$RUNNER_TEMP/tests.json" 2>/dev/null
+          ruby -rjson -e '
+            walk = ->(node) do
+              if node["nodeType"] == "Test Case"
+                line = "#{node["name"]}: #{node["result"]} #{node["duration"]}"
+                puts(node["result"] == "Passed" ? "::notice::#{line}" : "::warning::#{line}")
+              end
+              (node["children"] || []).each { |child| walk.(child) }
+            end
+            (JSON.parse(File.read(ARGV[0]))["testNodes"] || []).each { |node| walk.(node) }
+          ' "$RUNNER_TEMP/tests.json" 2>/dev/null || echo "no test results in $results"
+          # What the test printed: its report file, else the console log in the result bundle.
+          report="$NUVIO_TEST_ARTIFACTS/aio-report.txt"
+          if [ ! -s "$report" ]; then
+            xcrun xcresulttool get log --path "$results" --type console > "$NUVIO_TEST_ARTIFACTS/console.txt" 2>/dev/null
+            report="$NUVIO_TEST_ARTIFACTS/console.txt"
+          fi
+          grep -h "^AIO-TEST [a-z]" "$report" 2>/dev/null | grep -v "log" | head -20 | while IFS= read -r line; do echo "::notice::$line"; done
+          echo "== $report"
+          tail -150 "$report" 2>/dev/null
+          exit 0
       - uses: actions/upload-artifact@v4
         if: always()
         with:

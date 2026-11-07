@@ -61,13 +61,28 @@ final class AIOExperimentTests: XCTestCase {
             let (data, answer) = try await URLSession.shared.data(from: URL(string: streamURL)!)
             XCTAssertEqual((answer as? HTTPURLResponse)?.statusCode, 200)
             let streams = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["streams"] as? [[String: Any]] ?? []
-            print("AIO-TEST stream request \(attempt): \(streams.count) streams in \(Int(Date().timeIntervalSince(begin) * 1000)) ms; first: \(String(describing: streams.first?["name"] ?? "-"))")
+            note("AIO-TEST stream request \(attempt): \(streams.count) streams in \(Int(Date().timeIntervalSince(begin) * 1000)) ms; first: \(String(describing: streams.first?["name"] ?? "-"))")
         }
-        print("AIO-TEST ready in \(aio.startupSeconds ?? -1) s · Node \(aio.nodeMemoryMB ?? -1) MB · app \(aio.appMemoryMB ?? -1) MB · \(aio.packageVersion)")
-        print("AIO-TEST log:\n" + aio.logLines.suffix(60).joined(separator: "\n"))
+        note("AIO-TEST ready in \(aio.startupSeconds ?? -1) s · Node \(aio.nodeMemoryMB ?? -1) MB · app \(aio.appMemoryMB ?? -1) MB · \(aio.packageVersion)")
+        note("AIO-TEST log:\n" + aio.logLines.suffix(60).joined(separator: "\n"))
     }
 
     // MARK: - Helpers
+
+    /// Printed, and written to the file in AIO_REPORT (set by the workflow as
+    /// TEST_RUNNER_AIO_REPORT), because xcodebuild -quiet hides test output.
+    private func note(_ text: String) {
+        print(text)
+        guard let path = ProcessInfo.processInfo.environment["AIO_REPORT"], !path.isEmpty else { return }
+        let line = Data((text + "\n").utf8)
+        if let handle = FileHandle(forWritingAtPath: path) {
+            handle.seekToEndOfFile()
+            handle.write(line)
+            try? handle.close()
+        } else {
+            FileManager.default.createFile(atPath: path, contents: line)
+        }
+    }
 
     private func waitUntil(seconds: TimeInterval, _ condition: () -> Bool) async throws {
         let deadline = Date().addingTimeInterval(seconds)
@@ -84,8 +99,8 @@ final class AIOExperimentTests: XCTestCase {
     }
 
     private func report(_ step: String, since start: Date) {
-        print("AIO-TEST \(step): \(String(format: "%.1f", Date().timeIntervalSince(start))) s, phase \(AIOExperiment.shared.phase)")
-        print("AIO-TEST log so far:\n" + AIOExperiment.shared.logLines.suffix(40).joined(separator: "\n"))
+        note("AIO-TEST \(step): \(String(format: "%.1f", Date().timeIntervalSince(start))) s, phase \(AIOExperiment.shared.phase)")
+        note("AIO-TEST log so far:\n" + AIOExperiment.shared.logLines.suffix(40).joined(separator: "\n"))
     }
 
     /// The starter template from the unpacked package.
