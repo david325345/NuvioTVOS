@@ -320,6 +320,9 @@ struct PluginScraperRecord: Codable, Identifiable, Equatable {
     /// Developer Mode: the code was uploaded from the setup page and is used
     /// instead of the repository's until it is reverted.
     var uploadedCode: Bool?
+    /// Fork experiment: "Through AIOStreams" — the plugin reaches AIOStreams
+    /// in Nuvio as an add-on, and Nuvio shows it only there (``PluginAIOBridge``).
+    var throughAIO: Bool?
 
     func supports(type: String) -> Bool {
         supportedTypes.contains(PluginTypes.normalized(type))

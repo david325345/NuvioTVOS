@@ -185,10 +185,20 @@ final class AIOExperiment: ObservableObject {
     // MARK: - The addon, for CatalogRepository
 
     private nonisolated(unsafe) static var currentAddonURL: URL?
+    /// AIOStreams runs (or starts) with its addon on.
+    private nonisolated(unsafe) static var servingAddon = false
     /// While AIOStreams starts (or its configuration is checked or restored):
     /// the address its addon will most likely have.
     private nonisolated(unsafe) static var pendingAddonURL: URL?
     private nonisolated static let addonLock = NSLock()
+
+    /// AIOStreams runs (or starts) with its addon on: plugins set "Through AIOStreams"
+    /// come through it (``PluginAIOBridge``).
+    nonisolated static var isServingAddon: Bool {
+        addonLock.lock()
+        defer { addonLock.unlock() }
+        return servingAddon
+    }
 
     /// The AIOStreams addon while it runs and is turned on.
     nonisolated static var addonManifestURLs: [URL] {
@@ -215,10 +225,12 @@ final class AIOExperiment: ObservableObject {
         let url = (phase == .running && addonEnabled && configurationVerified) ? manifestURL.flatMap(URL.init(string:)) : nil
         let coming = url == nil && addonEnabled && (phase == .starting || (phase == .running && checkingConfiguration))
         let pending = coming ? manifestURL.flatMap(URL.init(string:)) : nil
+        let serving = addonEnabled && (phase == .starting || phase == .running)
         Self.addonLock.lock()
-        let changed = Self.currentAddonURL != url
+        let changed = Self.currentAddonURL != url || Self.servingAddon != serving
         Self.currentAddonURL = url
         Self.pendingAddonURL = pending
+        Self.servingAddon = serving
         Self.addonLock.unlock()
         if changed {
             NotificationCenter.default.post(name: Self.addonChangedNotification, object: nil)
@@ -457,7 +469,10 @@ final class AIOExperiment: ObservableObject {
             "NUVIO_AIO_LAST_START_FAILED": lastStartUnfinished ? "1" : "0",
             "NUVIO_CONTROL_PORT": String(Self.controlPort),
             "NUVIO_CONTROL_TOKEN": controlToken,
+            // Plugins set "Through AIOStreams", for its "Nuvio plugins" card (PluginAIOBridge).
+            "NUVIO_PLUGINS_URL": PluginLoopbackServer.shared.baseURL.absoluteString + "stremio/",
         ]
+        if !PluginAIOBridge.served().isEmpty { PluginLoopbackServer.shared.ensureRunning() }
         if usePreviousAtNextStart {
             usePreviousAtNextStart = false
             UserDefaults.standard.removeObject(forKey: Self.usePreviousKey)
@@ -948,11 +963,28 @@ final class AIOExperiment: ObservableObject {
         let away = Date().timeIntervalSince(since)
         let back = Date()
         Task {
+            // The plugins' server too, when AIOStreams gets plugins from it.
+            if !PluginAIOBridge.served().isEmpty { await Self.checkPluginServer() }
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             let answers = await Self.answers()
             Self.note(String(format: "back after %.0f s on the Home screen: AIOStreams %@", away, answers ? "answers" : "does not answer"))
             if answers, away > 60 { await warmUp(unlessSearchSince: back) }
         }
+    }
+
+    /// The plugins' server after a sleep: started again when it no longer answers
+    /// (tvOS may have taken its port away too).
+    private static func checkPluginServer() async {
+        let server = PluginLoopbackServer.shared
+        server.ensureRunning()
+        guard let url = URL(string: server.baseURL.absoluteString + "stremio/plugins.json") else { return }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 2
+        if let (_, response) = try? await URLSession.shared.data(for: request),
+           (response as? HTTPURLResponse)?.statusCode == 200 { return }
+        Self.note("back from the Home screen: the plugins' server listens again")
+        server.stop()
+        server.ensureRunning()
     }
 
     /// Does AIOStreams answer on its port?

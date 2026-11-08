@@ -15,6 +15,9 @@
 //   NUVIO_FFPROBE_URL Nuvio's endpoint for probing files, once Nuvio has
 //                     one: AIOStreams' ffprobe then goes there
 //                     (ffprobe-bridge.mjs, FFPROBE.md)
+//   NUVIO_PLUGINS_URL Nuvio's plugins as Stremio add-ons on this Apple TV
+//                     (`plugins.json`, `p/<key>/manifest.json` …): the
+//                     "Nuvio plugins" card on the configuration page adds them
 // plus AIOStreams' usual environment (DATABASE_URI, SECRET_KEY, BASE_URL …).
 //
 // The network port is a small proxy in front of AIOStreams. It forwards every
@@ -153,6 +156,144 @@ net.Server.prototype.listen = function (...args) {
   return originalListen.apply(this, args);
 };
 
+// MARK: Nuvio's plugins as add-ons
+
+// The "Nuvio plugins" card on the configuration page: every plugin set
+// "Through AIOStreams" in Nuvio becomes an add-on of its own, with its name,
+// on Nuvio's plugin server (NUVIO_PLUGINS_URL, 127.0.0.1 only). Which plugins
+// that are is decided in Nuvio; the card only has the usual add-on options
+// (timeout, resources, …), the same for each of them. Without plugins (off
+// in Nuvio, or none set so) the card gives no add-ons.
+const pluginsUrl = process.env.NUVIO_PLUGINS_URL || '';
+const NUVIO_PLUGINS_PRESET = 'nuvio-plugins';
+const pluginList = { at: 0, plugins: [], pending: null, problem: '' };
+
+function fetchPluginList() {
+  return new Promise((resolve, reject) => {
+    const request = http.get(`${pluginsUrl}plugins.json`, { agent: false, timeout: 3000 }, (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => {
+        if (response.statusCode !== 200) return reject(new Error(`HTTP ${response.statusCode}`));
+        try {
+          const plugins = JSON.parse(Buffer.concat(chunks).toString('utf8')).plugins;
+          resolve(Array.isArray(plugins) ? plugins.filter((plugin) => plugin && typeof plugin.key === 'string' && plugin.key) : []);
+        } catch (error) {
+          reject(error);
+        }
+      });
+      response.on('error', reject);
+    });
+    request.on('timeout', () => request.destroy(new Error('no answer in 3 s')));
+    request.on('error', reject);
+  });
+}
+
+/** The plugins Nuvio gives AIOStreams; asked again after five seconds. */
+async function nuvioPlugins() {
+  if (!pluginsUrl) return [];
+  if (Date.now() - pluginList.at < 5000) return pluginList.plugins;
+  if (!pluginList.pending) {
+    pluginList.pending = fetchPluginList()
+      .then((plugins) => {
+        if (pluginList.problem) log('Nuvio plugins answer again');
+        pluginList.problem = '';
+        return plugins;
+      })
+      .catch((error) => {
+        const problem = error && error.message ? error.message : String(error);
+        if (problem !== pluginList.problem) log(`Nuvio plugins: none (${problem})`);
+        pluginList.problem = problem;
+        return [];
+      })
+      .then((plugins) => {
+        pluginList.plugins = plugins;
+        pluginList.at = Date.now();
+        pluginList.pending = null;
+        return plugins;
+      });
+  }
+  return pluginList.pending;
+}
+
+function addNuvioPluginsPreset(core) {
+  const presets = core.PresetManager;
+  if (!presets || typeof presets.fromId !== 'function' || typeof presets.getPresetList !== 'function') {
+    log('no "Nuvio plugins" card: no PresetManager in this AIOStreams');
+    return;
+  }
+  let Custom;
+  try {
+    Custom = presets.fromId('custom');
+  } catch (error) {
+    log(`no "Nuvio plugins" card: ${error && error.message ? error.message : error}`);
+    return;
+  }
+  const kept = new Set(['timeout', 'resources', 'mediaTypes', 'pinPosition', 'libraryAddon', 'formatPassthrough', 'resultPassthrough']);
+  const clamp = (value, constraints) => Math.min(Math.max(value, constraints?.min ?? value), constraints?.max ?? value);
+
+  class NuvioPluginsPreset extends Custom {
+    static get METADATA() {
+      const base = super.METADATA;
+      const timeoutOption = base.OPTIONS.find((option) => option.id === 'timeout');
+      const timeout = clamp(20000, timeoutOption?.constraints);
+      return {
+        ...base,
+        ID: NUVIO_PLUGINS_PRESET,
+        NAME: 'Nuvio plugins',
+        DESCRIPTION: 'The plugins set "Through AIOStreams" in Nuvio on this Apple TV, each as an add-on of its own: their streams, subtitles, catalogs and details. Which plugins come is set in Nuvio (Settings, Plugins, a plugin, Through AIOStreams). A plugin\'s streams come when it has finished.',
+        URL: [],
+        TIMEOUT: timeout,
+        OPTIONS: base.OPTIONS
+          .filter((option) => kept.has(option.id))
+          .map((option) => (option.id === 'timeout' ? { ...option, default: timeout } : option)),
+        SUPPORTED_SERVICES: [],
+        SUPPORTED_STREAM_TYPES: ['http'],
+        SUPPORTED_RESOURCES: ['stream', 'subtitles', 'catalog', 'meta'],
+      };
+    }
+
+    static async generateAddons(userData, options) {
+      const metadata = this.METADATA;
+      const plugins = await nuvioPlugins();
+      return plugins.map((plugin) => ({
+        name: typeof plugin.name === 'string' && plugin.name ? plugin.name : plugin.key,
+        identifier: plugin.key,
+        manifestUrl: `${pluginsUrl}p/${encodeURIComponent(plugin.key)}/manifest.json`,
+        enabled: true,
+        library: options.libraryAddon ?? false,
+        resources: options.resources || undefined,
+        mediaTypes: options.mediaTypes || [],
+        timeout: options.timeout || metadata.TIMEOUT,
+        preset: { id: '', type: NUVIO_PLUGINS_PRESET, options },
+        formatPassthrough: options.formatPassthrough ?? false,
+        resultPassthrough: options.resultPassthrough ?? false,
+        pinPosition: options.pinPosition || undefined,
+        headers: { 'User-Agent': metadata.USER_AGENT },
+      }));
+    }
+  }
+
+  const fromId = presets.fromId;
+  presets.fromId = function (id, ...rest) {
+    return id === NUVIO_PLUGINS_PRESET ? NuvioPluginsPreset : fromId.call(this, id, ...rest);
+  };
+  const getPresetList = presets.getPresetList;
+  presets.getPresetList = function (...args) {
+    const list = getPresetList.apply(this, args);
+    if (!Array.isArray(list) || list.some((preset) => preset && preset.ID === NUVIO_PLUGINS_PRESET)) return list;
+    const metadata = NuvioPluginsPreset.METADATA;
+    const card = {};
+    for (const key of ['ID', 'NAME', 'LOGO', 'DESCRIPTION', 'SUPPORTED_RESOURCES', 'SUPPORTED_STREAM_TYPES', 'SUPPORTED_SERVICES', 'OPTIONS', 'BUILTIN', 'DISABLED', 'CATEGORY']) {
+      card[key] = metadata[key];
+    }
+    const custom = list.findIndex((preset) => preset && preset.ID === 'custom');
+    list.splice(custom + 1, 0, card);
+    return list;
+  };
+  log(`"Nuvio plugins" card ready${pluginsUrl ? '' : ' (no plugin server given: it adds nothing)'}`);
+}
+
 // MARK: data refreshes after the start
 
 // Refreshes AIOStreams runs on its own (TaskManager.runNow) before it listens:
@@ -170,6 +311,11 @@ async function holdStartupRefreshes() {
     const resolve = createRequire(path.join(aioRoot, 'packages/server/dist/server.js')).resolve;
     const core = await import(pathToFileURL(resolve('@aiostreams/core')).href);
     mark('core');
+    try {
+      addNuvioPluginsPreset(core);
+    } catch (error) {
+      log(`no "Nuvio plugins" card: ${error && error.message ? error.message : error}`);
+    }
     const tasks = core.TaskManager;
     if (!tasks || typeof tasks.runNow !== 'function' || typeof tasks.get !== 'function') {
       log('data refreshes stay in the start: no TaskManager in this AIOStreams');

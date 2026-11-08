@@ -32,13 +32,25 @@ final class PluginAddonRegistry: @unchecked Sendable {
 
     /// Manifest URLs of the active profile's virtual add-ons, in repository
     /// order. Each carries `?v=<revision>`, so a changed manifest is a new URL
-    /// and Home reloads its rows.
+    /// and Home reloads its rows. A plugin AIOStreams serves now (fork
+    /// experiment, ``PluginAIOBridge``) keeps only its ratings here: its
+    /// catalogs and metadata come through AIOStreams.
     var manifestURLs: [URL] {
         lock.lock()
-        defer { lock.unlock() }
         loadIfNeeded()
-        return urls
+        let all = urls
+        let snapshot = entries
+        lock.unlock()
+        return all.compactMap { url in
+            guard let key = url.pathComponents.dropFirst().first,
+                  let entry = snapshot[key],
+                  PluginAIOBridge.servesThroughAIO(entry.scraper) else { return url }
+            return snapshot[key + Self.ratingsOnlySuffix]?.manifestURL
+        }
     }
+
+    /// The key of a plugin's virtual add-on with its ratings only.
+    static let ratingsOnlySuffix = "r"
 
     func entry(key: String) -> Entry? {
         lock.lock()
@@ -87,6 +99,13 @@ final class PluginAddonRegistry: @unchecked Sendable {
                   let url = URL(string: "https://\(host)/\(key)/manifest.json?v=\(revision)") else { continue }
             entries[key] = Entry(key: key, scraper: scraper, manifest: data, manifestURL: url)
             urls.append(url)
+            // Its ratings alone, for while AIOStreams serves the rest (fork experiment).
+            if let ratings = Self.manifest(for: scraper, only: [PluginResources.ratings]),
+               let ratingsData = try? JSONSerialization.data(withJSONObject: ratings, options: [.sortedKeys]),
+               let ratingsURL = URL(string: "https://\(host)/\(key)\(ratingsOnlySuffix)/manifest.json?v=\(revision)") {
+                let ratingsKey = key + ratingsOnlySuffix
+                entries[ratingsKey] = Entry(key: ratingsKey, scraper: scraper, manifest: ratingsData, manifestURL: ratingsURL)
+            }
         }
         return (entries, urls)
     }
@@ -109,14 +128,17 @@ final class PluginAddonRegistry: @unchecked Sendable {
     ///   ids keep their metadata from Cinemeta / TMDB.
     /// - `ratings`: for the provider's `idPrefixes` (all ids when it has
     ///   none), with its `ratingSources`.
-    static func manifest(for scraper: PluginScraperRecord) -> [String: Any]? {
+    static func manifest(for scraper: PluginScraperRecord, only: Set<String>? = nil) -> [String: Any]? {
+        func wanted(_ resource: String) -> Bool {
+            scraper.provides(resource) && (only?.contains(resource) ?? true)
+        }
         let types = stremioTypes(scraper.supportedTypes)
         let prefixes = scraper.idPrefixes ?? []
         var resources: [[String: Any]] = []
         var allTypes = types
 
         var catalogs: [[String: Any]] = []
-        if scraper.provides(PluginResources.catalog) {
+        if wanted(PluginResources.catalog) {
             catalogs = sanitizedCatalogs(scraper.catalogsJSON)
             for catalog in catalogs {
                 if let type = catalog["type"] as? String, !allTypes.contains(type) { allTypes.append(type) }
@@ -125,14 +147,14 @@ final class PluginAddonRegistry: @unchecked Sendable {
                 resources.append(["name": PluginResources.catalog, "types": allTypes])
             }
         }
-        if scraper.provides(PluginResources.meta) {
+        if wanted(PluginResources.meta) {
             let own = ownPrefixes(prefixes)
             if !own.isEmpty {
                 resources.append(["name": PluginResources.meta, "types": allTypes, "idPrefixes": own])
             }
         }
         var ratingSources: [[String: Any]] = []
-        if scraper.provides(PluginResources.ratings) {
+        if wanted(PluginResources.ratings) {
             ratingSources = sanitizedRatingSources(scraper.ratingSourcesJSON)
             if !ratingSources.isEmpty {
                 var resource: [String: Any] = ["name": PluginResources.ratings, "types": types]

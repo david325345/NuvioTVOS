@@ -14966,6 +14966,9 @@ private struct PluginScraperSettingsRow: View {
         if scraper.uploadedCode == true {
             parts.append(L10n.string("tvos_settings_plugin_uploaded_code", fallback: "Uploaded code"))
         }
+        if scraper.throughAIO == true {
+            parts.insert("Through AIOStreams", at: 0)
+        }
         return parts.joined(separator: " · ")
     }
 
@@ -15001,6 +15004,7 @@ private struct PluginScraperSettingsSheet: View {
     let accentColor: Color
 
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var store = PluginStore.shared
     @State private var fields: [PluginSettingField] = []
     @State private var texts: [String: String] = [:]
     @State private var toggles: [String: Bool] = [:]
@@ -15019,6 +15023,17 @@ private struct PluginScraperSettingsSheet: View {
             )
         ) {
             VStack(alignment: .leading, spacing: 18) {
+                // Fork experiment: the plugin as an add-on in AIOStreams (PluginAIOBridge).
+                SettingsToggleRow(
+                    title: "Through AIOStreams",
+                    subtitle: "In AIOStreams' list with your other add-ons (add the \"Nuvio plugins\" card on its configuration page), and only there while AIOStreams runs: its streams, subtitles, catalogs and details are not shown here as well. Results come when it has finished. Its ratings stay here.",
+                    isOn: Binding(
+                        get: { store.state.scrapers.first { $0.id == scraper.id }?.throughAIO == true },
+                        set: { store.setScraperThroughAIO(scraper.id, enabled: $0) }
+                    ),
+                    accentColor: accentColor
+                )
+
                 if isLoading {
                     SettingsInfoRow(
                         title: L10n.string("tvos_settings_plugin_settings_loading", fallback: "Loading the provider's settings…"),

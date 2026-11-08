@@ -42,6 +42,8 @@ enum PluginSubtitleDiscovery {
         PluginStore.shared
             .activeScrapers(for: query.type, resource: PluginResources.subtitles)
             .filter { $0.accepts(id: query.videoID) }
+            // Fork experiment: one AIOStreams serves comes through it instead.
+            .filter { !PluginAIOBridge.servesThroughAIO($0) }
     }
 
     /// One provider's subtitles, kept for ten minutes so reopening the player

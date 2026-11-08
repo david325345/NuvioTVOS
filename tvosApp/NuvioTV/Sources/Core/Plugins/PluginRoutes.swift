@@ -141,6 +141,9 @@ enum PluginRoutes {
         switch segments[0] {
         case "resolve":
             return await resolve(key: segments[1], payload: request.query["p"] ?? "")
+        case "stremio":
+            // Fork experiment: plugins as add-ons for AIOStreams in Nuvio.
+            return await PluginAIOBridge.handle(request)
         case "plugin":
             let base = PluginLoopbackServer.shared.baseURL.absoluteString + "plugin/\(segments[1])/"
             return await handlePlugin(

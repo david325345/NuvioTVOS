@@ -16,6 +16,8 @@ enum PluginStreamDiscovery {
         guard normalized == "movie" || normalized == "tv" else { return [] }
         return PluginStore.shared.activeScrapers(for: normalized)
             .filter { scraper in videoID.map { scraper.accepts(id: $0) } ?? true }
+            // Fork experiment: one AIOStreams serves comes through it instead.
+            .filter { !PluginAIOBridge.servesThroughAIO($0) }
             .map { Target(groupID: "plugin:\($0.id)", displayName: $0.name, scraper: $0) }
     }
 
@@ -203,6 +205,15 @@ enum PluginStreamDiscovery {
     /// `resolve`: instead of `url`, any JSON the plugin's `resolveStream()`
     /// turns into the link when the stream is played (``PluginLoopbackServer``).
     static func stream(from object: [String: Any], providerName: String, scraperID: String? = nil) -> NuvioStream? {
+        guard let stremio = stremioObject(from: object, providerName: providerName, scraperID: scraperID),
+              let data = try? JSONSerialization.data(withJSONObject: stremio),
+              let dto = try? JSONDecoder().decode(StreamAddonStreamDTO.self, from: data) else { return nil }
+        return dto.toNuvioStream(addonName: providerName)
+    }
+
+    /// One plugin result as a Stremio stream object — what ``stream(from:providerName:scraperID:)``
+    /// decodes, and what AIOStreams gets through ``PluginAIOBridge``. nil: nothing playable.
+    static func stremioObject(from object: [String: Any], providerName: String, scraperID: String? = nil) -> [String: Any]? {
         var stremio: [String: Any] = [:]
         if let url = clean(object["url"]) {
             stremio["url"] = url
@@ -270,10 +281,8 @@ enum PluginStreamDiscovery {
             }
         }
 
-        guard JSONSerialization.isValidJSONObject(stremio),
-              let data = try? JSONSerialization.data(withJSONObject: stremio),
-              let dto = try? JSONDecoder().decode(StreamAddonStreamDTO.self, from: data) else { return nil }
-        return dto.toNuvioStream(addonName: providerName)
+        guard JSONSerialization.isValidJSONObject(stremio) else { return nil }
+        return stremio
     }
 
     private static func clean(_ value: Any?) -> String? {

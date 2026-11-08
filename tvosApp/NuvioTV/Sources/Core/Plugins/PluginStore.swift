@@ -114,7 +114,24 @@ final class PluginStore: ObservableObject {
         ensureLoaded()
         state.pluginsEnabled = enabled
         persist()
-        if !enabled { PluginInstancePool.shared.retireAll(idleOnly: false) }
+        if enabled {
+            if state.scrapers.contains(where: { $0.enabled }) { PluginLoopbackServer.shared.ensureRunning() }
+        } else {
+            // Nothing of the plugins runs: no contexts kept, no server.
+            PluginInstancePool.shared.retireAll(idleOnly: false)
+            PluginLoopbackServer.shared.stop()
+        }
+        PluginAIOBridge.changed()
+    }
+
+    /// Fork experiment: "Through AIOStreams" (``PluginAIOBridge``).
+    func setScraperThroughAIO(_ id: String, enabled: Bool) {
+        ensureLoaded()
+        guard let index = state.scrapers.firstIndex(where: { $0.id == id }) else { return }
+        state.scrapers[index].throughAIO = enabled ? true : nil
+        persist()
+        if enabled, state.pluginsEnabled { PluginLoopbackServer.shared.ensureRunning() }
+        PluginAIOBridge.changed()
     }
 
     func setScraperEnabled(_ id: String, enabled: Bool) {
@@ -272,7 +289,7 @@ final class PluginStore: ObservableObject {
     /// on-device server that plugin streams resolved on play go through.
     func appBecameActive() async {
         ensureLoaded()
-        if state.scrapers.contains(where: { $0.enabled }) {
+        if state.pluginsEnabled, state.scrapers.contains(where: { $0.enabled }) {
             PluginLoopbackServer.shared.ensureRunning()
         }
         await updateRepositoriesIfDue()
@@ -420,7 +437,8 @@ final class PluginStore: ObservableObject {
                     ratingSourcesJSON: PluginManifest.jsonArrayText(rawScrapers[info.id]?["ratingSources"]),
                     keepAlive: info.runsPersistently ? true : nil,
                     configPage: info.configPage ? true : nil,
-                    uploadedCode: old?.uploadedCode
+                    uploadedCode: old?.uploadedCode,
+                    throughAIO: old?.throughAIO
                 ))
             } catch {
                 failures.append(info.name)
