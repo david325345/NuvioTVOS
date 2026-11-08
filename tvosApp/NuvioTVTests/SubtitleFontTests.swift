@@ -118,6 +118,9 @@ final class SubtitleFontTests: XCTestCase {
         let key = SubtitleFontUploadServer.makeKey()
         XCTAssertEqual(key.count, 6)
         XCTAssertTrue(key.allSatisfy { "abcdefghjkmnpqrstuvwxyz23456789".contains($0) })
+        XCTAssertTrue(SubtitleFontPageKey.isValid(key))
+        XCTAssertFalse(SubtitleFontPageKey.isValid("abc"))
+        XCTAssertFalse(SubtitleFontPageKey.isValid("ABC234"))
     }
 
     // MARK: A ZIP made here: stored and deflated entries
