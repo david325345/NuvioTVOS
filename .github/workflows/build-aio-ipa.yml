@@ -21,7 +21,7 @@ permissions:
 jobs:
   ipa:
     runs-on: xcode-27
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:
@@ -65,10 +65,10 @@ jobs:
       - name: Install Tuist
         # GitHub's release downloads fail now and then (504): a few more tries.
         run: |
-          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+          for attempt in $(seq 1 30); do
             brew install tuist && exit 0
-            echo "::warning::Tuist download failed (attempt $attempt), again in 60 s"
-            sleep 60
+            echo "::warning::Tuist download failed (attempt $attempt), again in 30 s"
+            sleep 30
           done
           exit 1
       - name: Make it a separate app (Nuvio AIO)
@@ -88,11 +88,12 @@ jobs:
         run: |
           set +e
           [ -f MPVKit/Package.swift ] || git submodule update --init --recursive
-          # tuist generate resolves the packages itself.
-          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+          # tuist generate resolves the packages itself. What each try downloads stays,
+          # so every try has fewer to get.
+          for attempt in $(seq 1 40); do
             (cd tvosApp && tuist generate --no-open) && exit 0
-            echo "::warning::package download failed (attempt $attempt), again in 60 s"
-            sleep 60
+            echo "::warning::package download failed (attempt $attempt), again in 30 s"
+            sleep 30
           done
           exit 1
       - name: Build unsigned IPA
@@ -148,7 +149,7 @@ jobs:
   simulator:
     # The original AIOStreams started inside the app on the tvOS simulator.
     runs-on: xcode-27
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:
@@ -192,10 +193,10 @@ jobs:
       - name: Install Tuist
         # GitHub's release downloads fail now and then (504): a few more tries.
         run: |
-          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+          for attempt in $(seq 1 30); do
             brew install tuist && exit 0
-            echo "::warning::Tuist download failed (attempt $attempt), again in 60 s"
-            sleep 60
+            echo "::warning::Tuist download failed (attempt $attempt), again in 30 s"
+            sleep 30
           done
           exit 1
       - name: Generate Xcode project and get the packages (retried)
@@ -203,17 +204,21 @@ jobs:
         # tuist generate resolves the packages; the tests' own derived data gets them too.
         run: |
           set +e
+          derived="${{ runner.temp }}/NuvioTVDerivedData"
           generated=""
-          for attempt in 1 2 3 4 5 6 7 8 9 10; do
-            if [ -z "$generated" ]; then
-              tuist generate --path tvosApp --no-open && generated=1
+          for attempt in $(seq 1 40); do
+            if [ -z "$generated" ] && tuist generate --path tvosApp --no-open; then
+              generated=1
+              # What tuist downloaded, for the tests' own derived data: not downloaded twice.
+              packages=$(ls -d "$HOME"/Library/Developer/Xcode/DerivedData/NuvioTV-*/SourcePackages 2>/dev/null | head -1)
+              if [ -n "$packages" ]; then mkdir -p "$derived" && cp -R "$packages" "$derived/"; fi
             fi
             if [ -n "$generated" ]; then
               xcodebuild -resolvePackageDependencies -workspace tvosApp/NuvioTV.xcworkspace -scheme NuvioTV \
-                -derivedDataPath "${{ runner.temp }}/NuvioTVDerivedData" -quiet && exit 0
+                -derivedDataPath "$derived" -quiet && exit 0
             fi
-            echo "::warning::package download failed (attempt $attempt), again in 60 s"
-            sleep 60
+            echo "::warning::package download failed (attempt $attempt), again in 30 s"
+            sleep 30
           done
           exit 1
       - name: AIOStreams in Node.js on the simulator
