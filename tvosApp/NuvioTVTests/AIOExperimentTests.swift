@@ -76,7 +76,7 @@ final class AIOExperimentTests: XCTestCase {
         }
         note("AIO-TEST ready in \(aio.startupSeconds ?? -1) s · Node \(aio.nodeMemoryMB ?? -1) MB · app \(aio.appMemoryMB ?? -1) MB · \(aio.packageVersion)")
         try await waitUntil(seconds: 10) { aio.startupProfile?.contains("first streams") == true }
-        note("AIO-TEST \(aio.startupProfile ?? "no start profile")")
+        note("AIO-TEST times of the start: \(aio.startupProfile ?? "none")")
         XCTAssertNotNil(aio.startupProfile, "the times of the start")
 
         // The configuration page's save left a backup, and the warm-up ran.

@@ -11,6 +11,7 @@ on:
     paths:
       - aio-node/installer/**
       - aio-node/aio-package/smoke.sh
+      - aio-node/aio-package/ffprobe-bridge-test.mjs
       - .github/workflows/aio-image-probe.yml
   workflow_dispatch:
     inputs:
@@ -42,3 +43,19 @@ jobs:
         env:
           ANIME_DB_LEVEL_OF_DETAIL: required
         run: bash aio-node/aio-package/smoke.sh "$RUNNER_TEMP/installer" ghcr.io/viren070/aiostreams
+      # Prepared ahead of Nuvio's side (installer/FFPROBE.md): AIOStreams' own
+      # ffprobe code through the bridge, a stand-in for Nuvio answering with
+      # the real ffprobe.
+      - name: ffprobe through Nuvio (newest version)
+        if: always()
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg >/dev/null
+          home="$RUNNER_TEMP/ffprobe-aio"
+          result=$(node aio-node/installer/image-install.mjs --source ghcr.io/viren070/aiostreams --home "$home" --shims "$RUNNER_TEMP/installer/shims" | tail -1)
+          name=$(node -e 'console.log(JSON.parse(process.argv[1]).name)' "$result")
+          media="$RUNNER_TEMP/media"
+          mkdir -p "$media"
+          printf '1\n00:00:00,000 --> 00:00:01,500\nAhoj\n' > "$media/subs.srt"
+          ffmpeg -loglevel error -y -f lavfi -i testsrc=duration=2:size=320x240:rate=25 -f lavfi -i sine=duration=2 -i "$media/subs.srt" \
+            -map 0 -map 1 -map 2 -c:v libx264 -c:a aac -c:s srt -metadata:s:a:0 language=jpn -metadata:s:s:0 language=cze "$media/sample.mkv"
+          node aio-node/aio-package/ffprobe-bridge-test.mjs "$home/$name" "$RUNNER_TEMP/installer" "$media/sample.mkv"

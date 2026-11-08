@@ -12,6 +12,9 @@
 //                     for an update, install it for the next start
 //   NUVIO_AIO_HOME, NUVIO_AIO_SOURCE, NUVIO_AIO_CURRENT, NUVIO_AIO_VERSION
 //                     the versions (set by bootstrap.mjs)
+//   NUVIO_FFPROBE_URL Nuvio's endpoint for probing files, once Nuvio has
+//                     one: AIOStreams' ffprobe then goes there
+//                     (ffprobe-bridge.mjs, FFPROBE.md)
 // plus AIOStreams' usual environment (DATABASE_URI, SECRET_KEY, BASE_URL …).
 //
 // The network port is a small proxy in front of AIOStreams. It forwards every
@@ -35,6 +38,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { installFfprobeBridge } from './ffprobe-bridge.mjs';
 
 const aioRoot = process.env.AIO_ROOT;
 const aioPort = Number(process.env.PORT || 8770);
@@ -483,6 +487,11 @@ process.chdir(aioRoot);
 startProxy();
 startControl();
 log(`starting AIOStreams from ${aioRoot} (node ${process.version}, ${process.arch}, jitless: ${process.execArgv.includes('--jitless') || process.versions.mobile ? 'yes' : 'no'})`);
+try {
+  installFfprobeBridge(process.env.NUVIO_FFPROBE_URL, log);
+} catch (error) {
+  log(`ffprobe through Nuvio is off: ${error && error.message ? error.message : error}`);
+}
 await holdStartupRefreshes();
 try {
   await import(pathToFileURL(path.join(aioRoot, 'packages/server/dist/server.js')).href);
