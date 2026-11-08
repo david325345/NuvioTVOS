@@ -2662,7 +2662,7 @@ struct PlayerSettingsPanel: View {
                         value: style.fontName,
                         focusKey: .font
                     ) {
-                        let all = SubtitleFontOption.allCases.map(\.rawValue)
+                        let all = SubtitleFontOption.allCases.map(\.rawValue) + SubtitleFontLibrary.shared.familyNames
                         let idx = all.firstIndex(of: style.fontName) ?? 0
                         let next = all[(idx + 1) % all.count]
                         updateStyle { $0.fontName = next }
