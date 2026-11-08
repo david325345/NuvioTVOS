@@ -299,8 +299,13 @@ final class StreamsRepository: ObservableObject {
         let enabledURLs = addonManifestURLs
         // Fork experiment: AIOStreams is still starting — its group waits for it.
         let startingAIO = AIOExperiment.startingAddonURL(besides: enabledURLs) != nil
+        // Plugin scrapers run beside the add-ons, one group each (Android parity); an AniList
+        // title is asked by its IMDb id, as add-ons that don't take anilist: ids are.
+        let pluginVideoId = await Self.pluginVideoId(for: videoId)
+        guard !Task.isCancelled else { return }
+        let pluginTargets = PluginStreamDiscovery.targets(type: type, videoID: pluginVideoId)
 
-        guard !enabledURLs.isEmpty || startingAIO else {
+        guard !enabledURLs.isEmpty || !pluginTargets.isEmpty || startingAIO else {
             state = StreamsDiscoveryState(
                 requestKey: requestKey,
                 revision: state.revision &+ 1,
@@ -313,7 +318,10 @@ final class StreamsRepository: ObservableObject {
         }
 
         // Load missing manifests concurrently (app-lifetime cache).
-        let manifestsByURL = await Self.loadManifestsConcurrently(urls: enabledURLs)
+        var manifestsByURL: [URL: StreamAddonManifest] = [:]
+        if !enabledURLs.isEmpty {
+            manifestsByURL = await Self.loadManifestsConcurrently(urls: enabledURLs)
+        }
         guard !Task.isCancelled else { return }
 
         // An AniList title: add-ons that don't take anilist: ids are asked by Kitsu or IMDb.
@@ -355,7 +363,7 @@ final class StreamsRepository: ObservableObject {
             )
         }
 
-        guard !targets.isEmpty || startingAIO else {
+        guard !targets.isEmpty || !pluginTargets.isEmpty || startingAIO else {
             state = StreamsDiscoveryState(
                 requestKey: requestKey,
                 revision: state.revision &+ 1,
@@ -376,6 +384,8 @@ final class StreamsRepository: ObservableObject {
                 isLoading: true,
                 error: nil
             )
+        } + pluginTargets.map {
+            AddonStreamGroup(addonId: $0.groupID, displayName: $0.displayName, streams: [], isLoading: true, error: nil)
         } + (startingAIO
             ? [AddonStreamGroup(addonId: Self.startingAIOGroupID, displayName: "AIOStreams", streams: [], isLoading: true, error: nil)]
             : [])
@@ -401,6 +411,19 @@ final class StreamsRepository: ObservableObject {
                     await Self.fetchStartingAIOGroup(type: type, videoId: videoId) { [weak self] partial in
                         await self?.applyPartial(partial, requestKey: requestKey)
                     }
+                }
+            }
+            for target in pluginTargets {
+                group.addTask {
+                    let result = await PluginStreamDiscovery.fetchGroup(
+                        target: target,
+                        type: type,
+                        videoID: pluginVideoId,
+                        onPartial: { [weak self] partial in
+                            await self?.applyPartial(partial, requestKey: requestKey)
+                        }
+                    )
+                    return GroupUpdate(addonId: target.groupID, group: result)
                 }
             }
 
@@ -437,8 +460,8 @@ final class StreamsRepository: ObservableObject {
         )
     }
 
-    /// Streams an add-on group got while it still searches (fork experiment:
-    /// the first of the AIOStreams addon's two answers); ignored once the
+    /// Streams a group got while it still searches — a plugin's, or (fork
+    /// experiment) the first of the AIOStreams addon's two answers; ignored once the
     /// group has finished (the final list wins).
     private func applyPartial(_ partial: AddonStreamGroup, requestKey: String) {
         guard activeRequestKey == requestKey,
@@ -508,6 +531,13 @@ final class StreamsRepository: ObservableObject {
         }
         // A Cinemeta anime, for add-ons that take only anime ids (kitsu:, anilist:, mal:, anidb:).
         return await AniListStreamIds.cinemetaAlternatives(for: videoId)
+    }
+
+    /// The id plugins are asked by: the title's own, or an AniList title's IMDb id (plugins
+    /// take IMDb and TMDB ids), as add-ons that don't take anilist: ids are asked by it.
+    nonisolated static func pluginVideoId(for videoId: String) async -> String {
+        guard AniListMetaBuilder.isAniListID(videoId) else { return videoId }
+        return await AniListStreamIds.alternatives(for: videoId).first { $0.hasPrefix("tt") } ?? videoId
     }
 
     /// Fork experiment: the converted ids of an AniList title for the AIOStreams addon
@@ -848,6 +878,8 @@ final class StreamsRepository: ObservableObject {
         config.timeoutIntervalForRequest = 8
         config.timeoutIntervalForResource = 10
         config.waitsForConnectivity = false
+        // Plugins with catalogs, metadata or ratings (virtual add-ons).
+        PluginAddonURLProtocol.install(in: config)
         return URLSession(configuration: config)
     }()
 

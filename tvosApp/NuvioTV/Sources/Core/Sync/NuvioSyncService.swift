@@ -335,6 +335,19 @@ final class NuvioSyncManager: ObservableObject {
             }
         })
         observers.append(center.addObserver(
+            forName: PluginStore.repositoriesChangedNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let profileId = notification.userInfo?[PluginStore.profileIdUserInfoKey] as? String else { return }
+            Task { @MainActor [weak self] in
+                guard let self,
+                      self.profileViewModel?.activeProfile?.id == profileId,
+                      ProfileSettings.activeProfileID == profileId else { return }
+                self.pushPluginRepositories(originatingProfileId: profileId)
+            }
+        })
+        observers.append(center.addObserver(
             forName: CollectionsStore.changedNotification,
             object: nil,
             queue: .main
@@ -1706,6 +1719,14 @@ final class NuvioSyncManager: ObservableObject {
             ) / 1_000_000
             print("[NuvioSync] raw account inputs ready in \(String(format: "%.0f", rawInputsElapsedMs))ms")
             releasePostLoginGate(generation: generation)
+            // Plugin repositories install in the background; Home doesn't wait.
+            Task { @MainActor [weak self] in
+                await self?.pullPluginRepositories(
+                    session: session,
+                    activeProfile: activeProfile,
+                    remoteProfileId: remoteProfileId
+                )
+            }
 
             // Record the pull time so background passive refreshes (refreshAccountIfIdle)
             // respect the minimum refresh interval floor and do not hammer the server in a tight loop.
@@ -2047,6 +2068,63 @@ final class NuvioSyncManager: ObservableObject {
     /// Pushes the complete local add-on list to the account. The public RPC is
     /// full-replace, so omitted rows (including an entirely empty list) must be
     /// allowed to delete their remote counterparts.
+    /// Replaces the account's plugin repositories with this Apple TV's list
+    /// (Android's `sync_push_plugins`: url, name, enabled, sort_order).
+    private func pushPluginRepositories(originatingProfileId: String) {
+        guard AuthConfig.isConfigured else { return }
+        guard let authManager, authManager.isAuthenticated else { return }
+        guard let profileViewModel,
+              let activeProfile = profileViewModel.activeProfile ?? profileViewModel.profiles.first else { return }
+        guard activeProfile.id == originatingProfileId,
+              ProfileSettings.activeProfileID == originatingProfileId,
+              let editSyncKey = currentSyncKey() else { return }
+        let remoteProfileId = ProfileSyncIndexStore.remoteId(
+            for: activeProfile,
+            in: profileViewModel.profiles
+        )
+        // A profile that reads the primary profile's plugins doesn't own that list.
+        guard remoteProfileId == 1 || !activeProfile.usesPrimaryPlugins else { return }
+        let rows: [[String: Any]] = PluginStore.shared.repositoryURLsForSync.enumerated().map { index, item in
+            ["url": item.url, "name": item.name, "enabled": true, "sort_order": index]
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self, let session = await authManager.validSessionForSync() else { return }
+            do {
+                guard self.currentSyncKey() == editSyncKey,
+                      ProfileSettings.activeProfileID == originatingProfileId else { return }
+                try self.ensureStillSyncing(profileId: originatingProfileId, accountId: session.userId)
+                try await self.client.pushPlugins(
+                    session: session,
+                    remoteProfileId: remoteProfileId,
+                    rows: rows
+                )
+                print("Nuvio sync pushed \(rows.count) plugin repositories.")
+            } catch {
+                print("Nuvio plugin push failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Installs the account's plugin repositories after an account pull. When
+    /// the account has none but this Apple TV does, the local list is pushed
+    /// instead (Android's first-sync rule). Failures only log.
+    private func pullPluginRepositories(session: AuthSession, activeProfile: Profile, remoteProfileId: Int) async {
+        let pluginProfileId = activeProfile.usesPrimaryPlugins && remoteProfileId != 1 ? 1 : remoteProfileId
+        do {
+            let rows = try await client.pullPlugins(session: session, remoteProfileId: pluginProfileId)
+            let urls = rows.sorted { $0.sortOrder < $1.sortOrder }.map(\.url)
+            let applied = await PluginStore.shared.applyRemoteRepositories(urls, profileID: activeProfile.id)
+            if !applied {
+                pushPluginRepositories(originatingProfileId: activeProfile.id)
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            print("Nuvio plugin sync failed: \(error.localizedDescription)")
+        }
+    }
+
     private func pushAddonPreferences(_ preferences: [StreamAddonPreference], originatingProfileId: String) {
         let normalizedPreferences = Self.normalizedAddonPreferences(preferences)
         guard AuthConfig.isConfigured else { return }
@@ -3457,6 +3535,28 @@ final class NuvioAPIClient {
             session: session,
             params: [
                 "p_addons": rows,
+                "p_profile_id": remoteProfileId
+            ]
+        )
+    }
+
+    /// The profile's plugin repositories — the account's `plugins` table the
+    /// Android and iOS apps read: url, name, enabled, sort_order.
+    fileprivate func pullPlugins(session: AuthSession, remoteProfileId: Int) async throws -> [RemotePlugin] {
+        let rows: LossyRows<RemotePlugin> = try await rest(
+            "plugins?select=%2A&profile_id=eq.\(remoteProfileId)&order=sort_order",
+            session: session
+        )
+        return rows.elements
+    }
+
+    /// Replaces the profile's plugin repositories (Android's `sync_push_plugins`).
+    func pushPlugins(session: AuthSession, remoteProfileId: Int, rows: [[String: Any]]) async throws {
+        try await rpcVoid(
+            "sync_push_plugins",
+            session: session,
+            params: [
+                "p_plugins": rows,
                 "p_profile_id": remoteProfileId
             ]
         )
@@ -5099,6 +5199,22 @@ private struct RemoteAddon: Decodable {
         url = (try? container.decode(String.self, forKey: .url)) ?? ""
         name = try? container.decodeIfPresent(String.self, forKey: .name)
         enabled = (try? container.decode(Bool.self, forKey: .enabled)) ?? true
+        sortOrder = (try? container.decode(Int.self, forKey: .sortOrder)) ?? 0
+    }
+}
+
+private struct RemotePlugin: Decodable {
+    let url: String
+    let sortOrder: Int
+
+    enum CodingKeys: String, CodingKey {
+        case url
+        case sortOrder
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        url = (try? container.decode(String.self, forKey: .url)) ?? ""
         sortOrder = (try? container.decode(Int.self, forKey: .sortOrder)) ?? 0
     }
 }
