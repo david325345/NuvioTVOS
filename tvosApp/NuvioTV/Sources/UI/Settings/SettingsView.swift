@@ -6006,6 +6006,8 @@ private struct CustomSubtitleFontsSheet: View {
     @State private var linkFailed = false
     @State private var isDownloading = false
     @State private var selectedFont: SubtitleFont?
+    // Per Apple TV, as the fonts are.
+    @AppStorage(SubtitleFontPageKey.keepAddressKey, store: .standard) private var keepAddress = true
 
     var body: some View {
         ZStack {
@@ -6035,6 +6037,30 @@ private struct CustomSubtitleFontsSheet: View {
                         )
                     ) {
                         deviceUpload
+
+                        SettingsToggleRow(
+                            title: L10n.string("subtitle_custom_fonts_keep_address", fallback: "Keep the Same Address"),
+                            subtitle: L10n.string(
+                                "subtitle_custom_fonts_keep_address_subtitle",
+                                fallback: "The page keeps its address, so it can be bookmarked; off makes a new one each time"
+                            ),
+                            isOn: $keepAddress,
+                            accentColor: accentColor
+                        )
+
+                        if keepAddress {
+                            SettingsActionRow(
+                                title: L10n.string("subtitle_custom_fonts_new_address", fallback: "New Address"),
+                                subtitle: L10n.string(
+                                    "subtitle_custom_fonts_new_address_subtitle",
+                                    fallback: "A new address for the page; the old one stops working"
+                                ),
+                                value: "",
+                                accentColor: accentColor
+                            ) {
+                                server.change(key: SubtitleFontPageKey.renew())
+                            }
+                        }
 
                         SettingsNativeTextFieldRow(
                             title: L10n.string("subtitle_custom_fonts_link", fallback: "From a Link"),
@@ -6091,6 +6117,9 @@ private struct CustomSubtitleFontsSheet: View {
                 startServer()
             }
         }
+        .onChange(of: keepAddress) { _, keep in
+            server.change(key: keep ? SubtitleFontPageKey.current() : SubtitleFontUploadServer.makeKey())
+        }
         .onExitCommand { dismiss() }
         .confirmationDialog(
             selectedFont?.displayName ?? "",
@@ -6124,7 +6153,7 @@ private struct CustomSubtitleFontsSheet: View {
                 )
                 Text(L10n.string(
                     "subtitle_custom_fonts_device_steps",
-                    fallback: "Scan the code, or type the address, on a phone, tablet or computer on the same network as this Apple TV. Choose the font files or drop them on the page; you can paste a link there too. The page works while this screen is open."
+                    fallback: "Scan the code, or type the address, on a phone, tablet or computer on the same network as this Apple TV. Choose the font files or drop them on the page; you can paste a link there too. The page works while this screen is open. With Keep the Same Address on, a bookmark of it keeps working as long as the Apple TV keeps its network address."
                 ))
                 .font(.system(size: 19, weight: .medium))
                 .foregroundColor(.white.opacity(0.7))
@@ -6148,6 +6177,7 @@ private struct CustomSubtitleFontsSheet: View {
 
     private func startServer() {
         server.start(
+            key: SubtitleFontPageKey.current(),
             handler: { route, body in
                 await SubtitleFontWebAPI.respond(to: route, body: body)
             },

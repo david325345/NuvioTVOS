@@ -4,7 +4,7 @@ import Network
 
 /// The page another device opens to send fonts to this Apple TV (Settings → Subtitles → Custom
 /// Fonts). It listens only while that screen is open, on the home network, at an address with a
-/// one-time key, and takes nothing but font files and links.
+/// key (kept or new each time, see `SubtitleFontPageKey`), and takes nothing but font files and links.
 final class SubtitleFontUploadServer: @unchecked Sendable {
     enum State: Equatable, Sendable {
         case stopped, starting, ready(URL), failed
@@ -52,18 +52,32 @@ final class SubtitleFontUploadServer: @unchecked Sendable {
     private var generation = UUID()
     private var expiry: DispatchWorkItem?
     private var callback: (@Sendable (State) -> Void)?
+    private var key = ""
+    private var host = ""
+    private var boundPort: UInt16?
 
-    func start(handler: @escaping Handler, changed: @escaping @Sendable (State) -> Void) {
+    func start(key: String, handler: @escaping Handler, changed: @escaping @Sendable (State) -> Void) {
         queue.async {
             self.stopOnQueue()
             self.callback = changed
+            self.key = key
             changed(.starting)
             guard let host = Self.localIPv4Address() else {
                 changed(.failed)
                 return
             }
-            let key = Self.makeKey()
-            self.listen(host: host, port: NWEndpoint.Port(rawValue: Self.preferredPort) ?? .any, key: key, handler: handler, changed: changed)
+            self.host = host
+            self.listen(port: NWEndpoint.Port(rawValue: Self.preferredPort) ?? .any, attempt: 0, handler: handler)
+        }
+    }
+
+    /// A new key for the running page (Keep the Same Address, New Address): the old address
+    /// stops working at once, the port stays.
+    func change(key: String) {
+        queue.async {
+            self.key = key
+            guard self.listener != nil, let port = self.boundPort, let url = self.pageURL(port: port) else { return }
+            self.callback?(.ready(url))
         }
     }
 
@@ -75,15 +89,32 @@ final class SubtitleFontUploadServer: @unchecked Sendable {
         }
     }
 
-    private func listen(
-        host: String,
-        port: NWEndpoint.Port,
-        key: String,
-        handler: @escaping Handler,
-        changed: @escaping @Sendable (State) -> Void
-    ) {
+    private func pageURL(port: UInt16) -> URL? {
+        URL(string: "http://\(host):\(port)/fonts/\(key)")
+    }
+
+    private func listen(port: NWEndpoint.Port, attempt: Int, handler: @escaping Handler) {
         let current = UUID()
         generation = current
+        // The usual port can still be held by the page that just closed: tried again a few
+        // times before any free port is taken (the QR code carries it, a bookmark wouldn't).
+        let retry: () -> Void = { [weak self] in
+            guard let self, self.generation == current else { return }
+            self.listener?.cancel()
+            self.listener = nil
+            if port != .any, attempt < 3 {
+                self.queue.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                    guard let self, self.generation == current else { return }
+                    self.listen(port: port, attempt: attempt + 1, handler: handler)
+                }
+            } else if port != .any {
+                self.listen(port: .any, attempt: 0, handler: handler)
+            } else {
+                let callback = self.callback
+                self.stopOnQueue()
+                callback?(.failed)
+            }
+        }
         do {
             let parameters = NWParameters.tcp
             parameters.allowLocalEndpointReuse = true
@@ -94,23 +125,16 @@ final class SubtitleFontUploadServer: @unchecked Sendable {
                 guard let self, self.generation == current else { return }
                 switch state {
                 case .ready:
-                    guard let bound = listener?.port,
-                          let url = URL(string: "http://\(host):\(bound.rawValue)/fonts/\(key)") else {
+                    guard let bound = listener?.port?.rawValue, let url = self.pageURL(port: bound) else {
+                        let callback = self.callback
                         self.stopOnQueue()
-                        changed(.failed)
+                        callback?(.failed)
                         return
                     }
-                    changed(.ready(url))
+                    self.boundPort = bound
+                    self.callback?(.ready(url))
                 case .failed:
-                    self.listener?.cancel()
-                    self.listener = nil
-                    if port != .any {
-                        // The usual port is taken: any free one will do, the QR code carries it.
-                        self.listen(host: host, port: .any, key: key, handler: handler, changed: changed)
-                    } else {
-                        self.stopOnQueue()
-                        changed(.failed)
-                    }
+                    retry()
                 default:
                     break
                 }
@@ -123,7 +147,7 @@ final class SubtitleFontUploadServer: @unchecked Sendable {
                 let id = UUID()
                 self.connections[id] = connection
                 connection.start(queue: self.queue)
-                self.receive(connection, id: id, key: key, handler: handler)
+                self.receive(connection, id: id, handler: handler)
                 self.queue.asyncAfter(deadline: .now() + Self.connectionTimeout) { [weak self] in
                     self?.finish(id)
                 }
@@ -140,12 +164,7 @@ final class SubtitleFontUploadServer: @unchecked Sendable {
             }
             listener.start(queue: queue)
         } catch {
-            if port != .any {
-                listen(host: host, port: .any, key: key, handler: handler, changed: changed)
-            } else {
-                stopOnQueue()
-                changed(.failed)
-            }
+            retry()
         }
     }
 
@@ -160,6 +179,7 @@ final class SubtitleFontUploadServer: @unchecked Sendable {
         buffers.removeAll()
         heads.removeAll()
         callback = nil
+        boundPort = nil
     }
 
     private func finish(_ id: UUID) {
@@ -168,7 +188,7 @@ final class SubtitleFontUploadServer: @unchecked Sendable {
         heads.removeValue(forKey: id)
     }
 
-    private func receive(_ connection: NWConnection, id: UUID, key: String, handler: @escaping Handler) {
+    private func receive(_ connection: NWConnection, id: UUID, handler: @escaping Handler) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 512 * 1024) { [weak self] data, _, complete, error in
             guard let self, self.connections[id] != nil else { return }
             guard error == nil else {
@@ -185,7 +205,7 @@ final class SubtitleFontUploadServer: @unchecked Sendable {
                     if buffer.count > Self.headerLimit || complete {
                         self.send(.text("Bad request", status: 400), on: connection, id: id)
                     } else {
-                        self.receive(connection, id: id, key: key, handler: handler)
+                        self.receive(connection, id: id, handler: handler)
                     }
                     return
                 }
@@ -209,13 +229,13 @@ final class SubtitleFontUploadServer: @unchecked Sendable {
                 if complete {
                     self.finish(id)
                 } else {
-                    self.receive(connection, id: id, key: key, handler: handler)
+                    self.receive(connection, id: id, handler: handler)
                 }
                 return
             }
             let body = Data((self.buffers[id] ?? Data()).prefix(head.contentLength))
             self.buffers[id] = nil
-            let route = Self.route(head, key: key)
+            let route = Self.route(head, key: self.key)
             Task {
                 let response = await handler(route, body)
                 self.queue.async {
@@ -326,6 +346,38 @@ final class SubtitleFontUploadServer: @unchecked Sendable {
             if let result { return result }
         }
         return nil
+    }
+}
+
+// MARK: - The page's address
+
+/// The key in the page's address. Kept on this Apple TV while Keep the Same Address is on (the
+/// default), so the address can be bookmarked; otherwise new each time the screen opens.
+enum SubtitleFontPageKey {
+    static let keepAddressKey = "nuvio.tv.subtitleFonts.keepAddress"
+    private static let savedKey = "nuvio.tv.subtitleFonts.addressKey"
+    private static let alphabet = "abcdefghjkmnpqrstuvwxyz23456789"
+
+    static var keepsAddress: Bool {
+        UserDefaults.standard.object(forKey: keepAddressKey) == nil ? true : UserDefaults.standard.bool(forKey: keepAddressKey)
+    }
+
+    static func current() -> String {
+        guard keepsAddress else { return SubtitleFontUploadServer.makeKey() }
+        if let saved = UserDefaults.standard.string(forKey: savedKey), isValid(saved) { return saved }
+        return renew()
+    }
+
+    /// A new kept key (New Address): the old address stops working.
+    @discardableResult
+    static func renew() -> String {
+        let key = SubtitleFontUploadServer.makeKey()
+        UserDefaults.standard.set(key, forKey: savedKey)
+        return key
+    }
+
+    static func isValid(_ key: String) -> Bool {
+        key.count == 6 && key.allSatisfy { alphabet.contains($0) }
     }
 }
 
