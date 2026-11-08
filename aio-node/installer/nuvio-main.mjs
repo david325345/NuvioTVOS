@@ -655,20 +655,54 @@ function listenAgain(server, port, host, name, attempt = 0) {
   });
 }
 
+/** Whether a port on this Apple TV refuses connections (nobody listens). */
+function refuses(port) {
+  return new Promise((resolve) => {
+    const socket = net.connect({ port, host: '127.0.0.1' });
+    let done = false;
+    const finish = (refused) => {
+      if (done) return;
+      done = true;
+      socket.destroy();
+      resolve(refused);
+    };
+    socket.once('connect', () => finish(false));
+    socket.once('error', (error) => finish(error && (error.code === 'ECONNREFUSED' || error.code === 'ECONNRESET')));
+    // A slow answer is a busy server, not a missing one.
+    socket.setTimeout(1500, () => finish(false));
+  });
+}
+
+// tvOS takes the ports of a suspended app away, even after a few seconds on
+// the Home screen, and the servers don't learn it: nothing answers on them
+// any more. Every second this checks that AIOStreams' port still takes
+// connections (a connection to itself on 127.0.0.1, closed at once); when
+// it is refused, all three servers listen again — within about a second of
+// Nuvio coming back.
 function watchForWakeUps() {
   let last = Date.now();
+  let busy = false;
+  let quietUntil = 0;
   setInterval(() => {
     const now = Date.now();
     const asleep = now - last;
     last = now;
-    if (asleep < 6000 || !listening) return;
-    wakeUps++;
-    log(`back after ${Math.round(asleep / 1000)} s asleep: listening again (AIOStreams, configuration page, Nuvio's port)`);
-    listenAgain(aioServer, aioPort, '127.0.0.1', 'AIOStreams');
-    listenAgain(proxyServer, lanPort, '0.0.0.0', 'configuration page');
-    listenAgain(controlServer, controlPort, '127.0.0.1', "Nuvio's port");
-    try { writeState({ wakeUps, lastWakeUp: new Date().toISOString() }); } catch {}
-  }, 2000).unref();
+    if (!listening || busy || now < quietUntil) return;
+    busy = true;
+    refuses(aioPort)
+      .then((refused) => {
+        if (!refused) return;
+        wakeUps++;
+        quietUntil = Date.now() + 3000;
+        log(`${asleep > 2500 ? `back after ${Math.round(asleep / 1000)} s asleep, ` : ''}the ports were gone: listening again (AIOStreams, configuration page, Nuvio's port)`);
+        listenAgain(aioServer, aioPort, '127.0.0.1', 'AIOStreams');
+        listenAgain(proxyServer, lanPort, '0.0.0.0', 'configuration page');
+        listenAgain(controlServer, controlPort, '127.0.0.1', "Nuvio's port");
+        try { writeState({ wakeUps, lastWakeUp: new Date().toISOString() }); } catch {}
+      })
+      .catch(() => {})
+      .finally(() => { busy = false; });
+  }, 1000).unref();
 }
 
 // Inside Nuvio, Node runs in the app's own process: process.exit() would

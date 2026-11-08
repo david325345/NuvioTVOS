@@ -5,7 +5,8 @@ import Foundation
 /// on this Apple TV (``PluginLoopbackServer``, `http://127.0.0.1:<port>/<token>/`):
 ///
 /// - `stremio/plugins.json` — the plugins set so; AIOStreams' "Nuvio plugins" card
-///   (`nuvio-main.mjs`) makes each of them an add-on of its own;
+///   (`nuvio-main.mjs`) makes each of them an add-on of its own (`stremio/health` only
+///   tells that the server answers);
 /// - `stremio/p/<key>/manifest.json` and `stremio/p/<key>/<resource>/<type>/<id>[/<extra>].json`
 ///   for its streams, subtitles, catalogs and metadata.
 ///
@@ -13,7 +14,7 @@ import Foundation
 /// progressive results), with their headers as `proxyHeaders` and links resolved on
 /// play still pointing at this server.
 ///
-/// Once AIOStreams has asked for a plugin (its configuration has the card) and while
+/// Once AIOStreams has asked for the plugins (its configuration has the card) and while
 /// AIOStreams runs with its addon on, Nuvio shows that plugin only through AIOStreams:
 /// its own stream group, subtitles, catalogs and metadata are left out; its ratings
 /// stay (AIOStreams has none). Without AIOStreams the plugin is shown directly again.
@@ -110,8 +111,15 @@ enum PluginAIOBridge {
         var parts = request.path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
         guard parts.first == "stremio" else { return notFound }
         parts.removeFirst()
+        if parts == ["health"] {
+            return .json(["ok": true])
+        }
         if parts == ["plugins.json"] {
+            // Asked only by the "Nuvio plugins" card: these plugins are in AIOStreams now.
             let plugins = await MainActor.run { list() }
+            for plugin in plugins {
+                if let key = plugin["key"] as? String { noteAsked(key) }
+            }
             return .json(["plugins": plugins])
         }
         guard parts.count >= 3, parts[0] == "p" else { return notFound }
