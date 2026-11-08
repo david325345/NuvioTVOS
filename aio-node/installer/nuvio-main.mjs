@@ -96,13 +96,16 @@ function reportStartup(what) {
 // What AIOStreams answers: stream searches (Nuvio's warm-up, marked with
 // x-nuvio-warmup, apart) and how many requests are open, for the warm-up
 // and the held refreshes.
-const activity = { streamRequests: 0, open: 0, lastEnd: 0 };
+const activity = { streamRequests: 0, lastStreamAt: 0, open: 0, lastEnd: 0 };
 
 function watchRequest(request, response) {
   const stream = /\/stream\//.test(request.url || '');
   const warmUp = request.headers['x-nuvio-warmup'] === '1';
   const first = stream && !warmUp && activity.streamRequests === 0;
-  if (stream && !warmUp) activity.streamRequests++;
+  if (stream && !warmUp) {
+    activity.streamRequests++;
+    activity.lastStreamAt = Date.now();
+  }
   if (first) mark('firstAsked');
   activity.open++;
   let done = false;
@@ -121,6 +124,11 @@ function watchRequest(request, response) {
   response.on('close', end);
 }
 
+// The three servers, to listen again after tvOS put Nuvio to sleep.
+let aioServer = null;
+let proxyServer = null;
+let controlServer = null;
+
 let listening = false;
 let resolveListening;
 const listeningNow = new Promise((resolve) => { resolveListening = resolve; });
@@ -131,6 +139,8 @@ const originalListen = net.Server.prototype.listen;
 net.Server.prototype.listen = function (...args) {
   if (args[0] === aioPort || args[0] === String(aioPort)) {
     const callback = args.find((value) => typeof value === 'function');
+    aioServer = this;
+    this.on('error', (error) => log(`AIOStreams' port ${aioPort}: ${error && error.message ? error.message : error}`));
     this.once('listening', () => {
       listening = true;
       refreshesHeld = false;
@@ -341,6 +351,7 @@ function startProxy() {
     socket.on('error', () => upstream.destroy());
   });
   proxy.on('error', (error) => log(`configuration page port ${lanPort}: ${error.message}`));
+  proxyServer = proxy;
   originalListen.call(proxy, lanPort, '0.0.0.0', () => log(`configuration page on port ${lanPort}`));
 }
 
@@ -421,7 +432,7 @@ function startControl() {
         return send(request.method === 'POST' ? 202 : 200, update);
       }
       if (request.method === 'GET' && request.url === '/activity') {
-        return send(200, { streamRequests: activity.streamRequests, open: activity.open, startup: startup.marks });
+        return send(200, { streamRequests: activity.streamRequests, lastStreamAt: activity.lastStreamAt, open: activity.open, startup: startup.marks, wakeUps });
       }
       send(404, { error: 'not found' });
     } catch (error) {
@@ -429,6 +440,7 @@ function startControl() {
     }
   });
   server.on('error', (error) => log(`control port ${controlPort}: ${error.message}`));
+  controlServer = server;
   originalListen.call(server, controlPort, '127.0.0.1');
 }
 
@@ -462,6 +474,55 @@ async function waitUntilReady() {
     if (listening) await sleep(50);
   }
   return false;
+}
+
+// MARK: after sleep
+
+// When Nuvio goes to the Home screen, tvOS soon suspends it, and may take
+// its listening ports away meanwhile: back in Nuvio, Node.js and AIOStreams
+// run on, but nothing reaches them (no error either — a port just goes
+// dead). Node.js' timers don't run while it is suspended, so a tick that
+// comes much later than due means it slept: then all three ports listen
+// again. Requests under way go on; idle kept-alive connections are closed
+// (after a sleep they are dead anyway).
+let wakeUps = 0;
+
+function listenAgain(server, port, host, name, attempt = 0) {
+  if (!server || !port) return;
+  try { server.closeIdleConnections?.(); } catch {}
+  try { server.close(); } catch {}
+  setImmediate(() => {
+    const retry = (error) => {
+      if (attempt < 10) setTimeout(() => listenAgain(server, port, host, name, attempt + 1), 500);
+      else log(`${name}: could not listen on port ${port} again: ${error && error.message ? error.message : error}`);
+    };
+    server.once('error', retry);
+    try {
+      originalListen.call(server, port, host, () => {
+        server.removeListener('error', retry);
+        if (attempt > 0) log(`${name}: listening on port ${port} again`);
+      });
+    } catch (error) {
+      server.removeListener('error', retry);
+      retry(error);
+    }
+  });
+}
+
+function watchForWakeUps() {
+  let last = Date.now();
+  setInterval(() => {
+    const now = Date.now();
+    const asleep = now - last;
+    last = now;
+    if (asleep < 6000 || !listening) return;
+    wakeUps++;
+    log(`back after ${Math.round(asleep / 1000)} s asleep: listening again (AIOStreams, configuration page, Nuvio's port)`);
+    listenAgain(aioServer, aioPort, '127.0.0.1', 'AIOStreams');
+    listenAgain(proxyServer, lanPort, '0.0.0.0', 'configuration page');
+    listenAgain(controlServer, controlPort, '127.0.0.1', "Nuvio's port");
+    try { writeState({ wakeUps, lastWakeUp: new Date().toISOString() }); } catch {}
+  }, 2000).unref();
 }
 
 // Inside Nuvio, Node runs in the app's own process: process.exit() would
@@ -508,6 +569,7 @@ const memory = Math.round(process.memoryUsage().rss / 1048576);
 writeState({ status: ready ? 'running' : 'not answering', startupSeconds: Number(seconds), rssMB: memory });
 if (ready) {
   markReady();
+  watchForWakeUps();
   reportStartup('answering');
   void runHeldRefreshes();
 }

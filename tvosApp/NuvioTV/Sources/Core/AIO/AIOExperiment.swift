@@ -667,7 +667,7 @@ final class AIOExperiment: ObservableObject {
             default:
                 configurationVerified = true
                 publishAddon()
-                await warmUp(afterStart: true)
+                await warmUp(unlessSearchSince: startDate)
                 return
             }
         }
@@ -694,7 +694,7 @@ final class AIOExperiment: ObservableObject {
         configurationVerified = true
         notice = nil
         publishAddon()
-        await warmUp(afterStart: true)
+        await warmUp(unlessSearchSince: startDate)
     }
 
     private func forgetConfiguration() {
@@ -898,17 +898,19 @@ final class AIOExperiment: ObservableObject {
 
     /// One stream request through the whole of AIOStreams (its addons, debrid,
     /// filters) and its connections, so the first real search is quick.
-    /// `afterStart`: right after AIOStreams started, when the user may already
-    /// be searching. A search warms AIOStreams up itself, and a warm-up next
-    /// to it would only slow it down, so the warm-up waits a moment and is
-    /// left out when a search came (nuvio-main.mjs counts them).
-    func warmUp(afterStart: Bool = false) async {
+    /// `unlessSearchSince`: right after AIOStreams started, or Nuvio came
+    /// back from the Home screen, when the user may already be searching. A
+    /// search warms AIOStreams up itself, and a warm-up next to it would only
+    /// slow it down, so the warm-up waits a moment and is left out when a
+    /// search came since then (nuvio-main.mjs notes when).
+    func warmUp(unlessSearchSince since: Date? = nil) async {
         guard phase == .running, addonEnabled, configurationVerified, !warmingUp, manifestURL != nil else { return }
         warmingUp = true
         defer { warmingUp = false }
-        if afterStart {
+        if let since {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
-            if let searches = (await control("GET", "/activity"))?["streamRequests"] as? Int, searches > 0 {
+            if let last = (await control("GET", "/activity"))?["lastStreamAt"] as? Double,
+               last >= since.timeIntervalSince1970 * 1000 {
                 lastWarmUp = "not needed, a search came first"
                 Self.note("warm-up: not needed, a search came first")
                 return
@@ -935,11 +937,32 @@ final class AIOExperiment: ObservableObject {
         Self.note("warm-up: \(result)")
     }
 
-    /// Back from the background after a while: connections have gone stale.
+    /// Back from the Home screen. tvOS may have taken AIOStreams' ports away
+    /// while Nuvio was suspended; nuvio-main.mjs notices it slept and listens
+    /// again at once. A moment later Nuvio checks that AIOStreams answers (in
+    /// the log), and after a minute or more away warms it up again: its
+    /// connections to add-ons and debrid have gone stale.
     private func enteredForeground() {
         defer { backgroundSince = nil }
-        guard let since = backgroundSince, Date().timeIntervalSince(since) > 600 else { return }
-        Task { await warmUp() }
+        guard runKind == .aio, phase == .running, let since = backgroundSince else { return }
+        let away = Date().timeIntervalSince(since)
+        let back = Date()
+        Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            let answers = await Self.answers()
+            Self.note(String(format: "back after %.0f s on the Home screen: AIOStreams %@", away, answers ? "answers" : "does not answer"))
+            if answers, away > 60 { await warmUp(unlessSearchSince: back) }
+        }
+    }
+
+    /// Does AIOStreams answer on its port?
+    private nonisolated static func answers() async -> Bool {
+        guard let url = URL(string: "http://127.0.0.1:\(aioPort)/api/v1/health") else { return false }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 3
+        guard let (_, response) = try? await URLSession.shared.data(for: request),
+              let status = (response as? HTTPURLResponse)?.statusCode else { return false }
+        return status < 500
     }
 
     // MARK: - Log file

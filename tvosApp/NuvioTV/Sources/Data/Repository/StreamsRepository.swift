@@ -437,6 +437,19 @@ final class StreamsRepository: ObservableObject {
         )
     }
 
+    /// Streams an add-on group got while it still searches (fork experiment:
+    /// the first of the AIOStreams addon's two answers); ignored once the
+    /// group has finished (the final list wins).
+    private func applyPartial(_ partial: AddonStreamGroup, requestKey: String) {
+        guard activeRequestKey == requestKey,
+              state.requestKey == requestKey,
+              let index = state.groups.firstIndex(where: { $0.addonId == partial.addonId }),
+              state.groups[index].isLoading else { return }
+        var groups = state.groups
+        groups[index] = partial
+        publish(groups: groups, requestKey: requestKey, forceLoading: true)
+    }
+
     private func apply(update: GroupUpdate, requestKey: String, forceLoading: Bool) {
         var groups = state.groups
         guard let index = groups.firstIndex(where: { $0.addonId == update.addonId }) else { return }
