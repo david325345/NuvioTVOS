@@ -57,7 +57,7 @@ final class PluginAIOBridgeTests: XCTestCase {
         XCTAssertEqual(resources.count, 1)
         XCTAssertEqual(resources[0]["idPrefixes"] as? [String], ["tt", "tmdb:"])
         XCTAssertEqual(manifest["version"] as? String, "1.0.0", "AIOStreams wants x.y.z")
-        XCTAssertEqual(manifest["catalogs"] as? [[String: Any]]?.map(\.count), 0)
+        XCTAssertEqual((manifest["catalogs"] as? [[String: Any]])?.count, 0)
     }
 
     func testGetStreamsResultsBecomeStremioStreamsAndUnplayableOnesAreLeftOut() throws {
