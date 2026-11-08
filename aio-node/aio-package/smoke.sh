@@ -72,7 +72,10 @@ http.createServer((req, res) => {
   if (path.startsWith('/smoke/stremio/p/smokeplugin/stream/')) {
     return send(res, { streams: [{ name: 'Smoke plugin 1080p', title: 'The Matrix 1999 1080p BluRay',
       url: 'http://127.0.0.1:18766/smoke/resolve/smokeplugin/The.Matrix.1999.1080p.BluRay.x264.mkv?p=e30',
-      behaviorHints: { filename: 'The.Matrix.1999.1080p.BluRay.x264.mkv', videoSize: 2147483648, proxyHeaders: { request: { Referer: 'https://plugin.example/' } } } }] });
+      behaviorHints: { filename: 'The.Matrix.1999.1080p.BluRay.x264.mkv', videoSize: 2147483648, proxyHeaders: { request: { Referer: 'https://plugin.example/' } } } },
+      // As Usenet Direct answers: Stremio NNTP's nzbUrl, no servers (Nuvio Usenet's own).
+      { name: 'UD · Smoke\n2160p', description: 'smoke usenet', nzbUrl: 'https://indexer.example/api?t=get&id=smoke-nzb&apikey=KEY',
+        behaviorHints: { notWebReady: true, bingeGroup: 'usenet-direct|2160p', videoSize: 4294967296, filename: 'The.Matrix.1999.2160p.UHD.BluRay.x265-SMOKE' } }] });
   }
   send(res, { error: 'Not found' }, 404);
 }).listen(18766, '127.0.0.1');
@@ -132,6 +135,10 @@ if [ -n "$MANIFEST" ]; then
   grep -q '127.0.0.1:18766/smoke/resolve/smokeplugin/' "$RUN/body" \
     && echo "ok   the plugin's stream came through AIOStreams" \
     || { echo "FAIL no stream of the plugin in AIOStreams' answer"; head -c 800 "$RUN/body"; echo; failed=1; }
+  grep -q 'id=smoke-nzb' "$RUN/body" \
+    && echo "ok   the plugin's Usenet stream (nzbUrl) came through AIOStreams" \
+    || { echo "FAIL the plugin's Usenet stream (nzbUrl) is not in AIOStreams' answer"; failed=1; }
+  grep -F '[nuvio] AIOStreams took' "$RUN/aio.log" | head -3 || true
   echo "stream request took $(( ($(date +%s%N) - t0) / 1000000 )) ms, $(node -e 'try{const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).streams||[];console.log(s.length+" streams; first: "+JSON.stringify((s[0]||{}).name||"").slice(0,120))}catch(e){console.log("unreadable")}' "$RUN/body")"
   t0=$(date +%s%N)
   check "same request again (cache)" 200 "${MANIFEST%/manifest.json}/stream/movie/tt0133093.json"

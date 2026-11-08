@@ -257,6 +257,30 @@ function addNuvioPluginsPreset(core) {
       };
     }
 
+    // What AIOStreams took from a plugin, in the log: each search makes a parser
+    // per add-on, and AIOStreams hands it every stream the plugin answered with.
+    static getParser() {
+      const Base = super.getParser();
+      return class NuvioPluginParser extends Base {
+        parse(stream) {
+          const parsed = super.parse(stream);
+          if (!this.nuvioCount) {
+            const count = { all: 0, skipped: 0, types: {} };
+            this.nuvioCount = count;
+            setImmediate(() => {
+              const types = Object.entries(count.types).map(([type, n]) => `${n} ${type}`).join(', ');
+              const name = (this.addon && this.addon.name) || 'a Nuvio plugin';
+              log(`AIOStreams took ${count.all - count.skipped} of ${count.all} streams from ${name}${types ? ` (${types})` : ''}`);
+            });
+          }
+          this.nuvioCount.all++;
+          if (!parsed || parsed.skip) this.nuvioCount.skipped++;
+          else this.nuvioCount.types[parsed.type || '?'] = (this.nuvioCount.types[parsed.type || '?'] || 0) + 1;
+          return parsed;
+        }
+      };
+    }
+
     static async generateAddons(userData, options) {
       const metadata = this.METADATA;
       const plugins = await nuvioPlugins();

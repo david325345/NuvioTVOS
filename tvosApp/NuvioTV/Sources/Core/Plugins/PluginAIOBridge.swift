@@ -147,25 +147,42 @@ enum PluginAIOBridge {
         }
     }
 
-    /// A plugin's streams as Stremio stream objects, once it has finished.
+    /// A plugin's streams as Stremio stream objects, once it has finished. Each
+    /// request goes into the AIOStreams log with its times (TMDB lookup, waiting
+    /// for a free plugin slot, the plugin itself): nuvio-main.mjs logs next to it
+    /// how many of them AIOStreams took.
     static func streams(_ scraper: PluginScraperRecord, type: String, id: String) async -> [[String: Any]] {
+        let begin = Date()
+        func report(_ outcome: String, tmdb: TimeInterval, wait: TimeInterval, run: TimeInterval) {
+            AIOExperiment.note(String(
+                format: "AIOStreams asked %@ for %@ %@: %@ in %.1f s (TMDB %.1f s, waiting %.1f s, plugin %.1f s)",
+                scraper.name, type, id, outcome, Date().timeIntervalSince(begin), tmdb, wait, run
+            ))
+        }
         guard let code = await PluginStore.shared.code(for: scraper) else {
             PluginLogStore.shared.append(scraper.id, level: .error, message: "AIOStreams asked, but the provider's code is not available.")
+            report("no code", tmdb: 0, wait: 0, run: 0)
             return []
         }
         let declaresSeries = scraper.declaresSeriesType == true
         let initial = PluginStreamDiscovery.request(type: type, videoID: id, resolvedTMDBID: nil, scraperDeclaresSeries: declaresSeries)
         var resolvedTMDB: String?
+        let tmdbStart = Date()
         if initial.tmdbID == nil, let imdb = initial.imdbID {
+            // Cached after the first time (Nuvio looks the title up for its details too).
             resolvedTMDB = await TmdbDetailsService.pluginTmdbId(forImdb: imdb, mediaType: initial.mediaType == "movie" ? "movie" : "tv")
                 .map(String.init)
         }
+        let tmdb = Date().timeIntervalSince(tmdbStart)
         let pluginRequest = resolvedTMDB == nil
             ? initial
             : PluginStreamDiscovery.request(type: type, videoID: id, resolvedTMDBID: resolvedTMDB, scraperDeclaresSeries: declaresSeries)
         let settings = PluginSettingsVault.settings(scraperID: scraper.id)
+        let waitStart = Date()
         await PluginConcurrency.shared.acquire()
         defer { Task { await PluginConcurrency.shared.release() } }
+        let wait = Date().timeIntervalSince(waitStart)
+        let runStart = Date()
         do {
             let result = try await PluginRuntime.call(
                 code: code,
@@ -176,11 +193,16 @@ enum PluginAIOBridge {
                 timeout: PluginRuntime.streamTimeout,
                 keepAlive: scraper.keepAlive == true
             )
-            return streamObjects(from: result, scraper: scraper)
+            let objects = streamObjects(from: result, scraper: scraper)
+            let raw = (result as? [Any])?.count ?? 0
+            report(raw == objects.count ? "\(objects.count) streams" : "\(objects.count) of \(raw) streams", tmdb: tmdb, wait: wait, run: Date().timeIntervalSince(runStart))
+            return objects
         } catch is CancellationError {
+            report("cancelled", tmdb: tmdb, wait: wait, run: Date().timeIntervalSince(runStart))
             return []
         } catch {
             PluginLogStore.shared.append(scraper.id, level: .error, message: "getStreams for AIOStreams failed: \(error.localizedDescription)")
+            report("failed (\(error.localizedDescription))", tmdb: tmdb, wait: wait, run: Date().timeIntervalSince(runStart))
             return []
         }
     }
