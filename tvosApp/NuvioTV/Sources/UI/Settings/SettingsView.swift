@@ -10494,7 +10494,13 @@ struct SubtitleStyleEditor: View {
                     subtitle: L10n.string("subtitle_font_desc", fallback: "Typeface used for subtitles"),
                     selection: $fontName,
                     options: SubtitleFontOption.allCases.map(\.rawValue) + fontLibrary.familyNames,
-                    accentColor: accentColor
+                    accentColor: accentColor,
+                    optionLabel: { name in
+                        // Fonts from Custom Fonts are marked as uploaded.
+                        SubtitleFontOption(rawValue: name) == nil && fontLibrary.familyNames.contains(name)
+                            ? name + " · " + L10n.string("player_subtitle_font_uploaded", fallback: "Uploaded")
+                            : L10n.optionLabel(name)
+                    }
                 )
 
                 SettingsActionRow(
