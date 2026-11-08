@@ -589,6 +589,8 @@ final class StreamsRepository: ObservableObject {
         videoId: String,
         onPartial: PartialGroupHandler? = nil
     ) async -> GroupUpdate {
+        // Fork experiment: AIOStreams listening again after the Home screen.
+        await AIOExperiment.waitWhileWaking(for: target.manifestURL)
         let ids = target.requestIds.isEmpty ? [videoId] : target.requestIds
         if ids.count > 1 {
             return await fetchMergedAddonGroup(target: target, type: type, ids: ids, onPartial: onPartial)
@@ -825,6 +827,7 @@ final class StreamsRepository: ObservableObject {
         await withTaskGroup(of: (URL, StreamAddonManifest?).self) { group in
             for url in missing {
                 group.addTask {
+                    await AIOExperiment.waitWhileWaking(for: url)
                     let manifest = await fetchManifest(url)
                     return (url, manifest)
                 }
@@ -976,6 +979,7 @@ final class StreamsRepository: ObservableObject {
     }
 
     private static func fetchSubtitles(from url: URL, source: String) async -> [NuvioSubtitle] {
+        await AIOExperiment.waitWhileWaking(for: url)
         do {
             var request = URLRequest(url: url)
             request.timeoutInterval = 8

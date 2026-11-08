@@ -937,29 +937,64 @@ final class AIOExperiment: ObservableObject {
         Self.note("warm-up: \(result)")
     }
 
-    /// Back from the Home screen. tvOS may have taken AIOStreams' ports away
-    /// while Nuvio was suspended; nuvio-main.mjs notices it slept and listens
-    /// again at once. A moment later Nuvio checks that AIOStreams answers (in
-    /// the log), and after a minute or more away warms it up again: its
-    /// connections to add-ons and debrid have gone stale.
+    /// Back from the Home screen. tvOS takes a suspended app's ports away,
+    /// even after a few seconds; nuvio-main.mjs checks its port every second
+    /// and listens again within about a second. Until AIOStreams answers again
+    /// (at most ``wakingSeconds``), requests to it wait (``waitWhileWaking(for:)``)
+    /// instead of failing. After a minute or more away it is warmed up again:
+    /// its connections to add-ons and debrid have gone stale.
     private func enteredForeground() {
         defer { backgroundSince = nil }
         guard runKind == .aio, phase == .running, let since = backgroundSince else { return }
         let away = Date().timeIntervalSince(since)
         let back = Date()
+        Self.setWaking(until: back.addingTimeInterval(Self.wakingSeconds))
         Task {
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            let answers = await Self.answers()
-            Self.note(String(format: "back after %.0f s on the Home screen: AIOStreams %@", away, answers ? "answers" : "does not answer"))
+            var answers = await Self.answers(timeout: 1)
+            while !answers, Date().timeIntervalSince(back) < Self.wakingSeconds {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                answers = await Self.answers(timeout: 1)
+            }
+            Self.setWaking(until: nil)
+            let after = Date().timeIntervalSince(back)
+            Self.note(String(
+                format: "back after %.0f s on the Home screen: AIOStreams %@",
+                away,
+                answers ? String(format: "answers (%.1f s after coming back)", after) : "does not answer"
+            ))
             if answers, away > 60 { await warmUp(unlessSearchSince: back) }
         }
     }
 
+    /// How long requests to AIOStreams wait for it after Nuvio comes back.
+    nonisolated static let wakingSeconds: TimeInterval = 8
+    private nonisolated(unsafe) static var wakingUntil: Date?
+
+    private nonisolated static func setWaking(until date: Date?) {
+        addonLock.lock()
+        wakingUntil = date
+        addonLock.unlock()
+    }
+
+    /// For requests to the AIOStreams addon (streams, subtitles, its manifest):
+    /// right after Nuvio came back from the Home screen, wait until AIOStreams
+    /// listens again. Returns at once otherwise.
+    nonisolated static func waitWhileWaking(for url: URL) async {
+        guard isAIOAddon(url) else { return }
+        while !Task.isCancelled {
+            addonLock.lock()
+            let until = wakingUntil
+            addonLock.unlock()
+            guard let until, until > Date() else { return }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+    }
+
     /// Does AIOStreams answer on its port?
-    private nonisolated static func answers() async -> Bool {
+    private nonisolated static func answers(timeout: TimeInterval = 3) async -> Bool {
         guard let url = URL(string: "http://127.0.0.1:\(aioPort)/api/v1/health") else { return false }
         var request = URLRequest(url: url)
-        request.timeoutInterval = 3
+        request.timeoutInterval = timeout
         guard let (_, response) = try? await URLSession.shared.data(for: request),
               let status = (response as? HTTPURLResponse)?.statusCode else { return false }
         return status < 500

@@ -4798,6 +4798,9 @@ private struct IntegrationSettingsView: View {
                 showingAddonsSettings = true
             }
 
+            // Fork experiment: the original AIOStreams running inside Nuvio.
+            AIOExperimentSummaryCard(accentColor: accentColor)
+
             SettingsGroup(
                 title: L10n.string("tvos_settings_watch_progress_title", fallback: "Continue Watching & Scrobbling"),
                 subtitle: L10n.string(
@@ -13874,7 +13877,6 @@ private struct AddonsSettingsSection: View {
     @State private var renamingText = ""
     @State private var addons: [AddonItem] = AddonsSettingsSection.initialLocalAddons()
     @State private var syncedAddons: [SyncedAddon] = []
-    @State private var showingAIOExperiment = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 28) {
@@ -13987,25 +13989,9 @@ private struct AddonsSettingsSection: View {
                     )
                 }
             }
-
-            // Fork experiment: the original AIOStreams running inside Nuvio.
-            SettingsGroup(title: "AIOStreams (experiment)", subtitle: "The original AIOStreams in Node.js on this Apple TV") {
-                SettingsActionRow(
-                    title: "AIOStreams",
-                    subtitle: "Start it, open its configuration page, update it and see how it runs",
-                    value: "Open",
-                    accentColor: accentColor
-                ) {
-                    showingAIOExperiment = true
-                }
-            }
         }
         .task(id: streamAddonManifestURL + "\n" + streamAddonManifestURLs + "\n" + streamAddonManifestStates) {
             await loadSyncedAddons()
-        }
-        .sheet(isPresented: $showingAIOExperiment) {
-            AIOExperimentSheet(accentColor: accentColor)
-                .modifier(ClearPresentationBackgroundIfAvailable())
         }
     }
 
@@ -19876,6 +19862,41 @@ private struct UsenetServerEditSheet: View {
 /// Experiment (fork branch `aio-node`): the original AIOStreams in Node.js on
 /// this Apple TV. Starts it (once per app run), shows the configuration page's
 /// address, the addon it added, startup time, memory and its log.
+/// Fork experiment: AIOStreams' card in Integrations, under Add-ons.
+private struct AIOExperimentSummaryCard: View {
+    let accentColor: Color
+
+    @ObservedObject private var aio = AIOExperiment.shared
+    @State private var showingSheet = false
+
+    var body: some View {
+        SettingsFeatureSummaryCard(
+            featureName: "AIOStreams (experiment)",
+            status: status,
+            actionSubtitle: "The original AIOStreams in Node.js on this Apple TV: start it, open its configuration page, update it and see how it runs",
+            accentColor: accentColor
+        ) {
+            showingSheet = true
+        }
+        .sheet(isPresented: $showingSheet) {
+            AIOExperimentSheet(accentColor: accentColor)
+                .modifier(ClearPresentationBackgroundIfAvailable())
+        }
+    }
+
+    private var status: String {
+        let version = aio.packageVersion.isEmpty ? "" : " · AIOStreams \(aio.packageVersion)"
+        switch aio.phase {
+        case .running: return "Running" + version
+        case .starting: return "Starting…"
+        case .stopped: return "Not running"
+        case .notAnswering: return "Started, but not answering"
+        case .exited: return "Node.js stopped"
+        case .unavailable(let reason): return reason
+        }
+    }
+}
+
 private struct AIOExperimentSheet: View {
     let accentColor: Color
 
