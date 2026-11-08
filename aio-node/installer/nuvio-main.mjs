@@ -13,7 +13,8 @@
 //   NUVIO_AIO_HOME, NUVIO_AIO_SOURCE, NUVIO_AIO_CURRENT, NUVIO_AIO_VERSION
 //                     the versions (set by bootstrap.mjs)
 //   NUVIO_WAKE_FILE   a file Nuvio writes to whenever it comes back from the
-//                     Home screen: the ports are checked at once (watchForWakeUps)
+//                     Home screen: the ports are checked at once and the data
+//                     refreshes wait a minute (watchForWakeUps)
 //   NUVIO_FFPROBE_URL Nuvio's endpoint for probing files, once Nuvio has
 //                     one: AIOStreams' ffprobe then goes there
 //                     (ffprobe-bridge.mjs, FFPROBE.md)
@@ -334,9 +335,61 @@ async function holdStartupRefreshes() {
       return runNow.call(tasks, id, ...rest);
     };
     runHeld = (id) => runNow.call(tasks, id);
+    holdRefreshesAfterWakeUps(tasks);
   } catch (error) {
     log(`data refreshes stay in the start: ${error && error.message ? error.message : error}`);
   }
+}
+
+// After Nuvio was suspended (on the Home screen), refreshes that fell due
+// meanwhile would run the moment it wakes up, while its network connections
+// are still dead: they fail ("fetch failed"), and an anime database whose
+// etag check failed is downloaded whole again. Scheduled refreshes of the same
+// kinds as above (TaskManager's execute, which its timers and retries call)
+// wait a minute after a wake-up, longer while a search runs, and then run as
+// AIOStreams would have run them.
+const WAKE_HOLD_MS = 60000;
+let refreshesHeldUntil = 0;
+let lastTick = 0; // watchForWakeUps' timer: a long gap means Node.js was frozen
+const heldAfterWake = new Map();
+let wakeRunner = null;
+
+function holdRefreshesAfterWake() {
+  refreshesHeldUntil = Date.now() + WAKE_HOLD_MS;
+}
+
+function holdRefreshesAfterWakeUps(tasks) {
+  const execute = tasks.execute;
+  if (typeof execute !== 'function') {
+    log('data refreshes are not held after a wake-up: no TaskManager.execute in this AIOStreams');
+    return;
+  }
+  const runLater = async () => {
+    while (Date.now() < refreshesHeldUntil) await sleep(Math.max(500, refreshesHeldUntil - Date.now()));
+    const latest = Date.now() + 30000;
+    while (Date.now() < latest && (activity.open > 0 || Date.now() - activity.lastEnd < 3000)) await sleep(500);
+    const entries = [...heldAfterWake.values()];
+    heldAfterWake.clear();
+    log(`${entries.length} data refresh${entries.length === 1 ? '' : 'es'} held after the wake-up: running now`);
+    for (const entry of entries) {
+      try {
+        await execute.call(tasks, entry, false);
+      } catch (error) {
+        log(`refresh ${entry.def.id}: ${error && error.message ? error.message : error}`);
+      }
+    }
+  };
+  tasks.execute = function (entry, manual, ...rest) {
+    const def = entry && entry.def;
+    // Its timer may fire before watchForWakeUps' own after a sleep.
+    if (lastTick && Date.now() - lastTick > 2500) holdRefreshesAfterWake();
+    if (!manual && def && HELD_KINDS.has(def.category) && Date.now() < refreshesHeldUntil) {
+      if (!heldAfterWake.has(def.id)) heldAfterWake.set(def.id, entry);
+      if (!wakeRunner) wakeRunner = runLater().finally(() => { wakeRunner = null; });
+      return Promise.resolve({ ok: true, message: 'after the wake-up (Nuvio)' });
+    }
+    return execute.call(this, entry, manual, ...rest);
+  };
 }
 
 /** The held refreshes, once AIOStreams has answered for a while and is quiet. */
@@ -678,19 +731,21 @@ function refuses(port) {
 
 // tvOS takes the ports of a suspended app away, even after a few seconds on
 // the Home screen, and the servers don't learn it: nothing answers on them
-// any more, and nobody can tell Node.js through them. So whenever Nuvio comes
-// back it writes to NUVIO_WAKE_FILE; Node.js watches that file (no polling)
-// and checks at once whether AIOStreams' port still takes connections (a
-// connection to itself on 127.0.0.1, closed at once). When it is refused, all
-// three servers listen again — within milliseconds of Nuvio coming back.
-// Besides that the port is checked after Node.js itself was asleep and every
-// 30 s (every second when the file can't be watched).
+// any more, and nobody can tell Node.js through them. Two ways in, then:
+// - Node.js notices it was frozen itself: its 1 s timer sees a gap;
+// - whenever Nuvio comes back it writes to NUVIO_WAKE_FILE, which Node.js
+//   watches (fs.watch: no polling).
+// Either way Node.js checks whether AIOStreams' port still takes connections
+// (a connection to itself on 127.0.0.1, closed at once); when it is refused,
+// all three servers listen again — within milliseconds of Nuvio coming back.
+// The data refreshes wait a minute after a wake-up (holdRefreshesAfterWakeUps).
+// Only when the file can't be watched is the port checked every second.
 function watchForWakeUps() {
-  let last = Date.now();
-  let lastCheck = Date.now();
   let busy = false;
   let quietUntil = 0;
   let watching = false;
+  let lastCheck = Date.now();
+  lastTick = Date.now();
 
   const check = (why) => {
     const now = Date.now();
@@ -714,6 +769,7 @@ function watchForWakeUps() {
 
   const watchWakeFile = () => {
     const watcher = fs.watch(wakeFile, { persistent: false }, (event) => {
+      holdRefreshesAfterWake();
       check('Nuvio is back from the Home screen');
       if (event === 'rename') {
         // Replaced instead of written: watch the new file.
@@ -736,10 +792,14 @@ function watchForWakeUps() {
 
   setInterval(() => {
     const now = Date.now();
-    const asleep = now - last;
-    last = now;
-    if (asleep > 2500) check(`back after ${Math.round(asleep / 1000)} s asleep`);
-    else if (now - lastCheck >= (watching ? 30000 : 1000)) check('regular check');
+    const asleep = now - lastTick;
+    lastTick = now;
+    if (asleep > 2500) {
+      holdRefreshesAfterWake();
+      check(`back after ${Math.round(asleep / 1000)} s asleep`);
+    } else if (!watching && now - lastCheck >= 1000) {
+      check('regular check');
+    }
   }, 1000).unref();
 }
 
