@@ -480,7 +480,7 @@ struct PosterCard: View {
                     meta.name,
                     size: effectiveHomeLayout == "Compact" ? 18 : 20, weight: showsFocusedAppearance ? .semibold : .medium,
                     color: titleColor,
-                    isActive: showsFocusedAppearance && !expandsToBackdrop
+                    isActive: showsFocusedAppearance && (!expandsToBackdrop || effectiveLandscape)
                 )
                 .frame(width: cardWidth, alignment: .leading)
             }
@@ -677,8 +677,9 @@ struct PosterCard: View {
         layoutMode
     }
 
-    /// The focused poster turns into its backdrop with logo and name after a moment (Settings →
-    /// Layout → Expand Focused Poster to Backdrop, Modern layout): its title doesn't scroll then.
+    /// The focused poster turns into its backdrop after a moment (Settings → Layout → Expand
+    /// Focused Poster to Backdrop, Modern layout): its title waits for the wider card and scrolls
+    /// only if it doesn't fit even there.
     private var expandsToBackdrop: Bool {
         focusedPosterBackdropEnabled && effectiveHomeLayout == "Modern" && !isEffectivelyAlwaysLandscape
     }
