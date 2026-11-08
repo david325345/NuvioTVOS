@@ -96,7 +96,7 @@ cat "$NUVIO_STATE_FILE" 2>/dev/null || { echo "no state file"; failed=1; }
 check "health" 200 "$LAN/api/v1/health"
 check "configuration page" 200 "$LAN/stremio/configure"
 check "status" 200 "$LAN/api/v1/status"
-node -e 'const b=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const p=(b.data||b).presets||[];process.exit(p.some(x=>x.ID==="nuvio-plugins")?0:1)' "$RUN/body" \
+node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).data||{};const p=d.settings?.presets||d.presets||[];process.exit(p.some(x=>x.ID==="nuvio-plugins")?0:1)' "$RUN/body" \
   && echo "ok   the \"Nuvio plugins\" card is on the configuration page" \
   || { echo "FAIL no \"Nuvio plugins\" card in the presets"; failed=1; }
 
