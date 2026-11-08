@@ -46,7 +46,7 @@ enum SubtitleFontError: LocalizedError, Equatable {
     case badLink
     case download(Int)
     case googleFontsFamily(String)
-    case couldNotSave
+    case couldNotSave(String)
 
     var errorDescription: String? {
         switch self {
@@ -68,8 +68,8 @@ enum SubtitleFontError: LocalizedError, Equatable {
             return "The download failed (HTTP \(status))."
         case let .googleFontsFamily(family):
             return "Google Fonts didn't offer a family called \(family)."
-        case .couldNotSave:
-            return "The font couldn't be saved on this Apple TV."
+        case let .couldNotSave(reason):
+            return "The font couldn't be saved on this Apple TV (\(reason))."
         }
     }
 
@@ -163,8 +163,9 @@ enum SubtitleFontFaces {
     }
 }
 
-/// The fonts the viewer added, kept in Application Support/SubtitleFonts with a list beside them,
-/// and registered for this app at launch so text subtitles, MPV and libass all find them by name.
+/// The fonts the viewer added, kept in Caches/SubtitleFonts with a list beside them (tvOS lets an
+/// app write only to its caches), and registered for this app at launch so text subtitles, MPV and
+/// libass all find them by name.
 @MainActor
 final class SubtitleFontLibrary: ObservableObject {
     static let shared = SubtitleFontLibrary()
@@ -176,7 +177,7 @@ final class SubtitleFontLibrary: ObservableObject {
     private var loading: Task<Void, Never>?
 
     nonisolated static var directory: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         return base.appendingPathComponent("SubtitleFonts", isDirectory: true)
     }
@@ -357,7 +358,7 @@ final class SubtitleFontLibrary: ObservableObject {
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         } catch {
-            throw SubtitleFontError.couldNotSave
+            throw SubtitleFontError.couldNotSave(error.localizedDescription)
         }
         var saved: [SubtitleFont] = []
         for file in files {
@@ -368,7 +369,7 @@ final class SubtitleFontLibrary: ObservableObject {
             do {
                 try file.data.write(to: directory.appendingPathComponent(id), options: .atomic)
             } catch {
-                throw SubtitleFontError.couldNotSave
+                throw SubtitleFontError.couldNotSave(error.localizedDescription)
             }
             saved.append(SubtitleFont(
                 id: id,
