@@ -74,6 +74,13 @@ final class AIOExperimentTests: XCTestCase {
             let streams = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["streams"] as? [[String: Any]] ?? []
             note("AIO-TEST stream request \(attempt): \(streams.count) streams in \(Int(Date().timeIntervalSince(begin) * 1000)) ms; first: \(String(describing: streams.first?["name"] ?? "-"))")
         }
+        // A title asked by two ids: AIOStreams' answers merged, every stream once.
+        let first = try await StreamsRepository.fetchStreams(from: URL(string: streamURL)!, addonName: "AIOStreams", logo: nil)
+        let again = try await StreamsRepository.fetchStreams(from: URL(string: streamURL)!, addonName: "AIOStreams", logo: nil)
+        let merged = StreamsRepository.mergeStreamLists([first, again])
+        note("AIO-TEST merge of two answers: \(first.count) + \(again.count) → \(merged.count)")
+        XCTAssertEqual(merged.count, first.count, "the same answer twice merges into one")
+        XCTAssertTrue(AIOExperiment.isAIOAddon(URL(string: manifest)!), "the addon is recognised as AIOStreams'")
         note("AIO-TEST ready in \(aio.startupSeconds ?? -1) s · Node \(aio.nodeMemoryMB ?? -1) MB · app \(aio.appMemoryMB ?? -1) MB · \(aio.packageVersion)")
         try await waitUntil(seconds: 10) { aio.startupProfile?.contains("first streams") == true }
         note("AIO-TEST times of the start: \(aio.startupProfile ?? "none")")
@@ -102,6 +109,53 @@ final class AIOExperimentTests: XCTestCase {
         XCTAssertEqual(restoredStreams, 200)
         note("AIO-TEST restore: \(AIOExperiment.uuid(fromManifest: restored) ?? "?") replaces \(uuid), streams HTTP \(restoredStreams)")
         note("AIO-TEST log:\n" + aio.logLines.suffix(60).joined(separator: "\n"))
+    }
+
+    /// An AniList title: the ids the AIOStreams addon is asked by, per setting.
+    func testAnimeSearchRequestIDs() {
+        let all: (String) -> Bool = { _ in true }
+        let title = "anilist:16498:5"
+        let alternatives = ["kitsu:7442:5", "tt2560140:1:5"]
+        func ids(_ request: AIOExperiment.AnimeRequest, _ supports: (String) -> Bool = { _ in true }) -> [String] {
+            AIOExperiment.requestIDs(videoId: title, alternatives: alternatives, request: request, supports: supports)
+        }
+        // Anything but an AniList title: its own id, whatever the setting.
+        XCTAssertEqual(AIOExperiment.requestIDs(videoId: "tt0133093", alternatives: [], request: .both, supports: all), ["tt0133093"])
+        XCTAssertEqual(AIOExperiment.requestIDs(videoId: "tt0133093", alternatives: [], request: .both, supports: { _ in false }), [])
+        // An AniList title; of the converted ids IMDb first.
+        XCTAssertEqual(ids(.aniList), [title])
+        XCTAssertEqual(ids(.converted), ["tt2560140:1:5"])
+        XCTAssertEqual(ids(.both), [title, "tt2560140:1:5"])
+        // AIOStreams without anilist add-ons: the converted id, whatever the setting.
+        let noAniList: (String) -> Bool = { !$0.hasPrefix("anilist:") }
+        XCTAssertEqual(ids(.aniList, noAniList), ["tt2560140:1:5"])
+        XCTAssertEqual(ids(.both, noAniList), ["tt2560140:1:5"])
+        // AIOStreams without IMDb add-ons: Kitsu.
+        XCTAssertEqual(ids(.both, { !$0.hasPrefix("tt") }), [title, "kitsu:7442:5"])
+        // No conversion (yet): the AniList id alone.
+        XCTAssertEqual(AIOExperiment.requestIDs(videoId: title, alternatives: [], request: .both, supports: all), [title])
+
+        XCTAssertTrue(AIOExperiment.isAIOAddon(URL(string: "http://127.0.0.1:\(AIOExperiment.aioPort)/stremio/u/p/manifest.json")!))
+        XCTAssertFalse(AIOExperiment.isAIOAddon(URL(string: "https://torrentio.strem.fun/manifest.json")!))
+        XCTAssertFalse(AIOExperiment.isAIOAddon(URL(string: "http://127.0.0.1:\(AIOExperiment.aioPort)/api/v1/health")!))
+    }
+
+    /// Two answers merged: what the second repeats is left out, nothing of the first.
+    func testMergingTwoAnswersKeepsEachStreamOnce() {
+        let hash = "abcdef0123456789abcdef0123456789abcdef01"
+        let a = NuvioStream(url: "https://aio.example/play/1", name: "TB 1080p", description: nil, addonName: "AIO",
+                            filename: "Show.S01E05.1080p.mkv", videoSize: 1_000)
+        // The same file through another debrid service, in the same answer: stays.
+        let aOtherService = NuvioStream(url: "https://aio.example/play/2", name: "RD 1080p", description: nil, addonName: "AIO",
+                                        filename: "Show.S01E05.1080p.mkv", videoSize: 1_000)
+        let b = NuvioStream(url: nil, name: "P2P 720p", description: nil, addonName: "AIO", infoHash: hash, fileIdx: 2)
+        // The second answer: a again (another link), b again, and c.
+        let aAgain = NuvioStream(url: "https://aio.example/play/1?id=tt", name: "TB 1080p", description: nil, addonName: "AIO",
+                                 filename: "show.s01e05.1080p.mkv", videoSize: 1_000)
+        let bAgain = NuvioStream(url: nil, name: "P2P 720p", description: nil, addonName: "AIO", infoHash: hash.uppercased(), fileIdx: 2)
+        let c = NuvioStream(url: "https://aio.example/play/3", name: "TB 2160p", description: nil, addonName: "AIO")
+        let merged = StreamsRepository.mergeStreamLists([[a, aOtherService, b], [aAgain, c, bAgain]])
+        XCTAssertEqual(merged.map(\.name), ["TB 1080p", "RD 1080p", "P2P 720p", "TB 2160p"])
     }
 
     // MARK: - Helpers

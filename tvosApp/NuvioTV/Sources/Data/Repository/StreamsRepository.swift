@@ -325,7 +325,16 @@ final class StreamsRepository: ObservableObject {
         var targets: [StreamAddonTarget] = []
         for url in enabledURLs {
             guard let manifest = manifestsByURL[url] else { continue }
-            guard manifest.supportsResource("stream", type: type, id: videoId) else { continue }
+            // Fork experiment: the AIOStreams addon may be asked by two ids (an AniList title).
+            var requestIds: [String] = []
+            if AIOExperiment.isAIOAddon(url) {
+                requestIds = AIOExperiment.requestIDs(videoId: videoId, alternatives: []) {
+                    manifest.supportsResource("stream", type: type, id: $0)
+                }
+                guard !requestIds.isEmpty else { continue }
+            } else {
+                guard manifest.supportsResource("stream", type: type, id: videoId) else { continue }
+            }
             let displayName = manifest.displayName
                 ?? CinemetaCatalogRepository.streamAddonName(for: url)
             targets.append(
@@ -333,7 +342,8 @@ final class StreamsRepository: ObservableObject {
                     addonId: Self.stableAddonId(manifest: manifest, manifestURL: url),
                     displayName: displayName,
                     manifestURL: url,
-                    logo: manifest.logo
+                    logo: manifest.logo,
+                    requestIds: requestIds
                 )
             )
         }
@@ -376,12 +386,16 @@ final class StreamsRepository: ObservableObject {
         await withTaskGroup(of: GroupUpdate.self) { group in
             for target in targets {
                 group.addTask {
-                    await Self.fetchAddonGroup(target: target, type: type, videoId: videoId)
+                    await Self.fetchAddonGroup(target: target, type: type, videoId: videoId) { [weak self] partial in
+                        await self?.applyPartial(partial, requestKey: requestKey)
+                    }
                 }
             }
             if startingAIO {
                 group.addTask {
-                    await Self.fetchStartingAIOGroup(type: type, videoId: videoId)
+                    await Self.fetchStartingAIOGroup(type: type, videoId: videoId) { [weak self] partial in
+                        await self?.applyPartial(partial, requestKey: requestKey)
+                    }
                 }
             }
             for target in pluginTargets {
@@ -476,7 +490,13 @@ final class StreamsRepository: ObservableObject {
         let displayName: String
         let manifestURL: URL
         let logo: String?
+        /// The ids it is asked by; [] = the title's own. Two (fork experiment:
+        /// the AIOStreams addon for an AniList title): asked by both at once,
+        /// the streams merged.
+        var requestIds: [String] = []
     }
+
+    typealias PartialGroupHandler = @Sendable (AddonStreamGroup) async -> Void
 
     private struct GroupUpdate {
         let addonId: String
@@ -488,22 +508,40 @@ final class StreamsRepository: ObservableObject {
 
     /// Waits (up to 20 s) for AIOStreams to start, then asks its addon like
     /// any other; the group replaces the waiting one.
-    private static func fetchStartingAIOGroup(type: String, videoId: String) async -> GroupUpdate {
+    private static func fetchStartingAIOGroup(
+        type: String,
+        videoId: String,
+        onPartial: PartialGroupHandler? = nil
+    ) async -> GroupUpdate {
         let waiting = AddonStreamGroup(addonId: startingAIOGroupID, displayName: "AIOStreams", streams: [], isLoading: false, error: nil)
         guard let url = await AIOExperiment.waitForAddon(seconds: 20) else {
             return GroupUpdate(addonId: startingAIOGroupID, group: waiting)
         }
         let manifests = await loadManifestsConcurrently(urls: [url])
-        guard let manifest = manifests[url], manifest.supportsResource("stream", type: type, id: videoId) else {
+        guard let manifest = manifests[url] else {
+            return GroupUpdate(addonId: startingAIOGroupID, group: waiting)
+        }
+        let requestIds = AIOExperiment.requestIDs(videoId: videoId, alternatives: []) {
+            manifest.supportsResource("stream", type: type, id: $0)
+        }
+        guard !requestIds.isEmpty else {
             return GroupUpdate(addonId: startingAIOGroupID, group: waiting)
         }
         let target = StreamAddonTarget(
             addonId: stableAddonId(manifest: manifest, manifestURL: url),
             displayName: manifest.displayName ?? CinemetaCatalogRepository.streamAddonName(for: url),
             manifestURL: url,
-            logo: manifest.logo
+            logo: manifest.logo,
+            requestIds: requestIds
         )
-        let update = await fetchAddonGroup(target: target, type: type, videoId: videoId)
+        // The first of two answers goes in the waiting group's place.
+        let waitingID = startingAIOGroupID
+        let partial: PartialGroupHandler? = onPartial.map { handler -> PartialGroupHandler in
+            { group in
+                await handler(AddonStreamGroup(addonId: waitingID, displayName: group.displayName, streams: group.streams, isLoading: true, error: nil))
+            }
+        }
+        let update = await fetchAddonGroup(target: target, type: type, videoId: videoId, onPartial: partial)
         return GroupUpdate(addonId: startingAIOGroupID, group: update.group)
     }
 
@@ -523,13 +561,18 @@ final class StreamsRepository: ObservableObject {
     private static func fetchAddonGroup(
         target: StreamAddonTarget,
         type: String,
-        videoId: String
+        videoId: String,
+        onPartial: PartialGroupHandler? = nil
     ) async -> GroupUpdate {
+        let ids = target.requestIds.isEmpty ? [videoId] : target.requestIds
+        if ids.count > 1 {
+            return await fetchMergedAddonGroup(target: target, type: type, ids: ids, onPartial: onPartial)
+        }
         guard let streamURL = AddonTransportUrls.buildResourceURL(
             manifestURL: target.manifestURL,
             resource: "stream",
             type: type,
-            id: videoId
+            id: ids[0]
         ) else {
             return GroupUpdate(
                 addonId: target.addonId,
@@ -544,17 +587,7 @@ final class StreamsRepository: ObservableObject {
         }
 
         do {
-            var attempt = 0
-            var streams: [NuvioStream] = []
-            while true {
-                do {
-                    streams = try await fetchStreams(from: streamURL, addonName: target.displayName, logo: target.logo)
-                    break
-                } catch {
-                    guard attempt == 0, StreamRequestRetryPolicy.shouldRetry(error) else { throw error }
-                    attempt += 1
-                }
-            }
+            let streams = try await fetchStreamsRetrying(from: streamURL, target: target)
             let presentedStreams = await DebridStreamPresentation.present(streams: streams)
             return GroupUpdate(
                 addonId: target.addonId,
@@ -582,6 +615,126 @@ final class StreamsRepository: ObservableObject {
                 )
             )
         }
+    }
+
+    /// One retry for a connection that broke off before an answer.
+    private static func fetchStreamsRetrying(from streamURL: URL, target: StreamAddonTarget) async throws -> [NuvioStream] {
+        var attempt = 0
+        while true {
+            do {
+                return try await fetchStreams(from: streamURL, addonName: target.displayName, logo: target.logo)
+            } catch {
+                guard attempt == 0, StreamRequestRetryPolicy.shouldRetry(error) else { throw error }
+                attempt += 1
+            }
+        }
+    }
+
+    /// Fork experiment: the AIOStreams addon asked by two ids at once (an
+    /// AniList title, AIOStreams' "Anime searches"). The first answer shows
+    /// at once; the group is the streams of both, in the order of the ids,
+    /// each once. The times go to the AIOStreams log and sheet.
+    private static func fetchMergedAddonGroup(
+        target: StreamAddonTarget,
+        type: String,
+        ids: [String],
+        onPartial: PartialGroupHandler?
+    ) async -> GroupUpdate {
+        let begin = Date()
+        var results: [Int: Result<[NuvioStream], Error>] = [:]
+        var seconds: [Int: TimeInterval] = [:]
+        await withTaskGroup(of: (Int, Result<[NuvioStream], Error>, TimeInterval).self) { group in
+            for (index, id) in ids.enumerated() {
+                group.addTask {
+                    let start = Date()
+                    guard let url = AddonTransportUrls.buildResourceURL(
+                        manifestURL: target.manifestURL, resource: "stream", type: type, id: id
+                    ) else {
+                        return (index, .failure(URLError(.badURL)), 0)
+                    }
+                    do {
+                        let streams = try await fetchStreamsRetrying(from: url, target: target)
+                        return (index, .success(streams), Date().timeIntervalSince(start))
+                    } catch {
+                        return (index, .failure(error), Date().timeIntervalSince(start))
+                    }
+                }
+            }
+            for await (index, result, took) in group {
+                results[index] = result
+                seconds[index] = took
+                if results.count < ids.count, let onPartial, case .success(let streams) = result, !streams.isEmpty {
+                    let presented = await DebridStreamPresentation.present(streams: streams)
+                    await onPartial(AddonStreamGroup(addonId: target.addonId, displayName: target.displayName, streams: presented, isLoading: true, error: nil))
+                }
+            }
+        }
+        let lists = ids.indices.compactMap { try? results[$0]?.get() }
+        let merged = mergeStreamLists(lists)
+        let parts = ids.indices.map { index -> String in
+            let id = ids[index]
+            let took = String(format: "%.1f s", seconds[index] ?? 0)
+            switch results[index] {
+            case .success(let streams): return "\(id) \(streams.count) in \(took)"
+            case .failure(let error): return "\(id) failed (\((error as? URLError)?.code == .timedOut ? "timed out" : error.localizedDescription)) after \(took)"
+            case .none: return "\(id) -"
+            }
+        }
+        let summary = parts.joined(separator: " · ")
+            + " · together \(merged.count) in \(String(format: "%.1f s", Date().timeIntervalSince(begin)))"
+        AIOExperiment.shared.noteAnimeSearch(summary)
+
+        guard !lists.isEmpty else {
+            var message = "No answer"
+            if case .failure(let error) = results[0] {
+                message = (error as? URLError)?.code == .timedOut ? "Timed out" : error.localizedDescription
+            }
+            return GroupUpdate(
+                addonId: target.addonId,
+                group: AddonStreamGroup(addonId: target.addonId, displayName: target.displayName, streams: [], isLoading: false, error: message)
+            )
+        }
+        let presented = await DebridStreamPresentation.present(streams: merged)
+        return GroupUpdate(
+            addonId: target.addonId,
+            group: AddonStreamGroup(addonId: target.addonId, displayName: target.displayName, streams: presented, isLoading: false, error: nil)
+        )
+    }
+
+    /// Answers of one add-on to several requests as one list, in order: a
+    /// stream a later answer repeats is left out — the same address, or the
+    /// same torrent file or file (name and size) under the same name (so the
+    /// same file through two debrid services stays twice). Within one answer
+    /// nothing is left out.
+    nonisolated static func mergeStreamLists(_ lists: [[NuvioStream]]) -> [NuvioStream] {
+        var seen = Set<String>()
+        var merged: [NuvioStream] = []
+        for list in lists {
+            var added = Set<String>()
+            for stream in list {
+                let keys = streamIdentityKeys(stream)
+                if keys.contains(where: seen.contains) { continue }
+                merged.append(stream)
+                added.formUnion(keys)
+            }
+            seen.formUnion(added)
+        }
+        return merged
+    }
+
+    nonisolated private static func streamIdentityKeys(_ stream: NuvioStream) -> [String] {
+        let label = stream.name ?? ""
+        var keys: [String] = []
+        if let url = stream.url, !url.isEmpty {
+            keys.append("url:\(url)")
+        }
+        if let hash = stream.infoHash?.lowercased(), !hash.isEmpty {
+            keys.append("hash:\(hash):\(stream.fileIdx ?? -1):\(label)")
+        }
+        if let file = stream.filename?.lowercased(), !file.isEmpty, let size = stream.videoSize, size > 0 {
+            keys.append("file:\(file):\(size):\(label)")
+        }
+        return keys
     }
 
     enum StreamRequestRetryPolicy {

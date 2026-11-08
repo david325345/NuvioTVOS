@@ -18874,6 +18874,16 @@ private struct AIOExperimentSheet: View {
                     accentColor: accentColor
                 )
 
+                SettingsActionRow(
+                    title: "Anime searches",
+                    subtitle: "With the AniList integration, an AniList title: \(aio.animeRequest.explanation)"
+                        + (aio.lastAnimeSearch.map { "\nLast: \($0)" } ?? ""),
+                    value: aio.animeRequest.label,
+                    accentColor: accentColor
+                ) {
+                    aio.cycleAnimeRequest()
+                }
+
                 if let previous = aio.previousRun, aio.phase == .stopped || previous.unexpected {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Last run" + (previous.date.map { " · " + $0.formatted(date: .abbreviated, time: .shortened) } ?? ""))

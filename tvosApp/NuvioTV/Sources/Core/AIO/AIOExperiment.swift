@@ -51,6 +51,7 @@ final class AIOExperiment: ObservableObject {
     private nonisolated static let sourceKey = "aio.experiment.source"
     private nonisolated static let usePreviousKey = "aio.experiment.usePrevious"
     private nonisolated static let versionKey = "aio.experiment.version"
+    private nonisolated static let animeRequestKey = "aio.experiment.animeRequest"
     /// AIOStreams' official image.
     nonisolated static let defaultSource = "ghcr.io/viren070/aiostreams"
     /// Nuvio's own port in nuvio-main.mjs (versions), 127.0.0.1 only.
@@ -71,6 +72,33 @@ final class AIOExperiment: ObservableObject {
     enum RunKind: String {
         case aio
         case nodeTest = "node-test"
+    }
+
+    /// Which id the AIOStreams addon is asked by for an AniList title (with
+    /// the AniList integration). AIOStreams passes an id on unchanged, and
+    /// only to its add-ons that take it: by its AniList id only the anilist
+    /// add-ons answer (NimeToDex, TorBox Search, SeaDex…), by the converted
+    /// IMDb / Kitsu id all the others. Both: two requests at once, merged.
+    enum AnimeRequest: String, CaseIterable {
+        case aniList = "anilist"
+        case converted
+        case both
+
+        var label: String {
+            switch self {
+            case .aniList: return "AniList ID"
+            case .converted: return "Converted ID"
+            case .both: return "Both"
+            }
+        }
+
+        var explanation: String {
+            switch self {
+            case .aniList: return "Only AIOStreams' add-ons that take AniList ids answer"
+            case .converted: return "Asked by the IMDb or Kitsu id: the add-ons that take AniList ids are left out"
+            case .both: return "Asked by both at once, the streams merged: every add-on answers"
+            }
+        }
     }
 
     /// How the previous app run ended, from its log file.
@@ -107,6 +135,9 @@ final class AIOExperiment: ObservableObject {
     @Published private(set) var usePreviousAtNextStart = false
     /// When what happened in this start, in seconds after Nuvio opened.
     @Published private(set) var startupProfile: String?
+    @Published private(set) var animeRequest: AnimeRequest
+    /// The last search by both ids: how long each took, how many streams.
+    @Published private(set) var lastAnimeSearch: String?
 
     private var stateTimer: Timer?
     /// From Nuvio opening to Node.js being started.
@@ -136,6 +167,7 @@ final class AIOExperiment: ObservableObject {
         source = UserDefaults.standard.string(forKey: Self.sourceKey) ?? Self.defaultSource
         packageVersion = UserDefaults.standard.string(forKey: Self.versionKey) ?? ""
         usePreviousAtNextStart = UserDefaults.standard.bool(forKey: Self.usePreviousKey)
+        animeRequest = Self.animeRequestSetting
         hasBackup = Self.loadBackup() != nil
         loadPreviousRun()
         let center = NotificationCenter.default
@@ -218,6 +250,62 @@ final class AIOExperiment: ObservableObject {
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
         return nil
+    }
+
+    // MARK: - Anime searches (AniList titles)
+
+    nonisolated static var animeRequestSetting: AnimeRequest {
+        UserDefaults.standard.string(forKey: animeRequestKey).flatMap(AnimeRequest.init(rawValue:)) ?? .both
+    }
+
+    func setAnimeRequest(_ request: AnimeRequest) {
+        animeRequest = request
+        UserDefaults.standard.set(request.rawValue, forKey: Self.animeRequestKey)
+    }
+
+    /// The next choice, for the row in the sheet.
+    func cycleAnimeRequest() {
+        let all = AnimeRequest.allCases
+        let index = all.firstIndex(of: animeRequest) ?? 0
+        setAnimeRequest(all[(index + 1) % all.count])
+    }
+
+    /// Is `manifestURL` the addon of the AIOStreams running here (its own
+    /// address, or the configuration page's one added by hand)?
+    nonisolated static func isAIOAddon(_ manifestURL: URL) -> Bool {
+        guard let port = manifestURL.port, port == aioPort || port == lanPort,
+              manifestURL.path.contains("/stremio/") else { return false }
+        if manifestURL.host == "127.0.0.1" { return true }
+        return manifestURL.host == PluginHTTPServerCore.localIPv4Address()
+    }
+
+    /// The ids the AIOStreams addon is asked by for `videoId`; [] = none it
+    /// takes. An AniList title (`anilist:…`) goes by the setting, with
+    /// `alternatives` — the other ids it could be asked by, best first (the
+    /// AniList integration's conversion) — of which an IMDb id comes first.
+    /// Anything else: `videoId` alone. `supports`: whether AIOStreams'
+    /// manifest takes an id.
+    nonisolated static func requestIDs(
+        videoId: String,
+        alternatives: [String],
+        request: AnimeRequest = animeRequestSetting,
+        supports: (String) -> Bool
+    ) -> [String] {
+        let own = supports(videoId) ? videoId : nil
+        guard videoId.hasPrefix("anilist:") else { return own.map { [$0] } ?? [] }
+        let usable = alternatives.filter { $0 != videoId && supports($0) }
+        let converted = usable.first { $0.hasPrefix("tt") } ?? usable.first
+        switch request {
+        case .aniList: return [own ?? converted].compactMap { $0 }
+        case .converted: return [converted ?? own].compactMap { $0 }
+        case .both: return [own, converted].compactMap { $0 }
+        }
+    }
+
+    /// A search by both ids: in the log and the sheet.
+    func noteAnimeSearch(_ text: String) {
+        lastAnimeSearch = text
+        Self.note("search by both ids: \(text)")
     }
 
     nonisolated static func uuid(fromManifest manifest: String) -> String? {
