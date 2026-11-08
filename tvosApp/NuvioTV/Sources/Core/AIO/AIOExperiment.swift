@@ -428,6 +428,12 @@ final class AIOExperiment: ObservableObject {
         let stateFile = dataDirectory.appendingPathComponent("nuvio-state.json")
         let backupFile = dataDirectory.appendingPathComponent("nuvio-backup.json")
         try? fileManager.removeItem(at: stateFile)
+        // Written whenever Nuvio comes back from the Home screen (pokeNode()).
+        let wakeFile = dataDirectory.appendingPathComponent("nuvio-wake")
+        if !fileManager.fileExists(atPath: wakeFile.path) {
+            fileManager.createFile(atPath: wakeFile.path, contents: Data())
+        }
+        Self.wakeFile = wakeFile
 
         let host = Self.localIPv4Address() ?? "127.0.0.1"
         let environment: [String: String] = [
@@ -441,6 +447,7 @@ final class AIOExperiment: ObservableObject {
             "NUVIO_LAN_PORT": String(Self.lanPort),
             "NUVIO_STATE_FILE": stateFile.path,
             "NUVIO_BACKUP_FILE": backupFile.path,
+            "NUVIO_WAKE_FILE": wakeFile.path,
             "BASE_URL": "http://\(host):\(Self.lanPort)",
             "DATABASE_URI": "sqlite://" + (dataDirectory.appendingPathComponent("db.sqlite").path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? ""),
             "DISK_CACHE_DIR": cache.path,
@@ -938,14 +945,18 @@ final class AIOExperiment: ObservableObject {
     }
 
     /// Back from the Home screen. tvOS takes a suspended app's ports away,
-    /// even after a few seconds; nuvio-main.mjs checks its port every second
-    /// and listens again within about a second. Until AIOStreams answers again
+    /// even after a few seconds, so Nuvio can't tell Node.js through them:
+    /// it writes to a file Node.js watches (``pokeNode()``), and Node.js checks
+    /// its port and listens again within milliseconds. Until AIOStreams answers again
     /// (at most ``wakingSeconds``), requests to it wait (``waitWhileWaking(for:)``)
     /// instead of failing. After a minute or more away it is warmed up again:
     /// its connections to add-ons and debrid have gone stale.
     private func enteredForeground() {
         defer { backgroundSince = nil }
-        guard runKind == .aio, phase == .running, let since = backgroundSince else { return }
+        guard runKind == .aio, phase == .running else { return }
+        // Every time: Node.js checks its ports at once (nuvio-main.mjs).
+        Self.pokeNode()
+        guard let since = backgroundSince else { return }
         let away = Date().timeIntervalSince(since)
         let back = Date()
         Self.setWaking(until: back.addingTimeInterval(Self.wakingSeconds))
@@ -964,6 +975,17 @@ final class AIOExperiment: ObservableObject {
             ))
             if answers, away > 60 { await warmUp(unlessSearchSince: back) }
         }
+    }
+
+    private nonisolated(unsafe) static var wakeFile: URL?
+
+    /// Wakes Node.js up: a write to `NUVIO_WAKE_FILE`, in place, so the watch
+    /// on it (kqueue) stays.
+    private static func pokeNode() {
+        guard let file = wakeFile, let handle = try? FileHandle(forWritingTo: file) else { return }
+        defer { try? handle.close() }
+        try? handle.truncate(atOffset: 0)
+        try? handle.write(contentsOf: Data(String(Date().timeIntervalSince1970).utf8))
     }
 
     /// How long requests to AIOStreams wait for it after Nuvio comes back.

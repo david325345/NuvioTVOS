@@ -12,6 +12,8 @@
 //                     for an update, install it for the next start
 //   NUVIO_AIO_HOME, NUVIO_AIO_SOURCE, NUVIO_AIO_CURRENT, NUVIO_AIO_VERSION
 //                     the versions (set by bootstrap.mjs)
+//   NUVIO_WAKE_FILE   a file Nuvio writes to whenever it comes back from the
+//                     Home screen: the ports are checked at once (watchForWakeUps)
 //   NUVIO_FFPROBE_URL Nuvio's endpoint for probing files, once Nuvio has
 //                     one: AIOStreams' ffprobe then goes there
 //                     (ffprobe-bridge.mjs, FFPROBE.md)
@@ -50,6 +52,7 @@ const controlToken = process.env.NUVIO_CONTROL_TOKEN || '';
 const aioHome = process.env.NUVIO_AIO_HOME;
 const aioSource = process.env.NUVIO_AIO_SOURCE || '';
 const currentVersion = process.env.NUVIO_AIO_VERSION || '';
+const wakeFile = process.env.NUVIO_WAKE_FILE || '';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -529,26 +532,31 @@ function refuses(port) {
 
 // tvOS takes the ports of a suspended app away, even after a few seconds on
 // the Home screen, and the servers don't learn it: nothing answers on them
-// any more. Every second this checks that AIOStreams' port still takes
-// connections (a connection to itself on 127.0.0.1, closed at once); when
-// it is refused, all three servers listen again — within about a second of
-// Nuvio coming back.
+// any more, and nobody can tell Node.js through them. So whenever Nuvio comes
+// back it writes to NUVIO_WAKE_FILE; Node.js watches that file (no polling)
+// and checks at once whether AIOStreams' port still takes connections (a
+// connection to itself on 127.0.0.1, closed at once). When it is refused, all
+// three servers listen again — within milliseconds of Nuvio coming back.
+// Besides that the port is checked after Node.js itself was asleep and every
+// 30 s (every second when the file can't be watched).
 function watchForWakeUps() {
   let last = Date.now();
+  let lastCheck = Date.now();
   let busy = false;
   let quietUntil = 0;
-  setInterval(() => {
+  let watching = false;
+
+  const check = (why) => {
     const now = Date.now();
-    const asleep = now - last;
-    last = now;
     if (!listening || busy || now < quietUntil) return;
     busy = true;
+    lastCheck = now;
     refuses(aioPort)
       .then((refused) => {
         if (!refused) return;
         wakeUps++;
         quietUntil = Date.now() + 3000;
-        log(`${asleep > 2500 ? `back after ${Math.round(asleep / 1000)} s asleep, ` : ''}the ports were gone: listening again (AIOStreams, configuration page, Nuvio's port)`);
+        log(`${why}: the ports were gone, listening again (AIOStreams, configuration page, Nuvio's port)`);
         listenAgain(aioServer, aioPort, '127.0.0.1', 'AIOStreams');
         listenAgain(proxyServer, lanPort, '0.0.0.0', 'configuration page');
         listenAgain(controlServer, controlPort, '127.0.0.1', "Nuvio's port");
@@ -556,6 +564,36 @@ function watchForWakeUps() {
       })
       .catch(() => {})
       .finally(() => { busy = false; });
+  };
+
+  const watchWakeFile = () => {
+    const watcher = fs.watch(wakeFile, { persistent: false }, (event) => {
+      check('Nuvio is back from the Home screen');
+      if (event === 'rename') {
+        // Replaced instead of written: watch the new file.
+        watcher.close();
+        watching = false;
+        setTimeout(() => { try { watchWakeFile(); } catch {} }, 200);
+      }
+    });
+    watcher.on('error', () => { watching = false; });
+    watching = true;
+  };
+  if (wakeFile) {
+    try {
+      if (!fs.existsSync(wakeFile)) fs.writeFileSync(wakeFile, '');
+      watchWakeFile();
+    } catch (error) {
+      log(`Nuvio can't wake Node.js up (${error && error.message ? error.message : error}): the port is checked every second`);
+    }
+  }
+
+  setInterval(() => {
+    const now = Date.now();
+    const asleep = now - last;
+    last = now;
+    if (asleep > 2500) check(`back after ${Math.round(asleep / 1000)} s asleep`);
+    else if (now - lastCheck >= (watching ? 30000 : 1000)) check('regular check');
   }, 1000).unref();
 }
 
