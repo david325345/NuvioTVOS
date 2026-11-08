@@ -117,4 +117,41 @@ echo "memory a minute later (background downloads): $(ps -o rss= -p $PID 2>/dev/
 kill $PID 2>/dev/null; wait $PID 2>/dev/null
 echo "--- log (last 60 lines) ---"; tail -60 "$RUN/aio.log"
 echo "--- errors in log ---"; grep -iE "error|fail|cannot|not found" "$RUN/aio.log" | grep -v '"level":30' | head -30 || true
+echo "--- times of the first start ---"; grep -F '[nuvio] start (' "$RUN/aio.log" || true
+
+# A second start, like every start after the first one: the version is
+# installed and AIOStreams' data is on disk. Its data refreshes wait until it
+# answers and is quiet (nuvio-main.mjs); a search goes out at once.
+echo "--- second start ---"
+rm -f "$NUVIO_STATE_FILE"
+export NUVIO_T0_MS=$(( $(date +%s%N) / 1000000 ))
+node --jitless --max-old-space-size=1024 --import "$RUN/wasm/preload.mjs" "$INSTALLER/bootstrap.mjs" > "$RUN/aio2.log" 2>&1 &
+PID=$!
+for _ in $(seq 1 3000); do
+  grep -q '"status": "running"' "$NUVIO_STATE_FILE" 2>/dev/null && break
+  grep -qE '"status": "(not answering|failed)"' "$NUVIO_STATE_FILE" 2>/dev/null && break
+  kill -0 $PID 2>/dev/null || break
+  sleep 0.1
+done
+echo "second start: answering after $(( $(date +%s%N) / 1000000 - NUVIO_T0_MS )) ms"
+grep -q '"status": "running"' "$NUVIO_STATE_FILE" 2>/dev/null || { echo "FAIL second start"; failed=1; }
+if [ -n "$MANIFEST" ]; then
+  t0=$(date +%s%N)
+  check "stream request right after the second start" 200 "${MANIFEST%/manifest.json}/stream/movie/tt0133093.json"
+  echo "took $(( ($(date +%s%N) - t0) / 1000000 )) ms"
+fi
+echo "activity: $(curl -s -H "x-nuvio-token: $NUVIO_CONTROL_TOKEN" "$CONTROL/activity")"
+for _ in $(seq 1 150); do
+  grep -qF '[nuvio] start (data refreshed)' "$RUN/aio2.log" && break
+  kill -0 $PID 2>/dev/null || break
+  sleep 1
+done
+echo "--- times of the second start ---"
+grep -F '[nuvio] start (' "$RUN/aio2.log" || { echo "FAIL no times of the start in the log"; failed=1; }
+grep -qF '[nuvio] start (data refreshed)' "$RUN/aio2.log" && echo "ok   held data refreshes ran after the start" \
+  || echo "note: no held data refreshes ran (none held, or still waiting)"
+check "health after the refreshes" 200 "$LAN/api/v1/health"
+kill $PID 2>/dev/null; wait $PID 2>/dev/null
+echo "--- second start: log (last 40 lines) ---"; tail -40 "$RUN/aio2.log"
+echo "--- second start: errors in log ---"; grep -iE "error|fail|cannot|not found" "$RUN/aio2.log" | grep -v '"level":30' | head -30 || true
 exit $failed

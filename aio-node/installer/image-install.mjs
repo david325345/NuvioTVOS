@@ -487,7 +487,8 @@ function moveInto(source, target) {
 
 // MARK: shims and clean-up
 
-const SHIMS = { 'better-sqlite3': 'better-sqlite3', bcrypt: 'bcrypt', yencode: 'yencode', '@viren070/fsmux-fuse': 'fsmux-fuse' };
+// FUSE's package was renamed after v2.37.0 (@viren070 → @aiostreams).
+const SHIMS = { 'better-sqlite3': 'better-sqlite3', bcrypt: 'bcrypt', yencode: 'yencode', '@viren070/fsmux-fuse': 'fsmux-fuse', '@aiostreams/fsmux-fuse': 'fsmux-fuse' };
 
 function walk(folder, visit) {
   for (const entry of fs.readdirSync(folder, { withFileTypes: true })) {

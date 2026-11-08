@@ -20,11 +20,20 @@
 // (session + GET) and saving changes (PUT). From those Nuvio gets the addon
 // address (NUVIO_STATE_FILE) — nothing to copy by hand — and a backup of the
 // configuration: tvOS keeps AIOStreams' database in Caches, which it may clear.
+//
+// A sooner start: AIOStreams refreshes its data (anime databases, datasets,
+// templates) from the internet before it answers. Those refreshes wait here
+// until it answers and nobody is searching, and then run as AIOStreams would
+// have run them; until then it works with the data it has on disk. Nuvio
+// learns that AIOStreams answers the moment it starts listening, and the
+// times of the start (NUVIO_T0_MS: when Nuvio started Node.js) go to the
+// state file and the log.
 import http from 'node:http';
 import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const aioRoot = process.env.AIO_ROOT;
@@ -38,11 +47,79 @@ const aioHome = process.env.NUVIO_AIO_HOME;
 const aioSource = process.env.NUVIO_AIO_SOURCE || '';
 const currentVersion = process.env.NUVIO_AIO_VERSION || '';
 const here = path.dirname(fileURLToPath(import.meta.url));
-const started = Date.now();
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function log(message) {
   console.log(`[nuvio] ${message}`);
 }
+
+// MARK: times of the start (seconds after Nuvio started Node.js)
+
+const startup = globalThis.nuvioStartup || { t0: Number(process.env.NUVIO_T0_MS) || Date.now(), marks: {} };
+globalThis.nuvioStartup = startup;
+const sinceStart = () => Number(((Date.now() - startup.t0) / 1000).toFixed(2));
+function mark(name) {
+  if (startup.marks[name] === undefined) startup.marks[name] = sinceStart();
+}
+mark('main');
+
+function startupLine() {
+  const m = startup.marks;
+  const parts = [];
+  for (const [key, label] of [['node', 'Node.js'], ['main', 'installer done'], ['core', 'AIOStreams core loaded'], ['loaded', 'AIOStreams loaded'], ['listening', 'listening'], ['ready', 'answering']]) {
+    if (m[key] !== undefined) parts.push(`${label} ${m[key]}`);
+  }
+  if (m.firstAsked !== undefined) {
+    parts.push(`first streams asked ${m.firstAsked}${m.firstAnswered !== undefined ? `, answered ${m.firstAnswered} (HTTP ${startup.firstStatus})` : ''}`);
+  }
+  if (held.length) {
+    parts.push(startup.heldSeconds !== undefined
+      ? `${held.length} data refreshes after the start (${startup.heldSeconds} s, done ${m.refreshed})`
+      : `${held.length} data refreshes held until after the start`);
+  }
+  return parts.join(' · ');
+}
+
+function reportStartup(what) {
+  log(`start (${what}), seconds after Nuvio started Node.js: ${startupLine()}`);
+  try {
+    writeState({ startup: { ...startup.marks, firstStatus: startup.firstStatus, held: held.length, heldSeconds: startup.heldSeconds } });
+  } catch {}
+}
+
+// MARK: AIOStreams' own server
+
+// What AIOStreams answers: stream searches (Nuvio's warm-up, marked with
+// x-nuvio-warmup, apart) and how many requests are open, for the warm-up
+// and the held refreshes.
+const activity = { streamRequests: 0, open: 0, lastEnd: 0 };
+
+function watchRequest(request, response) {
+  const stream = /\/stream\//.test(request.url || '');
+  const warmUp = request.headers['x-nuvio-warmup'] === '1';
+  const first = stream && !warmUp && activity.streamRequests === 0;
+  if (stream && !warmUp) activity.streamRequests++;
+  if (first) mark('firstAsked');
+  activity.open++;
+  let done = false;
+  const end = () => {
+    if (done) return;
+    done = true;
+    activity.open--;
+    activity.lastEnd = Date.now();
+    if (first) {
+      mark('firstAnswered');
+      startup.firstStatus = response.statusCode;
+      reportStartup('first streams');
+    }
+  };
+  response.on('finish', end);
+  response.on('close', end);
+}
+
+let listening = false;
+let resolveListening;
+const listeningNow = new Promise((resolve) => { resolveListening = resolve; });
 
 // AIOStreams calls app.listen(PORT), which listens on every interface. Here
 // only the proxy below is reachable from the network.
@@ -50,10 +127,74 @@ const originalListen = net.Server.prototype.listen;
 net.Server.prototype.listen = function (...args) {
   if (args[0] === aioPort || args[0] === String(aioPort)) {
     const callback = args.find((value) => typeof value === 'function');
+    this.once('listening', () => {
+      listening = true;
+      refreshesHeld = false;
+      mark('listening');
+      resolveListening();
+    });
+    if (this instanceof http.Server) this.on('request', watchRequest);
     return originalListen.call(this, aioPort, '127.0.0.1', callback);
   }
   return originalListen.apply(this, args);
 };
+
+// MARK: data refreshes after the start
+
+// Refreshes AIOStreams runs on its own (TaskManager.runNow) before it listens:
+// anime databases, datasets, remote templates. Held, they report success at
+// once; AIOStreams carries on with what it has on disk (a dataset it has
+// never downloaded comes with the refresh). Only these kinds: anything else
+// runs as usual, and after AIOStreams listens nothing is held.
+const HELD_KINDS = new Set(['data-sync', 'templates']);
+const held = [];
+let refreshesHeld = true;
+let runHeld = null;
+
+async function holdStartupRefreshes() {
+  try {
+    const resolve = createRequire(path.join(aioRoot, 'packages/server/dist/server.js')).resolve;
+    const core = await import(pathToFileURL(resolve('@aiostreams/core')).href);
+    mark('core');
+    const tasks = core.TaskManager;
+    if (!tasks || typeof tasks.runNow !== 'function' || typeof tasks.get !== 'function') {
+      log('data refreshes stay in the start: no TaskManager in this AIOStreams');
+      return;
+    }
+    const runNow = tasks.runNow;
+    tasks.runNow = function (id, ...rest) {
+      const task = refreshesHeld ? tasks.get(id) : null;
+      if (task && HELD_KINDS.has(task.category)) {
+        if (!held.includes(id)) held.push(id);
+        return Promise.resolve({ ok: true, message: 'after the start (Nuvio)' });
+      }
+      return runNow.call(tasks, id, ...rest);
+    };
+    runHeld = (id) => runNow.call(tasks, id);
+  } catch (error) {
+    log(`data refreshes stay in the start: ${error && error.message ? error.message : error}`);
+  }
+}
+
+/** The held refreshes, once AIOStreams has answered for a while and is quiet. */
+async function runHeldRefreshes() {
+  if (!runHeld || !held.length) return;
+  await sleep(10000);
+  const latest = Date.now() + 60000;
+  while (Date.now() < latest && (activity.open > 0 || Date.now() - activity.lastEnd < 3000)) await sleep(500);
+  const begin = Date.now();
+  for (const id of held) {
+    try {
+      const result = await runHeld(id);
+      if (result && result.ok === false) log(`refresh ${id}: ${result.message || 'failed'}`);
+    } catch (error) {
+      log(`refresh ${id}: ${error && error.message ? error.message : error}`);
+    }
+  }
+  startup.heldSeconds = Number(((Date.now() - begin) / 1000).toFixed(1));
+  mark('refreshed');
+  reportStartup('data refreshed');
+}
 
 function writeState(update) {
   if (!stateFile) return;
@@ -275,6 +416,9 @@ function startControl() {
         if (request.method === 'POST' && update.state !== 'running') void runUpdate();
         return send(request.method === 'POST' ? 202 : 200, update);
       }
+      if (request.method === 'GET' && request.url === '/activity') {
+        return send(200, { streamRequests: activity.streamRequests, open: activity.open, startup: startup.marks });
+      }
       send(404, { error: 'not found' });
     } catch (error) {
       send(500, { error: String(error && error.message ? error.message : error) });
@@ -294,18 +438,24 @@ function markReady() {
   }).catch((error) => log(`versions: ${error.message}`));
 }
 
-async function waitUntilReady() {
-  for (let attempt = 0; attempt < 600; attempt++) {
-    const ok = await new Promise((resolve) => {
-      const request = http.get({ host: '127.0.0.1', port: aioPort, path: '/api/v1/health', timeout: 2000 }, (answer) => {
-        answer.resume();
-        resolve((answer.statusCode || 0) < 500);
-      });
-      request.on('error', () => resolve(false));
-      request.on('timeout', () => { request.destroy(); resolve(false); });
+function healthy() {
+  return new Promise((resolve) => {
+    const request = http.get({ host: '127.0.0.1', port: aioPort, path: '/api/v1/health', timeout: 2000 }, (answer) => {
+      answer.resume();
+      resolve((answer.statusCode || 0) < 500);
     });
-    if (ok) return true;
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    request.on('error', () => resolve(false));
+    request.on('timeout', () => { request.destroy(); resolve(false); });
+  });
+}
+
+/** Asks the moment AIOStreams listens (every 0.5 s in case that goes unseen). */
+async function waitUntilReady() {
+  const deadline = Date.now() + 5 * 60000;
+  while (Date.now() < deadline) {
+    if (!listening) await Promise.race([listeningNow, sleep(500)]);
+    if (await healthy()) return true;
+    if (listening) await sleep(50);
   }
   return false;
 }
@@ -333,18 +483,25 @@ process.chdir(aioRoot);
 startProxy();
 startControl();
 log(`starting AIOStreams from ${aioRoot} (node ${process.version}, ${process.arch}, jitless: ${process.execArgv.includes('--jitless') || process.versions.mobile ? 'yes' : 'no'})`);
+await holdStartupRefreshes();
 try {
   await import(pathToFileURL(path.join(aioRoot, 'packages/server/dist/server.js')).href);
+  mark('loaded');
 } catch (error) {
   log(`AIOStreams failed to load: ${error && error.stack ? error.stack : error}`);
   writeState({ status: 'failed', error: String(error && error.message ? error.message : error) });
   throw error;
 }
 const ready = await waitUntilReady();
-const seconds = ((Date.now() - started) / 1000).toFixed(1);
+if (ready) mark('ready');
+const seconds = sinceStart().toFixed(1);
 const memory = Math.round(process.memoryUsage().rss / 1048576);
 writeState({ status: ready ? 'running' : 'not answering', startupSeconds: Number(seconds), rssMB: memory });
-if (ready) markReady();
+if (ready) {
+  markReady();
+  reportStartup('answering');
+  void runHeldRefreshes();
+}
 log(ready ? `AIOStreams is ready in ${seconds} s, ${memory} MB` : `AIOStreams did not answer within 5 minutes`);
 setInterval(() => {
   writeState({ rssMB: Math.round(process.memoryUsage().rss / 1048576), heapMB: Math.round(process.memoryUsage().heapUsed / 1048576) });

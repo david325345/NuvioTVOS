@@ -19,6 +19,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+// Times of the start, in seconds after Nuvio started Node.js (nuvio-main.mjs
+// adds the rest and reports them).
+const t0 = Number(process.env.NUVIO_T0_MS) || Date.now();
+globalThis.nuvioStartup = { t0, marks: { node: Number(((Date.now() - t0) / 1000).toFixed(2)) } };
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const home = process.env.NUVIO_AIO_HOME;
 const source = process.env.NUVIO_AIO_SOURCE || '';

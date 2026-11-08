@@ -23,9 +23,13 @@ import os
 /// has it. The addon is added on this Apple TV only (never synced).
 ///
 /// After each start, and after a long time in the background, one stream
-/// request warms AIOStreams up, so the first real search is not the slow one.
-/// A stream search while AIOStreams is still starting waits for its addon
-/// (`startingAddonURL` / `waitForAddon`) instead of leaving it out.
+/// request warms AIOStreams up, so the first real search is not the slow one
+/// (unless a real search came first: then it is not needed and would only
+/// slow that one down). A stream search while AIOStreams is still starting
+/// waits for its addon (`startingAddonURL` / `waitForAddon`) instead of
+/// leaving it out; Nuvio reads the state file every 0.25 s while AIOStreams
+/// starts, so the search goes out as soon as AIOStreams answers. The times of
+/// the start (`startupProfile`) are in the sheet and the log.
 ///
 /// Everything Node.js prints goes straight to a log file, and a crash or an
 /// exit() leaves a note with the native stack in it, so the next app run can
@@ -101,8 +105,15 @@ final class AIOExperiment: ObservableObject {
     @Published private(set) var updateStatus: String?
     @Published private(set) var updating = false
     @Published private(set) var usePreviousAtNextStart = false
+    /// When what happened in this start, in seconds after Nuvio opened.
+    @Published private(set) var startupProfile: String?
 
     private var stateTimer: Timer?
+    /// From Nuvio opening to Node.js being started.
+    private var launchOffset: TimeInterval?
+    /// When Nuvio saw AIOStreams answering, after Node.js was started.
+    private var noticedSeconds: TimeInterval?
+    private var startupMarks: [String: Any] = [:]
     private var logTimer: Timer?
     private var logVisible = false
     private var started = false
@@ -204,7 +215,7 @@ final class AIOExperiment: ObservableObject {
             addonLock.unlock()
             if let current { return current }
             if pending == nil { return nil }
-            try? await Task.sleep(nanoseconds: 250_000_000)
+            try? await Task.sleep(nanoseconds: 100_000_000)
         }
         return nil
     }
@@ -373,7 +384,11 @@ final class AIOExperiment: ObservableObject {
     private func launch(_ kind: RunKind, nodeStart: NodeStart, arguments: [String], stateFile: URL?, backupFile: URL?) {
         started = true
         runKind = kind
-        startDate = Date()
+        let now = Date()
+        startDate = now
+        launchOffset = Self.processStartDate().map { now.timeIntervalSince($0) }
+        // The start's times in Node.js count from here.
+        setenv("NUVIO_T0_MS", String(Int64(now.timeIntervalSince1970 * 1000)), 1)
         phase = .starting
         notice = nil
         publishAddon()
@@ -398,11 +413,12 @@ final class AIOExperiment: ObservableObject {
         thread.qualityOfService = .userInitiated
         thread.start()
 
-        scheduleStateTimer(every: 2, stateFile: stateFile, backupFile: backupFile)
+        scheduleStateTimer(every: 0.25, stateFile: stateFile, backupFile: backupFile)
         if logVisible { startLogTimer() }
     }
 
-    /// The state file every 2 s while AIOStreams starts, then every 5 s.
+    /// The state file every 0.25 s while AIOStreams starts (searches wait for
+    /// it), then every 5 s.
     private func scheduleStateTimer(every seconds: TimeInterval, stateFile: URL?, backupFile: URL?) {
         stateTimer?.invalidate()
         stateTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: true) { _ in
@@ -438,6 +454,14 @@ final class AIOExperiment: ObservableObject {
         }
         if let seconds = state["startupSeconds"] as? Double { startupSeconds = seconds }
         if let rss = state["rssMB"] as? Int { nodeMemoryMB = rss }
+        if phase == .running, wasStarting, let startDate {
+            noticedSeconds = Date().timeIntervalSince(startDate)
+            Self.note(String(format: "Nuvio saw AIOStreams answering %.2f s after starting Node.js", noticedSeconds ?? 0))
+        }
+        if let marks = state["startup"] as? [String: Any] {
+            startupMarks = marks
+        }
+        composeStartupProfile()
         if let manifest = state["manifest"] as? String, manifest != lastStateManifest {
             // Created or loaded on the page just now: it exists.
             lastStateManifest = manifest
@@ -470,6 +494,45 @@ final class AIOExperiment: ObservableObject {
         UserDefaults.standard.set(["kind": kind.rawValue, "ready": ready, "date": Date()], forKey: runRecordKey)
     }
 
+    /// "Start, seconds after Nuvio opened: …" from the times Node.js reports
+    /// (counted from when Nuvio started it) and Nuvio's own.
+    private func composeStartupProfile() {
+        guard runKind == .aio, !startupMarks.isEmpty || noticedSeconds != nil else { return }
+        let offset = launchOffset ?? 0
+        func value(_ key: String) -> Double? { (startupMarks[key] as? NSNumber)?.doubleValue }
+        func at(_ seconds: Double) -> String { String(format: "%.1f", seconds + offset) }
+        var parts: [String] = []
+        if let launchOffset { parts.append("Node.js started \(String(format: "%.1f", launchOffset))") }
+        if let loaded = value("loaded") { parts.append("AIOStreams loaded \(at(loaded))") }
+        if let ready = value("ready") { parts.append("answering \(at(ready))") }
+        if let noticedSeconds { parts.append("Nuvio saw it \(at(noticedSeconds))") }
+        if let asked = value("firstAsked") {
+            var first = "first streams asked \(at(asked))"
+            if let answered = value("firstAnswered") { first += ", there \(at(answered))" }
+            parts.append(first)
+        }
+        if let held = (startupMarks["held"] as? NSNumber)?.intValue, held > 0 {
+            parts.append(value("heldSeconds").map { "\(held) data refreshes after the start (\(String(format: "%.1f", $0)) s)" }
+                ?? "\(held) data refreshes held until after the start")
+        }
+        guard !parts.isEmpty else { return }
+        startupProfile = (launchOffset == nil ? "Start, seconds after Node.js started: " : "Start, seconds after Nuvio opened: ")
+            + parts.joined(separator: " · ")
+    }
+
+    /// When this app process started (Nuvio opened), from the kernel.
+    private nonisolated static func processStartDate() -> Date? {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()]
+        guard sysctl(&mib, u_int(mib.count), &info, &size, nil, 0) == 0 else { return nil }
+        let start = info.kp_proc.p_un.__p_starttime
+        guard start.tv_sec > 0 else { return nil }
+        let date = Date(timeIntervalSince1970: TimeInterval(start.tv_sec) + TimeInterval(start.tv_usec) / 1_000_000)
+        let age = Date().timeIntervalSince(date)
+        return age >= 0 && age < 30 * 86_400 ? date : nil
+    }
+
     // MARK: - Configuration: check, backup, restore
 
     /// After a start: does AIOStreams still have the remembered configuration?
@@ -492,7 +555,7 @@ final class AIOExperiment: ObservableObject {
             default:
                 configurationVerified = true
                 publishAddon()
-                await warmUp()
+                await warmUp(afterStart: true)
                 return
             }
         }
@@ -519,7 +582,7 @@ final class AIOExperiment: ObservableObject {
         configurationVerified = true
         notice = nil
         publishAddon()
-        await warmUp()
+        await warmUp(afterStart: true)
     }
 
     private func forgetConfiguration() {
@@ -723,15 +786,29 @@ final class AIOExperiment: ObservableObject {
 
     /// One stream request through the whole of AIOStreams (its addons, debrid,
     /// filters) and its connections, so the first real search is quick.
-    func warmUp() async {
-        guard phase == .running, addonEnabled, configurationVerified, !warmingUp,
-              let manifest = manifestURL,
-              let url = URL(string: manifest.replacingOccurrences(of: "/manifest.json", with: "/stream/movie/\(Self.warmUpID).json")) else { return }
+    /// `afterStart`: right after AIOStreams started, when the user may already
+    /// be searching. A search warms AIOStreams up itself, and a warm-up next
+    /// to it would only slow it down, so the warm-up waits a moment and is
+    /// left out when a search came (nuvio-main.mjs counts them).
+    func warmUp(afterStart: Bool = false) async {
+        guard phase == .running, addonEnabled, configurationVerified, !warmingUp, manifestURL != nil else { return }
         warmingUp = true
         defer { warmingUp = false }
+        if afterStart {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            if let searches = (await control("GET", "/activity"))?["streamRequests"] as? Int, searches > 0 {
+                lastWarmUp = "not needed, a search came first"
+                Self.note("warm-up: not needed, a search came first")
+                return
+            }
+        }
+        guard phase == .running, let manifest = manifestURL,
+              let url = URL(string: manifest.replacingOccurrences(of: "/manifest.json", with: "/stream/movie/\(Self.warmUpID).json")) else { return }
         let begin = Date()
         var request = URLRequest(url: url)
         request.timeoutInterval = 90
+        // Not counted as a search (nuvio-main.mjs).
+        request.setValue("1", forHTTPHeaderField: "x-nuvio-warmup")
         let result: String
         if let (data, response) = try? await URLSession.shared.data(for: request) {
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0

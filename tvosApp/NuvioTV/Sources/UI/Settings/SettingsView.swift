@@ -18760,6 +18760,12 @@ private struct AIOExperimentSheet: View {
                             .font(.system(size: 19, weight: .medium))
                             .foregroundColor(.white.opacity(0.65))
                             .fixedSize(horizontal: false, vertical: true)
+                        if let profile = aio.startupProfile {
+                            Text(profile)
+                                .font(.system(size: 17, weight: .medium))
+                                .foregroundColor(.white.opacity(0.55))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
 

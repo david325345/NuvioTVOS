@@ -73,7 +73,7 @@ bcryptjs_dir="$WORK/bcryptjs"
 rm -rf "$bcryptjs_dir" && mkdir -p "$bcryptjs_dir"
 (cd "$bcryptjs_dir" && npm pack --silent bcryptjs@3 >/dev/null && tar xzf bcryptjs-*.tgz && mv package bcryptjs)
 # shim folder:package
-for entry in better-sqlite3:better-sqlite3 bcrypt:bcrypt yencode:yencode fsmux-fuse:@viren070/fsmux-fuse; do
+for entry in better-sqlite3:better-sqlite3 bcrypt:bcrypt yencode:yencode fsmux-fuse:@viren070/fsmux-fuse fsmux-fuse:@aiostreams/fsmux-fuse; do
   shim=${entry%%:*}
   package=${entry#*:}
   found=0
