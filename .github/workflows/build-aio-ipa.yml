@@ -63,7 +63,14 @@ jobs:
           ls -la Vendor/NodeMobile tvosApp/NuvioTV/AIOInstaller
           echo "::notice::Node.js run $node_run ($(du -sh Vendor/NodeMobile/NodeMobile.xcframework | cut -f1)) · AIOStreams installer $(du -sh tvosApp/NuvioTV/AIOInstaller | cut -f1) (AIOStreams itself from its official image)"
       - name: Install Tuist
-        run: brew install tuist
+        # GitHub's release downloads fail now and then (504): a few more tries.
+        run: |
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            brew install tuist && exit 0
+            echo "::warning::Tuist download failed (attempt $attempt), again in 60 s"
+            sleep 60
+          done
+          exit 1
       - name: Make it a separate app (Nuvio AIO)
         # Its own bundle ID, name and App Group, so the test build installs next to the
         # release app instead of replacing it. Only this job: the tests keep the real IDs.
@@ -170,7 +177,14 @@ jobs:
           ls -la Vendor/NodeMobile tvosApp/NuvioTV/AIOInstaller
           echo "::notice::Node.js run $node_run ($(du -sh Vendor/NodeMobile/NodeMobile.xcframework | cut -f1)) · AIOStreams installer $(du -sh tvosApp/NuvioTV/AIOInstaller | cut -f1) (AIOStreams itself from its official image)"
       - name: Install Tuist
-        run: brew install tuist
+        # GitHub's release downloads fail now and then (504): a few more tries.
+        run: |
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            brew install tuist && exit 0
+            echo "::warning::Tuist download failed (attempt $attempt), again in 60 s"
+            sleep 60
+          done
+          exit 1
       - name: Generate Xcode project
         run: tuist generate --path tvosApp --no-open
       - name: AIOStreams in Node.js on the simulator
