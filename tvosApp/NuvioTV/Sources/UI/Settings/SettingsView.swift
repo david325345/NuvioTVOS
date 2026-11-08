@@ -13874,6 +13874,7 @@ private struct AddonsSettingsSection: View {
     @State private var renamingText = ""
     @State private var addons: [AddonItem] = AddonsSettingsSection.initialLocalAddons()
     @State private var syncedAddons: [SyncedAddon] = []
+    @State private var showingAIOExperiment = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 28) {
@@ -13986,9 +13987,25 @@ private struct AddonsSettingsSection: View {
                     )
                 }
             }
+
+            // Fork experiment: the original AIOStreams running inside Nuvio.
+            SettingsGroup(title: "AIOStreams (experiment)", subtitle: "The original AIOStreams in Node.js on this Apple TV") {
+                SettingsActionRow(
+                    title: "AIOStreams",
+                    subtitle: "Start it, open its configuration page, update it and see how it runs",
+                    value: "Open",
+                    accentColor: accentColor
+                ) {
+                    showingAIOExperiment = true
+                }
+            }
         }
         .task(id: streamAddonManifestURL + "\n" + streamAddonManifestURLs + "\n" + streamAddonManifestStates) {
             await loadSyncedAddons()
+        }
+        .sheet(isPresented: $showingAIOExperiment) {
+            AIOExperimentSheet(accentColor: accentColor)
+                .modifier(ClearPresentationBackgroundIfAvailable())
         }
     }
 
@@ -19853,5 +19870,279 @@ private struct UsenetServerEditSheet: View {
             isEnabled: isEnabled
         )
         UsenetSettings.upsert(saved, password: password)
+    }
+}
+
+/// Experiment (fork branch `aio-node`): the original AIOStreams in Node.js on
+/// this Apple TV. Starts it (once per app run), shows the configuration page's
+/// address, the addon it added, startup time, memory and its log.
+private struct AIOExperimentSheet: View {
+    let accentColor: Color
+
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var aio = AIOExperiment.shared
+    @State private var sourceDraft = ""
+
+    var body: some View {
+        SettingsFeatureSettingsSheet(
+            title: "AIOStreams (experiment)",
+            subtitle: "Node.js \(aio.packageVersion.isEmpty ? "" : "· AIOStreams \(aio.packageVersion)")"
+        ) {
+            VStack(alignment: .leading, spacing: 22) {
+                HStack(alignment: .center, spacing: 36) {
+                    qrCode
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(statusText)
+                            .font(.system(size: 26, weight: .bold))
+                            .foregroundColor(statusColor)
+                        if let page = aio.configurationPageURL, aio.phase == .running {
+                            Text("Configuration page — open it in a browser on your computer (it is not an add-on address):")
+                                .font(.system(size: 18, weight: .medium))
+                                .foregroundColor(.white.opacity(0.65))
+                                .fixedSize(horizontal: false, vertical: true)
+                            Text(page)
+                                .font(.system(size: 24, weight: .semibold, design: .monospaced))
+                                .foregroundColor(.white)
+                                .lineLimit(2)
+                                .minimumScaleFactor(0.6)
+                        }
+                        Text(details)
+                            .font(.system(size: 19, weight: .medium))
+                            .foregroundColor(.white.opacity(0.65))
+                            .fixedSize(horizontal: false, vertical: true)
+                        if let profile = aio.startupProfile {
+                            Text(profile)
+                                .font(.system(size: 17, weight: .medium))
+                                .foregroundColor(.white.opacity(0.55))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+
+                if let notice = aio.notice {
+                    Text(notice)
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundColor(.yellow)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if aio.phase == .stopped {
+                    SettingsActionRow(
+                        title: "Start AIOStreams",
+                        subtitle: "The first start unpacks AIOStreams, which takes a while. It then runs until Nuvio is closed.",
+                        value: "Start",
+                        accentColor: accentColor
+                    ) {
+                        aio.start()
+                    }
+                    SettingsActionRow(
+                        title: "Test Node.js only",
+                        subtitle: "Runs only Node.js with a short test, without AIOStreams. Close and reopen Nuvio AIO afterwards to start AIOStreams.",
+                        value: "Test",
+                        accentColor: accentColor
+                    ) {
+                        aio.testNodeOnly()
+                    }
+                }
+
+                SettingsToggleRow(
+                    title: "Start with Nuvio",
+                    subtitle: "Run AIOStreams whenever Nuvio runs",
+                    isOn: Binding(get: { aio.autoStart }, set: { aio.setAutoStart($0) }),
+                    accentColor: accentColor
+                )
+
+                Text("Version")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundColor(.white)
+
+                SettingsActionRow(
+                    title: "Check for updates",
+                    subtitle: versionLine,
+                    value: "Check",
+                    accentColor: accentColor
+                ) {
+                    Task { await aio.checkForUpdates() }
+                }
+
+                if aio.phase == .running {
+                    SettingsActionRow(
+                        title: "Update AIOStreams",
+                        subtitle: aio.updateStatus ?? "Installs the newest version from the source while this one keeps running; it starts with the next start of Nuvio",
+                        value: aio.updating ? "…" : "Update",
+                        accentColor: accentColor
+                    ) {
+                        Task { await aio.update() }
+                    }
+                }
+
+                if let previous = aio.previousVersion, !aio.usePreviousAtNextStart {
+                    SettingsActionRow(
+                        title: "Use the previous version",
+                        subtitle: "\(previous), from the next start of Nuvio",
+                        value: "Use",
+                        accentColor: accentColor
+                    ) {
+                        aio.usePreviousVersion()
+                    }
+                }
+
+                SettingsTextFieldRow(
+                    title: "Source",
+                    subtitle: "AIOStreams' official image, another image or the address of a package (aio.tar.gz) — from the next start",
+                    placeholder: AIOExperiment.defaultSource,
+                    text: $sourceDraft,
+                    fieldWidth: 560,
+                    onCommit: { aio.setSource(sourceDraft) }
+                )
+
+                if aio.source != AIOExperiment.defaultSource {
+                    SettingsActionRow(
+                        title: "Restore the default source",
+                        subtitle: AIOExperiment.defaultSource,
+                        value: "Restore",
+                        accentColor: accentColor
+                    ) {
+                        aio.resetSource()
+                        sourceDraft = aio.source
+                    }
+                }
+
+                SettingsToggleRow(
+                    title: "Detailed AIOStreams log",
+                    subtitle: "Every request in the log, not only warnings and errors (from the next start)",
+                    isOn: Binding(get: { aio.detailedLog }, set: { aio.setDetailedLog($0) }),
+                    accentColor: accentColor
+                )
+
+                SettingsToggleRow(
+                    title: "Use the AIOStreams Addon",
+                    subtitle: aio.manifestURL == nil
+                        ? "Save a configuration on the page and Nuvio adds the addon (on this Apple TV only)"
+                        : "Its streams and catalogs next to your add-ons, on this Apple TV only",
+                    isOn: Binding(get: { aio.addonEnabled }, set: { aio.setAddonEnabled($0) }),
+                    accentColor: accentColor
+                )
+
+                SettingsActionRow(
+                    title: "Anime searches",
+                    subtitle: "With the AniList integration, an AniList title: \(aio.animeRequest.explanation)"
+                        + (aio.lastAnimeSearch.map { "\nLast: \($0)" } ?? ""),
+                    value: aio.animeRequest.label,
+                    accentColor: accentColor
+                ) {
+                    aio.cycleAnimeRequest()
+                }
+
+                if let previous = aio.previousRun, aio.phase == .stopped || previous.unexpected {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Last run" + (previous.date.map { " · " + $0.formatted(date: .abbreviated, time: .shortened) } ?? ""))
+                            .font(.system(size: 22, weight: .bold))
+                            .foregroundColor(.white)
+                        Text(previous.summary)
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundColor(previous.unexpected ? .red : .white.opacity(0.8))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .focusable()
+                        ForEach(Array(previous.lines.enumerated()), id: \.offset) { _, line in
+                            logLine(line)
+                        }
+                    }
+                }
+
+                if !aio.logLines.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Log")
+                            .font(.system(size: 22, weight: .bold))
+                            .foregroundColor(.white)
+                        ForEach(Array(aio.logLines.suffix(80).enumerated()), id: \.offset) { _, line in
+                            logLine(line)
+                        }
+                    }
+                }
+
+                SettingsActionRow(
+                    title: "Done",
+                    subtitle: "AIOStreams keeps running",
+                    value: "Close",
+                    accentColor: accentColor
+                ) {
+                    dismiss()
+                }
+            }
+            .settingsEntryAnchor()
+        }
+        .onAppear {
+            aio.setLogVisible(true)
+            sourceDraft = aio.source
+        }
+        .onDisappear { aio.setLogVisible(false) }
+    }
+
+    private func logLine(_ line: String) -> some View {
+        Text(line)
+            .font(.system(size: 15, weight: .regular, design: .monospaced))
+            .foregroundColor(line.contains("CRASH") || line.hasPrefix("✕") || line.contains("FAILED") ? .red
+                : line.hasPrefix("!") ? .yellow : .white.opacity(0.8))
+            .lineLimit(3)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .focusable()
+    }
+
+    @ViewBuilder
+    private var qrCode: some View {
+        if aio.phase == .running, let page = aio.configurationPageURL, let image = SettingsQRCode.image(for: page) {
+            Image(decorative: image, scale: 1, orientation: .up)
+                .interpolation(.none)
+                .resizable()
+                .frame(width: 220, height: 220)
+                .padding(12)
+                .background(Color.white, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        } else {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.white.opacity(0.08))
+                .frame(width: 244, height: 244)
+                .overlay(ProgressView().opacity(aio.phase == .starting ? 1 : 0))
+        }
+    }
+
+    private var statusText: String {
+        switch aio.phase {
+        case .stopped: return "Not running"
+        case .starting: return aio.runKind == .nodeTest ? "Testing Node.js…" : (aio.installProgress ?? "Starting…")
+        case .running: return "Running"
+        case .notAnswering: return "Started, but not answering"
+        case .exited(let code) where aio.runKind == .nodeTest:
+            return "Node.js test finished (\(code)) — close and reopen Nuvio AIO to start AIOStreams"
+        case .exited(let code): return "Node.js stopped (\(code)) — restart Nuvio to try again"
+        case .unavailable(let reason): return reason
+        }
+    }
+
+    private var statusColor: Color {
+        switch aio.phase {
+        case .running, .exited(0) where aio.runKind == .nodeTest: return .green
+        case .starting, .stopped: return .white
+        default: return .red
+        }
+    }
+
+    private var versionLine: String {
+        var parts = ["Installed: \(aio.packageVersion.isEmpty ? "none yet" : aio.packageVersion)"]
+        if let pending = aio.pendingVersion { parts.append("\(pending) after a restart") }
+        if let latest = aio.latestVersion { parts.append("newest: \(latest)") }
+        if let status = aio.updateStatus, aio.phase != .running { parts.append(status) }
+        return parts.joined(separator: " · ")
+    }
+
+    private var details: String {
+        var parts: [String] = []
+        if let seconds = aio.startupSeconds { parts.append(String(format: "Ready in %.1f s", seconds)) }
+        if let node = aio.nodeMemoryMB { parts.append("Node.js \(node) MB") }
+        if let app = aio.appMemoryMB { parts.append("Nuvio in total \(app) MB") }
+        parts.append(aio.manifestURL == nil ? "No configuration saved yet" : "Addon added")
+        parts.append(aio.hasBackup ? "Configuration backed up" : "No backup yet")
+        if let warmUp = aio.lastWarmUp { parts.append("Warm-up: \(warmUp)") }
+        return parts.joined(separator: " · ")
     }
 }

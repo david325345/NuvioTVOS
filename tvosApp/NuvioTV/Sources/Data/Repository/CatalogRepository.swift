@@ -1568,10 +1568,13 @@ final class CinemetaCatalogRepository: CatalogRepository {
     }
 
     static func configuredStreamAddonManifestURLs(in defaults: UserDefaults) -> [URL] {
-        configuredStreamAddonPreferences(in: defaults).compactMap { preference in
+        let installed = configuredStreamAddonPreferences(in: defaults).compactMap { preference -> URL? in
             guard preference.enabled else { return nil }
             return normalizedManifestURL(from: preference.url)
         }
+        // Fork experiment: the AIOStreams addon running on this Apple TV, never
+        // part of the synced add-on list.
+        return installed + AIOExperiment.aioAddonURLs(besides: installed)
     }
 
     static func configuredStreamAddonPreferences(in defaults: UserDefaults = ProfileSettings.current) -> [StreamAddonPreference] {

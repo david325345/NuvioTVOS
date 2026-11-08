@@ -146,6 +146,10 @@ let appTarget: Target = .target(
         "NuvioTV/Resources/SceneModels/YuNet.mlpackage",
         "NuvioTV/Resources/SceneModels/SFace-LICENSE.txt",
         "NuvioTV/Resources/SceneModels/YuNet-LICENSE.txt",
+        // AIOStreams experiment (fork branch aio-node): the installer, as a
+        // folder (CI puts it together: aio-node/installer/assemble.sh).
+        // AIOStreams itself is downloaded from its official image.
+        .folderReference(path: "NuvioTV/AIOInstaller"),
     ],
     entitlements: .file(path: "NuvioTV/NuvioTV.entitlements"),
     scripts: [
@@ -169,6 +173,9 @@ let appTarget: Target = .target(
         .package(product: "MPVKit"),
         .package(product: "SwiftAssRenderer"),
         .package(product: "Realtime"),
+        // AIOStreams experiment: Node.js 24 for tvOS (nodejs-mobile), built by
+        // .github/workflows/build-node-tvos.yml.
+        .xcframework(path: "../Vendor/NodeMobile/NodeMobile.xcframework"),
     ],
     settings: .settings(
         base: [

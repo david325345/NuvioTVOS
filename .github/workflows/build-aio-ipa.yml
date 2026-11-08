@@ -1,0 +1,258 @@
+name: AIOStreams test build (fork experiment)
+
+# Fork only, never part of a PR: the IPA of the aio-node branch, with Node.js
+# for tvOS and the installer for the original AIOStreams (downloaded from its
+# official image on the TV: aio-node/installer). Its own app — "Nuvio AIO",
+# com.pyksel.nuviotvos.aio — so it installs next to Nuvio and the Nuvio Test
+# builds (plugins, AniList).
+on:
+  push:
+    branches: [aio-node, aio-anilist]
+    paths:
+      - tvosApp/**
+      - aio-node/installer/**
+      - .github/workflows/build-aio-ipa.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  ipa:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Node.js for tvOS and the AIOStreams installer
+        # The newest build-node-tvos.yml run with both slices; the installer from aio-node/installer.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bash aio-node/installer/assemble.sh tvosApp/NuvioTV/AIOInstaller
+          # Node.js: the newest build-node-tvos.yml run with both framework slices.
+          node_run=""
+          for id in $(gh run list -R "$GITHUB_REPOSITORY" --workflow build-node-tvos.yml --branch aio-node --limit 10 \
+                        --json databaseId --jq '.[].databaseId'); do
+            count=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/artifacts" \
+              --jq '[.artifacts[] | select(.expired == false) | select(.name == "node-tvos-arm64" or .name == "node-tvos-arm64-simulator")] | length')
+            if [ "$count" = 2 ]; then node_run=$id; break; fi
+          done
+          [ -n "$node_run" ] || { echo "::error::No Node.js for tvOS build with both slices yet"; exit 1; }
+          gh run download "$node_run" -R "$GITHUB_REPOSITORY" -n node-tvos-arm64 -D "$RUNNER_TEMP/node-device"
+          gh run download "$node_run" -R "$GITHUB_REPOSITORY" -n node-tvos-arm64-simulator -D "$RUNNER_TEMP/node-simulator"
+          device="$RUNNER_TEMP/node-device/iphoneos-arm64/Release-appletvos/NodeMobile.framework"
+          simulator="$RUNNER_TEMP/node-simulator/iphonesimulator-arm64/Release-appletvsimulator/NodeMobile.framework"
+          for framework in "$device" "$simulator"; do
+            before=$(du -sh "$framework/NodeMobile" | cut -f1)
+            xcrun strip -S -x "$framework/NodeMobile"
+            # Stripping breaks the signature from the Node build: sign again (ad hoc),
+            # or dyld kills the app ("Code Signature Invalid").
+            codesign --force --sign - --timestamp=none "$framework"
+            codesign --verify --verbose=1 "$framework"
+            echo "$(basename "$(dirname "$framework")"): NodeMobile $before → $(du -sh "$framework/NodeMobile" | cut -f1)"
+            # awk reads all of nm's output: no SIGPIPE under pipefail.
+            nm -gU "$framework/NodeMobile" | awk '$3 == "_node_start" { found = 1 } END { exit !found }' \
+              || { echo "::error::node_start missing in $framework"; exit 1; }
+          done
+          mkdir -p Vendor/NodeMobile
+          xcodebuild -create-xcframework -framework "$device" -framework "$simulator" -output Vendor/NodeMobile/NodeMobile.xcframework
+          ls -la Vendor/NodeMobile tvosApp/NuvioTV/AIOInstaller
+          echo "::notice::Node.js run $node_run ($(du -sh Vendor/NodeMobile/NodeMobile.xcframework | cut -f1)) · AIOStreams installer $(du -sh tvosApp/NuvioTV/AIOInstaller | cut -f1) (AIOStreams itself from its official image)"
+      - name: Install Tuist
+        run: brew install tuist
+      - name: Make it a separate app (Nuvio AIO)
+        # Its own bundle ID, name and App Group, so the test build installs next to the
+        # release app instead of replacing it. Only this job: the tests keep the real IDs.
+        run: |
+          set -euo pipefail
+          perl -pi -e 's/^let bundleID = "com\.pyksel\.nuviotvos"$/let bundleID = "com.pyksel.nuviotvos.aio"/' tvosApp/Project.swift
+          grep -q '^let bundleID = "com.pyksel.nuviotvos.aio"$' tvosApp/Project.swift
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Nuvio AIO" tvosApp/NuvioTV/Info.plist
+          perl -pi -e 's/group\.com\.pyksel\.nuviotvos</group.com.pyksel.nuviotvos.aio</' \
+            tvosApp/NuvioTV/NuvioTV.entitlements tvosApp/TopShelf/TopShelf.entitlements
+          echo "::notice::bundle com.pyksel.nuviotvos.aio · Nuvio AIO · group.com.pyksel.nuviotvos.aio"
+      - name: Build unsigned IPA
+        run: |
+          set -o pipefail
+          report() {
+            grep -E "error: " build.log | grep -v "produced no further output" \
+              | sort -u | head -40 | while IFS= read -r line; do echo "::error::$line"; done
+          }
+          trap 'report' ERR
+          bash scripts/build-ipa.sh 2>&1 | tee build.log
+      - name: Embed the App Group entitlement (Top Shelf test)
+        # The unsigned IPA carries no entitlements at all, so a sideloader has no App Group to
+        # register and the Top Shelf extension never gets the app's rows. Fake-sign both
+        # binaries with just the App Group, which the sideloader reads when it re-signs.
+        run: |
+          set -euo pipefail
+          brew install ldid
+          work="$(mktemp -d)"
+          cp build-ipa/NuvioTV-unsigned.ipa "$work/in.ipa"
+          cd "$work"
+          unzip -q in.ipa
+          app="Payload/NuvioTV.app"
+          cat > groups.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>com.apple.security.application-groups</key>
+            <array>
+              <string>group.com.pyksel.nuviotvos.aio</string>
+            </array>
+          </dict>
+          </plist>
+          PLIST
+          for appex in "$app"/PlugIns/*.appex; do
+            exe=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$appex/Info.plist")
+            ldid -Sgroups.plist "$appex/$exe"
+            echo "::notice::$(basename "$appex"): $(ldid -e "$appex/$exe" | tr -d '\n' | grep -o 'group\.[^<]*' || echo none)"
+          done
+          exe=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$app/Info.plist")
+          ldid -Sgroups.plist "$app/$exe"
+          echo "::notice::NuvioTV.app: $(ldid -e "$app/$exe" | tr -d '\n' | grep -o 'group\.[^<]*' || echo none)"
+          rm in.ipa
+          zip -qry out.ipa Payload
+          cp out.ipa "$GITHUB_WORKSPACE/build-ipa/NuvioTV-unsigned.ipa"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NuvioTV-aio-unsigned-ipa
+          path: build-ipa/NuvioTV-unsigned.ipa
+          retention-days: 7
+
+  simulator:
+    # The original AIOStreams started inside the app on the tvOS simulator.
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Node.js for tvOS and the AIOStreams installer
+        # The newest build-node-tvos.yml run with both slices; the installer from aio-node/installer.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bash aio-node/installer/assemble.sh tvosApp/NuvioTV/AIOInstaller
+          # Node.js: the newest build-node-tvos.yml run with both framework slices.
+          node_run=""
+          for id in $(gh run list -R "$GITHUB_REPOSITORY" --workflow build-node-tvos.yml --branch aio-node --limit 10 \
+                        --json databaseId --jq '.[].databaseId'); do
+            count=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/artifacts" \
+              --jq '[.artifacts[] | select(.expired == false) | select(.name == "node-tvos-arm64" or .name == "node-tvos-arm64-simulator")] | length')
+            if [ "$count" = 2 ]; then node_run=$id; break; fi
+          done
+          [ -n "$node_run" ] || { echo "::error::No Node.js for tvOS build with both slices yet"; exit 1; }
+          gh run download "$node_run" -R "$GITHUB_REPOSITORY" -n node-tvos-arm64 -D "$RUNNER_TEMP/node-device"
+          gh run download "$node_run" -R "$GITHUB_REPOSITORY" -n node-tvos-arm64-simulator -D "$RUNNER_TEMP/node-simulator"
+          device="$RUNNER_TEMP/node-device/iphoneos-arm64/Release-appletvos/NodeMobile.framework"
+          simulator="$RUNNER_TEMP/node-simulator/iphonesimulator-arm64/Release-appletvsimulator/NodeMobile.framework"
+          for framework in "$device" "$simulator"; do
+            before=$(du -sh "$framework/NodeMobile" | cut -f1)
+            xcrun strip -S -x "$framework/NodeMobile"
+            # Stripping breaks the signature from the Node build: sign again (ad hoc),
+            # or dyld kills the app ("Code Signature Invalid").
+            codesign --force --sign - --timestamp=none "$framework"
+            codesign --verify --verbose=1 "$framework"
+            echo "$(basename "$(dirname "$framework")"): NodeMobile $before → $(du -sh "$framework/NodeMobile" | cut -f1)"
+            # awk reads all of nm's output: no SIGPIPE under pipefail.
+            nm -gU "$framework/NodeMobile" | awk '$3 == "_node_start" { found = 1 } END { exit !found }' \
+              || { echo "::error::node_start missing in $framework"; exit 1; }
+          done
+          mkdir -p Vendor/NodeMobile
+          xcodebuild -create-xcframework -framework "$device" -framework "$simulator" -output Vendor/NodeMobile/NodeMobile.xcframework
+          ls -la Vendor/NodeMobile tvosApp/NuvioTV/AIOInstaller
+          echo "::notice::Node.js run $node_run ($(du -sh Vendor/NodeMobile/NodeMobile.xcframework | cut -f1)) · AIOStreams installer $(du -sh tvosApp/NuvioTV/AIOInstaller | cut -f1) (AIOStreams itself from its official image)"
+      - name: Install Tuist
+        run: brew install tuist
+      - name: Generate Xcode project
+        run: tuist generate --path tvosApp --no-open
+      - name: AIOStreams in Node.js on the simulator
+        env:
+          NUVIO_TEST_ARTIFACTS: ${{ runner.temp }}/nuvio-tests
+          NUVIO_DERIVED_DATA: ${{ runner.temp }}/NuvioTVDerivedData
+          # xcodebuild hands TEST_RUNNER_* to the tests without the prefix.
+          TEST_RUNNER_AIO_REPORT: ${{ runner.temp }}/nuvio-tests/aio-report.txt
+        run: |
+          set -o pipefail
+          report() {
+            grep -E "error: |XCTAssert|failed \(" "$NUVIO_TEST_ARTIFACTS/xcodebuild.log" 2>/dev/null \
+              | grep -v "produced no further output" \
+              | sort -u | head -40 | while IFS= read -r line; do echo "::error::$line"; done
+          }
+          trap 'report' ERR
+          # aio-anilist (AIOStreams together with the AniList and MAL integrations): theirs too.
+          extra=()
+          if [ "${GITHUB_REF_NAME}" = aio-anilist ]; then
+            extra=(-only-testing:NuvioTVTests/AniListTests -only-testing:NuvioTVTests/MALTests -only-testing:NuvioTVTests/StreamsDiscoveryTests)
+          fi
+          bash scripts/test-tvos.sh -only-testing:NuvioTVTests/AIOExperimentTests "${extra[@]}"
+      - name: Why the app stopped
+        if: failure()
+        run: |
+          set +e
+          for framework in Vendor/NodeMobile/NodeMobile.xcframework/*/NodeMobile.framework; do
+            echo "== $framework"; xcrun vtool -show-build "$framework/NodeMobile" | head -12; otool -L "$framework/NodeMobile" | head -20
+          done
+          echo "== crash reports"; ls -lt ~/Library/Logs/DiagnosticReports/ 2>/dev/null | head -10
+          report=$(ls -t ~/Library/Logs/DiagnosticReports/NuvioTV* 2>/dev/null | head -1)
+          if [ -n "$report" ]; then
+            python3 - "$report" <<'PY'
+          import json, sys
+          text = open(sys.argv[1]).read()
+          header, _, body = text.partition("\n")
+          data = json.loads(body)
+          print("exception:", json.dumps(data.get("exception")))
+          print("termination:", json.dumps(data.get("termination"))[:1500])
+          print("asi:", json.dumps(data.get("asi"))[:1500])
+          images = data.get("usedImages", [])
+          for thread in data.get("threads", []):
+              if thread.get("triggered"):
+                  for frame in thread.get("frames", [])[:25]:
+                      image = images[frame.get("imageIndex", 0)] if images else {}
+                      print("  ", image.get("name", "?"), frame.get("symbol", ""), frame.get("imageOffset", ""))
+          PY
+          fi
+          echo "== launch on the simulator"
+          xcrun simctl list devices booted
+          perl -e 'alarm 60; exec @ARGV' xcrun simctl launch --console-pty booted com.pyksel.nuviotvos 2>&1 | tail -60
+      - name: What AIOStreams did
+        if: always()
+        env:
+          NUVIO_TEST_ARTIFACTS: ${{ runner.temp }}/nuvio-tests
+        run: |
+          set +e
+          results="$NUVIO_TEST_ARTIFACTS/Tests.xcresult"
+          # Passed, failed or skipped, per test.
+          xcrun xcresulttool get test-results tests --path "$results" --format json > "$RUNNER_TEMP/tests.json" 2>/dev/null
+          ruby -rjson -e '
+            walk = ->(node) do
+              if node["nodeType"] == "Test Case"
+                line = "#{node["name"]}: #{node["result"]} #{node["duration"]}"
+                puts(node["result"] == "Passed" ? "::notice::#{line}" : "::warning::#{line}")
+              end
+              (node["children"] || []).each { |child| walk.(child) }
+            end
+            (JSON.parse(File.read(ARGV[0]))["testNodes"] || []).each { |node| walk.(node) }
+          ' "$RUNNER_TEMP/tests.json" 2>/dev/null || echo "no test results in $results"
+          # What the test printed: its report file, else the console log in the result bundle.
+          report="$NUVIO_TEST_ARTIFACTS/aio-report.txt"
+          if [ ! -s "$report" ]; then
+            xcrun xcresulttool get log --path "$results" --type console > "$NUVIO_TEST_ARTIFACTS/console.txt" 2>/dev/null
+            report="$NUVIO_TEST_ARTIFACTS/console.txt"
+          fi
+          grep -h "^AIO-TEST [a-z]" "$report" 2>/dev/null | grep -v "log" | head -20 | while IFS= read -r line; do echo "::notice::$line"; done
+          echo "== $report"
+          tail -150 "$report" 2>/dev/null
+          exit 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: aio-simulator-test
+          path: ${{ runner.temp }}/nuvio-tests

@@ -771,6 +771,7 @@ struct ContentView: View {
         .onAppear {
             Task { await releaseUpdateService.checkIfNeeded() }
             Task { await announcementService.checkIfNeeded() }
+            AIOExperiment.shared.startIfWanted()
             if WatchPartyConfiguration.isEnabled {
                 watchPartyOwner.attach(authManager: authManager, profiles: profileViewModel)
             }
