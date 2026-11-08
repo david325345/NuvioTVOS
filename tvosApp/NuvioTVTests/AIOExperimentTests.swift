@@ -19,6 +19,9 @@ final class AIOExperimentTests: XCTestCase {
     func testOriginalAIOStreamsRunsInsideNuvio() async throws {
         try XCTSkipUnless(AIOExperiment.isBundled, "This build has no AIOStreams package")
         let aio = AIOExperiment.shared
+        // AIOStreams runs on in this test run: its addon must not show up in the add-on lists
+        // other tests check.
+        addTeardownBlock { @MainActor in AIOExperiment.shared.setAddonEnabled(false) }
         let started = Date()
         aio.start()
         aio.setLogVisible(true)
