@@ -7,7 +7,7 @@ name: AIOStreams test build (fork experiment)
 # builds (plugins, AniList).
 on:
   push:
-    branches: [aio-node, aio-anilist]
+    branches: [aio-node, aio-anilist, aio-anilist-plugins]
     paths:
       - tvosApp/**
       - aio-node/installer/**
@@ -187,10 +187,15 @@ jobs:
               | sort -u | head -40 | while IFS= read -r line; do echo "::error::$line"; done
           }
           trap 'report' ERR
-          # aio-anilist (AIOStreams together with the AniList and MAL integrations): theirs too.
+          # aio-anilist (AIOStreams together with the AniList and MAL integrations): theirs too;
+          # aio-anilist-plugins (and Nuvio's plugins, also through AIOStreams): the plugins' as well.
           extra=()
-          if [ "${GITHUB_REF_NAME}" = aio-anilist ]; then
-            extra=(-only-testing:NuvioTVTests/AniListTests -only-testing:NuvioTVTests/MALTests -only-testing:NuvioTVTests/StreamsDiscoveryTests)
+          case "${GITHUB_REF_NAME}" in
+            aio-anilist|aio-anilist-plugins)
+              extra=(-only-testing:NuvioTVTests/AniListTests -only-testing:NuvioTVTests/MALTests -only-testing:NuvioTVTests/StreamsDiscoveryTests) ;;
+          esac
+          if [ "${GITHUB_REF_NAME}" = aio-anilist-plugins ]; then
+            extra+=(-only-testing:NuvioTVTests/PluginRuntimeTests -only-testing:NuvioTVTests/PluginPlatformTests -only-testing:NuvioTVTests/PluginAIOBridgeTests)
           fi
           bash scripts/test-tvos.sh -only-testing:NuvioTVTests/AIOExperimentTests "${extra[@]}"
       - name: Why the app stopped

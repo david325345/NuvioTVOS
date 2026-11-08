@@ -7,10 +7,11 @@ name: AIOStreams from the official image (fork experiment)
 # newest one (the default source).
 on:
   push:
-    branches: [aio-node]
+    branches: [aio-node, aio-anilist-plugins]
     paths:
       - aio-node/installer/**
       - aio-node/aio-package/smoke.sh
+      - aio-node/aio-package/drop-ports.py
       - aio-node/aio-package/ffprobe-bridge-test.mjs
       - .github/workflows/aio-image-probe.yml
   workflow_dispatch:
