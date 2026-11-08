@@ -82,6 +82,19 @@ jobs:
           perl -pi -e 's/group\.com\.pyksel\.nuviotvos</group.com.pyksel.nuviotvos.aio</' \
             tvosApp/NuvioTV/NuvioTV.entitlements tvosApp/TopShelf/TopShelf.entitlements
           echo "::notice::bundle com.pyksel.nuviotvos.aio · Nuvio AIO · group.com.pyksel.nuviotvos.aio"
+      - name: Packages (retried)
+        # MPVKit's frameworks come from GitHub's release downloads, which answer 504
+        # now and then: downloaded here with a few more tries, the build finds them.
+        run: |
+          set -uo pipefail
+          [ -f MPVKit/Package.swift ] || git submodule update --init --recursive
+          (cd tvosApp && tuist generate --no-open) || exit 1
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            xcodebuild -resolvePackageDependencies -workspace tvosApp/NuvioTV.xcworkspace -scheme NuvioTV -quiet && exit 0
+            echo "::warning::package download failed (attempt $attempt), again in 60 s"
+            sleep 60
+          done
+          exit 1
       - name: Build unsigned IPA
         run: |
           set -o pipefail
@@ -187,6 +200,17 @@ jobs:
           exit 1
       - name: Generate Xcode project
         run: tuist generate --path tvosApp --no-open
+      - name: Packages (retried)
+        # As in the IPA job: GitHub's release downloads answer 504 now and then.
+        run: |
+          set -uo pipefail
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            xcodebuild -resolvePackageDependencies -workspace tvosApp/NuvioTV.xcworkspace -scheme NuvioTV \
+              -derivedDataPath "${{ runner.temp }}/NuvioTVDerivedData" -quiet && exit 0
+            echo "::warning::package download failed (attempt $attempt), again in 60 s"
+            sleep 60
+          done
+          exit 1
       - name: AIOStreams in Node.js on the simulator
         env:
           NUVIO_TEST_ARTIFACTS: ${{ runner.temp }}/nuvio-tests
