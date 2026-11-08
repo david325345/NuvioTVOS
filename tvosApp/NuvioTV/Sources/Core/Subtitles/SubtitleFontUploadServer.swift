@@ -40,8 +40,11 @@ final class SubtitleFontUploadServer: @unchecked Sendable {
 
     static let preferredPort: UInt16 = 47812
     private static let headerLimit = 16_384
-    private static let connectionLimit = 6
+    /// Open at once. Browsers also open spare connections they may never use.
+    private static let connectionLimit = 16
     private static let connectionTimeout: TimeInterval = 300
+    /// A connection that hasn't sent its request by then is closed, so idle spares don't hold slots.
+    private static let requestTimeout: TimeInterval = 20
     private static let lifetime: TimeInterval = 30 * 60
 
     private let queue = DispatchQueue(label: "nuvio.subtitle-font-upload", qos: .userInitiated)
@@ -119,7 +122,6 @@ final class SubtitleFontUploadServer: @unchecked Sendable {
             let parameters = NWParameters.tcp
             parameters.allowLocalEndpointReuse = true
             let listener = try NWListener(using: parameters, on: port)
-            listener.newConnectionLimit = Self.connectionLimit
             self.listener = listener
             listener.stateUpdateHandler = { [weak self, weak listener] state in
                 guard let self, self.generation == current else { return }
@@ -148,6 +150,10 @@ final class SubtitleFontUploadServer: @unchecked Sendable {
                 self.connections[id] = connection
                 connection.start(queue: self.queue)
                 self.receive(connection, id: id, handler: handler)
+                self.queue.asyncAfter(deadline: .now() + Self.requestTimeout) { [weak self] in
+                    guard let self, self.heads[id] == nil else { return }
+                    self.finish(id)
+                }
                 self.queue.asyncAfter(deadline: .now() + Self.connectionTimeout) { [weak self] in
                     self?.finish(id)
                 }
