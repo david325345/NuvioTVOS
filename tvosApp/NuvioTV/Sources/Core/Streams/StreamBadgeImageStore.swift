@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import UIKit
+import QuartzCore
 
 /// The images of imported stream badges, kept on this Apple TV.
 ///
@@ -56,9 +57,63 @@ final class StreamBadgeImageStore: @unchecked Sendable {
         guard !urls.isEmpty else { return }
         Task.detached(priority: .utility) { [weak self] in
             guard let self else { return }
-            for url in urls where !self.isOnDisk(url) {
-                _ = await self.image(for: url)
+            let missing = urls.filter { !self.isOnDisk($0) }
+            TestDiagnosticLog.badges("prefetch: \(missing.count) of \(urls.count) images to download, the rest kept on this Apple TV")
+            guard !missing.isEmpty else { return }
+            let started = CACurrentMediaTime()
+            var failed: [String] = []
+            for url in missing {
+                if await self.image(for: url) == nil { failed.append(url.lastPathComponent) }
             }
+            TestDiagnosticLog.badges(
+                "prefetch done in \(Int((CACurrentMediaTime() - started) * 1_000)) ms: \(missing.count - failed.count) downloaded"
+                    + (failed.isEmpty ? "" : ", \(failed.count) failed (\(failed.prefix(3).joined(separator: ", ")))")
+            )
+        }
+    }
+
+    // MARK: Test log
+
+    private enum LoadSource { case disk, network, failed }
+    private struct LoadTally {
+        var disk = 0, network = 0, failed = 0
+        var longestDisk: CFTimeInterval = 0, longestNetwork: CFTimeInterval = 0
+        var failedNames: [String] = []
+    }
+    private var tally = LoadTally()
+    private var tallyGeneration = 0
+
+    /// Loads are summed and written as one line two seconds after the last (a stream list
+    /// loads many badges at once).
+    private func noteLoad(_ source: LoadSource, seconds: CFTimeInterval, url: URL) {
+        let generation: Int = lock.withLock {
+            switch source {
+            case .disk:
+                tally.disk += 1
+                tally.longestDisk = max(tally.longestDisk, seconds)
+            case .network:
+                tally.network += 1
+                tally.longestNetwork = max(tally.longestNetwork, seconds)
+            case .failed:
+                tally.failed += 1
+                if tally.failedNames.count < 3 { tally.failedNames.append(url.lastPathComponent) }
+            }
+            tallyGeneration += 1
+            return tallyGeneration
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            guard let self else { return }
+            let finished: LoadTally? = self.lock.withLock {
+                guard self.tallyGeneration == generation else { return nil }
+                defer { self.tally = LoadTally() }
+                return self.tally
+            }
+            guard let finished else { return }
+            var parts: [String] = []
+            if finished.disk > 0 { parts.append("\(finished.disk) from the Apple TV (longest \(Int(finished.longestDisk * 1_000)) ms)") }
+            if finished.network > 0 { parts.append("\(finished.network) downloaded (longest \(Int(finished.longestNetwork * 1_000)) ms)") }
+            if finished.failed > 0 { parts.append("\(finished.failed) failed (\(finished.failedNames.joined(separator: ", ")))") }
+            TestDiagnosticLog.badges("images loaded: " + parts.joined(separator: ", "))
         }
     }
 
@@ -95,13 +150,25 @@ final class StreamBadgeImageStore: @unchecked Sendable {
     }
 
     private func load(_ url: URL) async -> UIImage? {
+        let started = CACurrentMediaTime()
         let file = fileURL(for: url)
         if let file, let data = try? Data(contentsOf: file), let image = Self.decode(data) {
+            noteLoad(.disk, seconds: CACurrentMediaTime() - started, url: url)
             return image
         }
-        guard let (data, response) = try? await URLSession.shared.data(from: url) else { return nil }
-        if let status = (response as? HTTPURLResponse)?.statusCode, !(200...299).contains(status) { return nil }
-        guard let image = Self.decode(data) else { return nil }
+        guard let (data, response) = try? await URLSession.shared.data(from: url) else {
+            noteLoad(.failed, seconds: 0, url: url)
+            return nil
+        }
+        if let status = (response as? HTTPURLResponse)?.statusCode, !(200...299).contains(status) {
+            noteLoad(.failed, seconds: 0, url: url)
+            return nil
+        }
+        guard let image = Self.decode(data) else {
+            noteLoad(.failed, seconds: 0, url: url)
+            return nil
+        }
+        noteLoad(.network, seconds: CACurrentMediaTime() - started, url: url)
         if let file, let directory {
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             try? data.write(to: file, options: .atomic)
