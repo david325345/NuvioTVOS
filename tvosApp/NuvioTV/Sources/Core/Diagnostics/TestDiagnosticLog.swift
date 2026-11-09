@@ -43,9 +43,15 @@ enum TestDiagnosticLog {
         }
     }
 
-    /// At launch: a marker between app sessions.
+    /// At launch: a marker between app sessions, and the quick-Back guard's decisions.
     static func noteLaunch(version: String) {
         usenet("—— Nuvio \(version) started ——")
+        NotificationCenter.default.addObserver(
+            forName: Notification.Name("nuvio.backGuard.decision"), object: nil, queue: nil
+        ) { note in
+            let text = note.userInfo?["text"] as? String ?? "?"
+            usenet("back: " + text)
+        }
     }
 
     static func snapshot(_ completion: @escaping @Sendable ([String]) -> Void) {
