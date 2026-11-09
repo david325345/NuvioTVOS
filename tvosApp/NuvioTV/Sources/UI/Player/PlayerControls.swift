@@ -36,6 +36,10 @@ struct PlayerControls: View {
 
     @FocusState private var focusedControl: PlayerControlFocus?
     @State private var isAuxiliaryCardFocusActive = false
+    /// The subtitle or audio button whose native menu is open (focus went from it into the
+    /// menu), until focus comes back.
+    @State private var menuButtonControl: PlayerControlFocus?
+    @State private var menuFocusReturnTask: Task<Void, Never>?
     @State private var playerButtonOrder = TVPlayerButtonOrder.currentOrder()
 
     @AppStorage(SettingsKey.playerShowPiP) private var playerShowPiP = true
@@ -239,6 +243,7 @@ struct PlayerControls: View {
             if newControl != nil {
                 isAuxiliaryCardFocusActive = false
             }
+            noteMenuFocus(from: oldControl, to: newControl)
             // Keep this in lockstep with focus so hold-to-seek gating is correct
             // even before the next render cycle.
             let onTimeline = (newControl == .timeline)
@@ -283,10 +288,50 @@ struct PlayerControls: View {
                 }
             }
         }
+        // A Back while a subtitle or audio menu is open, or still closing, never reaches the
+        // controls: the menu or the quick-Back guard takes it.
+        .onReceive(NotificationCenter.default.publisher(for: BackGuardHostView.decisionNotification)) { note in
+            let swallowed = note.userInfo?["swallowed"] as? Bool ?? false
+            returnFocusAfterMenu(menuTakesThisBack: !swallowed)
+        }
         .onDisappear {
             viewModel.setTimelineFocused(false)
             viewModel.setControlsAutoHideSuspended(false)
             isAuxiliaryCardFocusActive = false
+            menuFocusReturnTask?.cancel()
+            menuFocusReturnTask = nil
+        }
+    }
+
+    private func noteMenuFocus(from oldControl: PlayerControlFocus?, to newControl: PlayerControlFocus?) {
+        if newControl == nil, let old = oldControl, old == .subtitles || old == .audio, viewModel.showControls {
+            menuButtonControl = old
+        } else if newControl != nil, menuButtonControl != nil {
+            menuButtonControl = nil
+            menuFocusReturnTask?.cancel()
+            menuFocusReturnTask = nil
+            NotificationCenter.default.post(name: BackGuardHostView.menuFocusReturnedNotification, object: nil)
+        }
+    }
+
+    /// Back in a subtitle or audio menu: put focus back on its button at once. tvOS hands it
+    /// back only when the menu's closing animation is over, and until then nothing is focused
+    /// and the remote does nothing. Asked again a few times, since tvOS may not let focus move
+    /// while its menu is still on its way out.
+    private func returnFocusAfterMenu(menuTakesThisBack: Bool) {
+        guard let control = menuButtonControl, viewModel.showControls else { return }
+        menuFocusReturnTask?.cancel()
+        // A Back the menu takes is still being delivered to it; give it the press first.
+        let delays: [UInt64] = menuTakesThisBack ? [150, 150, 200, 300, 400] : [0, 100, 150, 200, 300, 400]
+        menuFocusReturnTask = Task { @MainActor in
+            for delay in delays {
+                if delay > 0 {
+                    try? await Task.sleep(nanoseconds: delay * 1_000_000)
+                }
+                guard !Task.isCancelled, menuButtonControl == control, focusedControl == nil,
+                      viewModel.showControls else { return }
+                focusedControl = control
+            }
         }
     }
 
