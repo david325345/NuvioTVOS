@@ -277,16 +277,11 @@ private func installCrashHandlers(pendingPath: String) {
     _ = crashDigits
     _ = backtrace(crashFrames, 1)
 
-    // Its own stack, so a stack overflow can still be recorded.
-    let stackSize = 64 * 1024
-    var stack = stack_t(ss_sp: UnsafeMutableRawPointer.allocate(byteCount: stackSize, alignment: 16),
-                        ss_size: stackSize, ss_flags: 0)
-    sigaltstack(&stack, nil)
-
     for signalNumber in crashSignals {
         var action = sigaction()
         action.__sigaction_u.__sa_sigaction = crashSignalHandler
-        action.sa_flags = SA_SIGINFO | SA_ONSTACK
+        // tvOS has no sigaltstack: a stack overflow can't be recorded, every other crash can.
+        action.sa_flags = SA_SIGINFO
         sigemptyset(&action.sa_mask)
         sigaction(signalNumber, &action, nil)
     }
