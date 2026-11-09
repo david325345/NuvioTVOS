@@ -8392,8 +8392,15 @@ private struct TvEpisodeCard: View {
     let onMoveDown: () -> Void
     var onMoveUp: (() -> Void)? = nil
 
-    @AppStorage(SettingsKey.cardCornerRadius) private var cardCornerRadiusSetting = AppCardStyle.defaultCornerRadiusRaw
-    @AppStorage(SettingsKey.liquidGlassCards) private var liquidGlassCards = true
+    @Environment(\.cardAppearance) private var cardAppearance
+    private var cardCornerRadiusSetting: String { cardAppearance.cardCornerRadius }
+    private var liquidGlassCards: Bool { cardAppearance.liquidGlassCards }
+    /// Real glass only on the focused card, once focus rests on it (see
+    /// `LiquidGlassCardModifier`): every card of a long season used to carry two live glass
+    /// views, its background and its episode badge, focused or not.
+    @State private var glassSettled = false
+
+    private var showsGlass: Bool { liquidGlassCards && isFocused && glassSettled }
 
     private var cardKey: String { TvEpisodeFocus.card(video.id) }
     private var isFocused: Bool { focus.wrappedValue == cardKey }
@@ -8437,7 +8444,7 @@ private struct TvEpisodeCard: View {
                             if liquidGlassCards {
                                 Capsule()
                                     .fill(Color.white.opacity(0.14))
-                                    .modifier(LiquidGlassBadgeModifier(cornerRadius: 16))
+                                    .modifier(LiquidGlassBadgeModifier(cornerRadius: 16, isFocused: showsGlass))
                             } else {
                                 Capsule()
                                     .fill(Color.black.opacity(0.52))
@@ -8498,9 +8505,14 @@ private struct TvEpisodeCard: View {
                     if liquidGlassCards {
                         #if os(tvOS)
                         if #available(tvOS 26.0, *) {
-                            shape
-                                .fill(isFocused ? Color.white.opacity(0.18) : Color.white.opacity(0.08))
-                                .glassEffect(.regular, in: shape)
+                            if showsGlass {
+                                shape
+                                    .fill(Color.white.opacity(0.18))
+                                    .glassEffect(.regular, in: shape)
+                            } else {
+                                shape
+                                    .fill(isFocused ? Color.white.opacity(0.18) : Color.white.opacity(0.08))
+                            }
                         } else {
                             shape
                                 .fill(isFocused ? Color.white.opacity(0.18) : Color.white.opacity(0.08))
@@ -8532,10 +8544,11 @@ private struct TvEpisodeCard: View {
                         lineWidth: isFocused ? AppFocusOutline.width : 0
                     )
                 )
+                // Only the focused card casts a shadow (see PosterCard).
                 .shadow(
-                    color: Color.black.opacity(isFocused ? 0.45 : 0.22),
-                    radius: isFocused ? 20 : 10,
-                    y: isFocused ? 14 : 6
+                    color: Color.black.opacity(isFocused ? 0.45 : 0),
+                    radius: isFocused ? 20 : 0,
+                    y: isFocused ? 14 : 0
                 )
             }
             .buttonStyle(PosterCardButtonStyle())
@@ -8546,6 +8559,17 @@ private struct TvEpisodeCard: View {
             .animation(.easeOut(duration: 0.14), value: isFocused)
             .onChange(of: isFocused) { _, focused in
                 if focused { onFocus() }
+            }
+            .task(id: isFocused) {
+                if glassSettled { glassSettled = false }
+                guard isFocused, liquidGlassCards else { return }
+                do {
+                    try await Task.sleep(nanoseconds: LiquidGlassCardModifier.glassSettleDelay)
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled else { return }
+                glassSettled = true
             }
             .onExitCommand {
                 onBack?()
