@@ -4103,6 +4103,8 @@ struct TvDetailsContent: View {
     /// `episodeFocus`, which changes on every move along the strip and made all
     /// of Details redraw with it (see `TvDetailsEpisodeFocusObserver`).
     @State private var isEpisodeFocused = false
+    /// Test build (Details Opening: Steady): the content fades in over a backdrop shown at once.
+    @State private var isContentRevealed = false
     /// Counts episode focus changes, so a delayed "focus left the episodes" can tell whether
     /// focus came back meanwhile. A reference, so counting redraws nothing.
     @State private var episodeFocusMemory = TvDetailsEpisodeFocusMemory()
@@ -4924,6 +4926,15 @@ struct TvDetailsContent: View {
                                 }
                             )
                         )
+                    }
+                    .opacity(cardAppearance.usesSteadyDetailsOpening && !isContentRevealed ? 0 : 1)
+                    .onAppear {
+                        guard !isContentRevealed else { return }
+                        if cardAppearance.usesSteadyDetailsOpening {
+                            withAnimation(.easeOut(duration: 0.28)) { isContentRevealed = true }
+                        } else {
+                            isContentRevealed = true
+                        }
                     }
 
                     if isFullscreenTrailerPresented {

@@ -23,11 +23,13 @@ struct CardAppearance: Equatable {
     var rowScrolling = CardExperiment.rowScrollingNuvio
     var focusEffect = CardExperiment.focusEffectNuvio
     var verticalScrolling = CardExperiment.verticalScrollingNuvio
+    var detailsOpening = CardExperiment.detailsOpeningNuvio
 
     var usesSystemRowScrolling: Bool { rowScrolling == CardExperiment.rowScrollingSystem }
     var usesSystemFocusEffect: Bool { focusEffect == CardExperiment.focusEffectSystem }
     var usesLightFocusEffect: Bool { focusEffect == CardExperiment.focusEffectLight }
     var usesSmoothVerticalScrolling: Bool { verticalScrolling == CardExperiment.verticalScrollingSmooth }
+    var usesSteadyDetailsOpening: Bool { detailsOpening == CardExperiment.detailsOpeningSteady }
 
     /// The values saved in `defaults`, for views outside ContentView's tree.
     static func stored(in defaults: UserDefaults) -> CardAppearance {
@@ -46,6 +48,7 @@ struct CardAppearance: Equatable {
         if let value = defaults.string(forKey: CardExperiment.rowScrollingKey) { appearance.rowScrolling = value }
         if let value = defaults.string(forKey: CardExperiment.focusEffectKey) { appearance.focusEffect = value }
         if let value = defaults.string(forKey: CardExperiment.verticalScrollingKey) { appearance.verticalScrolling = value }
+        if let value = defaults.string(forKey: CardExperiment.detailsOpeningKey) { appearance.detailsOpening = value }
         return appearance
     }
 }
@@ -78,6 +81,7 @@ struct CardAppearanceProvider: ViewModifier {
     @AppStorage(CardExperiment.rowScrollingKey) private var rowScrolling = CardExperiment.rowScrollingNuvio
     @AppStorage(CardExperiment.focusEffectKey) private var focusEffect = CardExperiment.focusEffectNuvio
     @AppStorage(CardExperiment.verticalScrollingKey) private var verticalScrolling = CardExperiment.verticalScrollingNuvio
+    @AppStorage(CardExperiment.detailsOpeningKey) private var detailsOpening = CardExperiment.detailsOpeningNuvio
 
     func body(content: Content) -> some View {
         content.environment(
@@ -96,7 +100,8 @@ struct CardAppearanceProvider: ViewModifier {
                 amoledSurfaces: amoledSurfaces,
                 rowScrolling: rowScrolling,
                 focusEffect: focusEffect,
-                verticalScrolling: verticalScrolling
+                verticalScrolling: verticalScrolling,
+                detailsOpening: detailsOpening
             )
         )
     }
@@ -107,6 +112,7 @@ enum CardExperiment {
     static let rowScrollingKey = "nuvio.tv.test.rowScrolling"
     static let focusEffectKey = "nuvio.tv.test.focusEffect"
     static let verticalScrollingKey = "nuvio.tv.test.verticalScrolling"
+    static let detailsOpeningKey = "nuvio.tv.test.detailsOpening"
 
     /// Rows move by Nuvio's own animated offset (focused card kept at the left).
     static let rowScrollingNuvio = "nuvio"
@@ -125,4 +131,10 @@ enum CardExperiment {
     /// Home keeps one more row ready on each side and builds the farthest only once a move has
     /// finished; Details fades in a backdrop blurred once instead of animating the blur.
     static let verticalScrollingSmooth = "smooth"
+
+    /// Details fades in over Home as a whole: for a moment both screens show through each other.
+    static let detailsOpeningNuvio = "nuvio"
+    /// Details' backdrop (the same title art Home shows) is there at once and only its content
+    /// fades in, so nothing shows twice and the screen doesn't wash out.
+    static let detailsOpeningSteady = "steady"
 }
