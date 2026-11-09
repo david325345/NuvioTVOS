@@ -45,12 +45,15 @@ final class HitchMeter: NSObject {
         /// Every frame that didn't come on time, one late frame included.
         var droppedFrames: Int = 0
         var frames: Int = 0
+        /// The smoothness experiments in use ("rows system, focus light"), empty when none.
+        var experiments: String = ""
 
         var text: String {
             "ui: \(droppedFrames) of \(frames) frames dropped in \(seconds) s, "
                 + "\(hitches) hitch\(hitches == 1 ? "" : "es") (longest \(longestMilliseconds) ms, \(lostMilliseconds) ms lost), "
                 + "\(focusMoves) focus move\(focusMoves == 1 ? "" : "s"), "
                 + "\(screen), glass \(glassCards ? "on" : "off")"
+                + (experiments.isEmpty ? "" : ", " + experiments)
         }
     }
 
@@ -128,7 +131,8 @@ final class HitchMeter: NSObject {
                 screen: Self.screen,
                 glassCards: Self.glassCardsOn,
                 droppedFrames: droppedFrames,
-                frames: frames
+                frames: frames,
+                experiments: Self.experiments
             )
             TestDiagnosticLog.ui(summary.text)
         }
@@ -139,6 +143,15 @@ final class HitchMeter: NSObject {
         longest = 0
         focusMoves = 0
         windowStart = now
+    }
+
+    /// "rows system, focus light" for the experiments that aren't Nuvio's default.
+    private static var experiments: String {
+        let defaults = ProfileSettings.current
+        var parts: [String] = []
+        if let rows = defaults.string(forKey: "nuvio.tv.test.rowScrolling"), rows != "nuvio" { parts.append("rows \(rows)") }
+        if let focus = defaults.string(forKey: "nuvio.tv.test.focusEffect"), focus != "nuvio" { parts.append("focus \(focus)") }
+        return parts.joined(separator: ", ")
     }
 
     private static var glassCardsOn: Bool {

@@ -6008,6 +6008,10 @@ private struct TestDiagnosticsSheet: View {
     @State private var isSendingToGitHub = false
     @State private var githubMessage: String?
     @State private var githubSent = false
+    // Smoothness experiments (read by the cards and rows through the shared card appearance).
+    @AppStorage("nuvio.tv.test.rowScrolling") private var rowScrolling = "nuvio"
+    @AppStorage("nuvio.tv.test.focusEffect") private var focusEffect = "nuvio"
+    @AppStorage(SettingsKey.liquidGlassCards) private var liquidGlassCards = true
 
     var body: some View {
         ZStack {
@@ -6038,6 +6042,42 @@ private struct TestDiagnosticsSheet: View {
                         Text(exportMessage)
                             .font(.system(size: 19, weight: .medium))
                             .foregroundColor(.orange.opacity(0.9))
+                    }
+
+                    SettingsGroup(
+                        title: "Smoothness Experiments",
+                        subtitle: "Variants to compare on Home. The test log's \"frames dropped\" lines say which ones were on."
+                    ) {
+                        SettingsActionRow(
+                            title: "Row Scrolling",
+                            subtitle: rowScrolling == "system"
+                                ? "System: tvOS scrolls each row as focus moves"
+                                : "Nuvio: rows move by Nuvio's own animation, focused card on the left",
+                            value: rowScrolling == "system" ? "System" : "Nuvio",
+                            accentColor: accentColor
+                        ) {
+                            rowScrolling = rowScrolling == "system" ? "nuvio" : "system"
+                        }
+                        SettingsActionRow(
+                            title: "Card Focus Effect",
+                            subtitle: focusEffect == "system"
+                                ? "System: tvOS's own lift and tilt"
+                                : focusEffect == "light"
+                                    ? "Light: the outline without the shadow and glass extras"
+                                    : "Nuvio: outline, shadow and glass border",
+                            value: focusEffect == "system" ? "System" : focusEffect == "light" ? "Light" : "Nuvio",
+                            accentColor: accentColor
+                        ) {
+                            focusEffect = focusEffect == "nuvio" ? "light" : focusEffect == "light" ? "system" : "nuvio"
+                        }
+                        SettingsActionRow(
+                            title: "Glass Cards",
+                            subtitle: "The same switch as in Appearance",
+                            value: liquidGlassCards ? "On" : "Off",
+                            accentColor: accentColor
+                        ) {
+                            liquidGlassCards.toggle()
+                        }
                     }
 
                     SettingsGroup(
