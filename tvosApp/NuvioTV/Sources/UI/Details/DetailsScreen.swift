@@ -4103,6 +4103,9 @@ struct TvDetailsContent: View {
     /// `episodeFocus`, which changes on every move along the strip and made all
     /// of Details redraw with it (see `TvDetailsEpisodeFocusObserver`).
     @State private var isEpisodeFocused = false
+    /// Counts episode focus changes, so a delayed "focus left the episodes" can tell whether
+    /// focus came back meanwhile. A reference, so counting redraws nothing.
+    @State private var episodeFocusMemory = TvDetailsEpisodeFocusMemory()
     /// When the last animated scroll between sections ends (test build, Vertical Scrolling: Smooth).
     @State private var sectionScroll = TvDetailsSectionScrollClock()
     @Environment(\.cardAppearance) private var cardAppearance
@@ -4573,7 +4576,8 @@ struct TvDetailsContent: View {
                         cast: meta.cast,
                         director: meta.director,
                         writer: meta.writer,
-                        people: uiState.people
+                        people: uiState.people,
+                        headerFocus: castHeaderFocus
                     ),
                     entryLocked: focusedDetailsSection != .cast
                 ))
@@ -5142,13 +5146,18 @@ struct TvDetailsContent: View {
     /// Cancel a scroll-first handoff when a newly focused episode control
     /// indicates that the user changed direction.
     private func handleEpisodeFocusChange(_ newFocus: String?, scrollProxy: ScrollViewProxy) {
-        let focused = newFocus != nil
-        if focused != isEpisodeFocused {
-            TestDiagnosticLog.ui(focused
-                ? "details: focus into the episodes" + (newFocus == restoreEpisodeKey ? " (put back)" : "")
-                : "details: focus left the episodes")
+        episodeFocusMemory.generation &+= 1
+        if newFocus != nil {
+            setEpisodeFocused(true, putBack: newFocus == restoreEpisodeKey)
+        } else if isEpisodeFocused {
+            // A move along the strip passes through "no episode focused" for a moment, which
+            // redrew all of Details twice per move; only an exit that lasts counts.
+            let generation = episodeFocusMemory.generation
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                guard episodeFocusMemory.generation == generation else { return }
+                setEpisodeFocused(false)
+            }
         }
-        if isEpisodeFocused != focused { isEpisodeFocused = focused }
         // Restoration landed — lift the restriction.
         if let newFocus, newFocus == restoreEpisodeKey {
             restoreEpisodeKey = nil
@@ -5165,6 +5174,14 @@ struct TvDetailsContent: View {
     /// Test log: "play", "trailer" or "none".
     private static func testLogName(_ focus: DetailsActionFocus?) -> String {
         focus.map { "\($0)" } ?? "none"
+    }
+
+    private func setEpisodeFocused(_ focused: Bool, putBack: Bool = false) {
+        guard isEpisodeFocused != focused else { return }
+        TestDiagnosticLog.ui(focused
+            ? "details: focus into the episodes" + (putBack ? " (put back)" : "")
+            : "details: focus left the episodes")
+        isEpisodeFocused = focused
     }
 
     /// Test build (Vertical Scrolling: Smooth): a move into another section starts an animated
@@ -5394,6 +5411,10 @@ private struct TvDetailsCastSnapshot: Equatable {
     let director: [String]?
     let writer: [String]?
     let people: [TmdbPersonMetadata]
+    /// The section's headings follow Details' header focus through a binding, and notice that
+    /// they gained it only when redrawn: a cast section kept as it was left its heading
+    /// unaware, so the section never took focus and its rows stayed locked.
+    let headerFocus: DetailsCastHeaderFocus?
 }
 
 private struct TvDetailsEpisodesSnapshotKey: Equatable {
@@ -5415,6 +5436,10 @@ private struct TvDetailsSeasonSnapshot: Equatable {
 /// Holds Details' background trailer player for the life of the screen.
 private final class TvDetailsTrailerPlayerHolder: ObservableObject {
     let player = AVPlayer()
+}
+
+private final class TvDetailsEpisodeFocusMemory {
+    var generation = 0
 }
 
 /// When the last animated scroll between Details sections ends. A reference, so noting a scroll
