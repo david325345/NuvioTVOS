@@ -6002,6 +6002,12 @@ private struct TestDiagnosticsSheet: View {
     @State private var exporting: Export?
     @State private var exportURL: URL?
     @State private var exportMessage: String?
+    @State private var githubRepository = TestLogUploader.repository
+    @State private var githubToken = ""
+    @State private var hasGitHubToken = TestLogUploader.hasToken
+    @State private var isSendingToGitHub = false
+    @State private var githubMessage: String?
+    @State private var githubSent = false
 
     var body: some View {
         ZStack {
@@ -6014,7 +6020,7 @@ private struct TestDiagnosticsSheet: View {
                         Text("Crash Reports & Test Log")
                             .font(.system(size: 36, weight: .bold))
                             .foregroundColor(.white)
-                        Text("Test build only. Kept on this Apple TV and sent nowhere, unless you scan a code below with a phone on the same network.")
+                        Text("Test build only. Kept on this Apple TV and sent nowhere, unless you send it to GitHub or scan a code below with a phone on the same network.")
                             .font(.system(size: 20, weight: .medium))
                             .foregroundColor(.white.opacity(0.62))
                             .fixedSize(horizontal: false, vertical: true)
@@ -6032,6 +6038,63 @@ private struct TestDiagnosticsSheet: View {
                         Text(exportMessage)
                             .font(.system(size: 19, weight: .medium))
                             .foregroundColor(.orange.opacity(0.9))
+                    }
+
+                    SettingsGroup(
+                        title: "Send to GitHub",
+                        subtitle: hasGitHubToken
+                            ? "Sends the crash reports and the whole test log as one file to \(githubRepository)."
+                            : "Set a GitHub token first: a fine-grained token for this repository only, with Contents: Read and write. Select the field and type it, or paste it on your iPhone when it offers its keyboard."
+                    ) {
+                        SettingsNativeTextFieldRow(
+                            title: "Repository",
+                            subtitle: "Where the files go (owner/name). A private repository keeps the logs to you.",
+                            placeholder: TestLogUploader.defaultRepository,
+                            text: $githubRepository,
+                            fieldWidth: 380,
+                            status: TestLogUploader.isValidRepository(githubRepository) ? nil : "Should look like owner/name",
+                            statusColor: .orange.opacity(0.9),
+                            onCommit: {
+                                TestLogUploader.repository = githubRepository
+                            }
+                        )
+                        SettingsNativeTextFieldRow(
+                            title: "Token",
+                            subtitle: "Kept in this Apple TV's Keychain, never in the app",
+                            placeholder: hasGitHubToken ? "Set" : "Not set",
+                            text: $githubToken,
+                            isSecure: true,
+                            fieldWidth: 380,
+                            status: hasGitHubToken ? "Set" : "Not set",
+                            onCommit: {
+                                if TestLogUploader.saveToken(githubToken) {
+                                    hasGitHubToken = true
+                                    githubMessage = "Token saved."
+                                }
+                                githubToken = ""
+                            }
+                        )
+                        if hasGitHubToken {
+                            SettingsActionRow(
+                                title: "Send to GitHub",
+                                subtitle: githubMessage ?? "Crash reports and the whole test log",
+                                value: isSendingToGitHub ? "Sending…" : (githubSent ? "Sent" : ""),
+                                accentColor: accentColor
+                            ) {
+                                sendToGitHub()
+                            }
+                            SettingsActionRow(
+                                title: "Forget Token",
+                                subtitle: "Removes it from this Apple TV",
+                                value: "",
+                                accentColor: accentColor
+                            ) {
+                                TestLogUploader.forgetToken()
+                                hasGitHubToken = false
+                                githubSent = false
+                                githubMessage = nil
+                            }
+                        }
                     }
 
                     SettingsGroup(
@@ -6126,6 +6189,39 @@ private struct TestDiagnosticsSheet: View {
         CrashRecorder.markSeen()
         TestDiagnosticLog.snapshot { lines in
             Task { @MainActor in usenetLines = lines }
+        }
+    }
+
+    private func sendToGitHub() {
+        guard !isSendingToGitHub else { return }
+        TestLogUploader.repository = githubRepository
+        isSendingToGitHub = true
+        githubSent = false
+        githubMessage = "Sending…"
+        let object: [String: Any] = [
+            "app": CrashRecorder.appVersion,
+            "sentAt": Date().formatted(.iso8601),
+            "crashReports": reports.map { report in
+                ["date": report.date.formatted(.iso8601), "kind": report.kind.rawValue,
+                 "summary": report.summary, "details": report.details]
+            },
+            "usenetLog": usenetLines
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted]) else {
+            isSendingToGitHub = false
+            githubMessage = "The file could not be prepared."
+            return
+        }
+        Task { @MainActor in
+            let outcome = await TestLogUploader.upload(data)
+            isSendingToGitHub = false
+            switch outcome {
+            case let .sent(path):
+                githubSent = true
+                githubMessage = "Sent as \(path)"
+            case let .failed(message):
+                githubMessage = message
+            }
         }
     }
 

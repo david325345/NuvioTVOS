@@ -133,4 +133,17 @@ final class CrashRecorderTests: XCTestCase {
         XCTAssertEqual(ASSTestLogCounters.describe(header: header), "[Events] no (added), 2 styles, PlayRes 1920×1080")
         XCTAssertEqual(ASSTestLogCounters.describe(header: "[Events]"), "[Events] yes, 0 styles, PlayRes ?×?")
     }
+
+    func testGitHubLogPathAndRepositoryCheck() {
+        let date = Date(timeIntervalSince1970: 1_794_242_825) // 2026-11-09 16:47:05 UTC
+        XCTAssertEqual(
+            TestLogUploader.path(at: date, timeZone: TimeZone(identifier: "Europe/Prague")!),
+            "nuvio-logs/2026-11-09/17-47-05.json"
+        )
+        XCTAssertTrue(TestLogUploader.isValidRepository("david325345/nuvio-test-logs"))
+        XCTAssertFalse(TestLogUploader.isValidRepository("nuvio-test-logs"))
+        XCTAssertFalse(TestLogUploader.isValidRepository("david325345/nuvio test"))
+        XCTAssertFalse(TestLogUploader.isValidRepository("a/b/c"))
+        XCTAssertTrue(TestLogUploader.describe(status: 403, message: nil, repository: "a/b").contains("Contents: Read and write"))
+    }
 }
