@@ -2726,6 +2726,8 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
     private(set) var currentSpeed: Float = 1
     private(set) var currentErrorMessage = ""
     private(set) var videoFrameSize: CGSize = .zero
+    /// Test build: the last subtitle selection written to the test log.
+    private var testLogSubtitleSelection: String?
     private(set) var currentAspectMode: PlayerAspectMode = .fit
     /// Subtitle evaluation clock (Aether `sourceTime`).
     private(set) var sourceTimeSeconds: Double = 0
@@ -4773,6 +4775,7 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
 
     private func refreshASSRenderer(for tracks: [TrackInfo]) {
         let selected = tracks.first { $0.id == engine.activeSubtitleTrackIndex }
+        noteSubtitleSelectionForTestLog(selected, trackCount: tracks.count)
         let codec = selected?.codec.lowercased() ?? ""
         let isASS = codec.hasPrefix("ass") || codec.hasPrefix("ssa")
             || selected?.assHeader != nil
@@ -4799,6 +4802,23 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
             assCoordinator.activate(header: header, itemID: currentStreamKey)
         }
         subtitleOverlayState.updateASS(renderer: assCoordinator.renderer, isActive: true)
+    }
+
+    /// Test build: the selected subtitle track, each time it changes.
+    private func noteSubtitleSelectionForTestLog(_ selected: TrackInfo?, trackCount: Int) {
+        let text: String
+        if let selected {
+            let header = selected.isExternal ? engine.sidecarASSHeader : selected.assHeader
+            text = "track \(selected.id) of \(trackCount): \(selected.language ?? "?"), \(selected.codec), "
+                + (selected.isExternal ? "external" : "in the file")
+                + (selected.isNativelyRenderedSubtitle ? ", drawn by the system" : "")
+                + ", header " + (header.map { "\($0.count) chars" } ?? "none")
+        } else {
+            text = "no subtitle track (\(trackCount) available)"
+        }
+        guard text != testLogSubtitleSelection else { return }
+        testLogSubtitleSelection = text
+        TestDiagnosticLog.subtitles("selected " + text)
     }
 
     /// CodecPrivate occasionally omits PlayRes, which leaves libass on its

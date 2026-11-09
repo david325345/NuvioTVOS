@@ -57,6 +57,7 @@ final class ASSRenderCoordinator {
     private var lastSnapshotRendererGeneration: Int?
     private var lastSnapshotRendererID: ObjectIdentifier?
     private var loadedDialogueTimeline: [(start: Double, end: Double, identity: String)] = []
+    private var testLog = ASSTestLogCounters()
 
     private struct OfferKey: Hashable {
         let id: Int
@@ -98,13 +99,21 @@ final class ASSRenderCoordinator {
     /// for a sidecar track. A missing header leaves the text overlay path active.
     func activate(header: String?, itemID: String) {
         deactivate()
-        guard let header, !header.isEmpty else { return }
+        testLog = ASSTestLogCounters()
+        guard let header, !header.isEmpty else {
+            TestDiagnosticLog.subtitles("ASS track without a header, lines go to the plain text fallback")
+            return
+        }
 
         generation += 1
         let currentGeneration = generation
         let fonts = player.fontAttachments
         let fontsDirectory = Self.fontsDirectory(itemID: itemID)
         builder = ASSScriptBuilder(header: header)
+        TestDiagnosticLog.subtitles(
+            "ASS on: header \(header.count) chars, \(ASSTestLogCounters.describe(header: header)), "
+                + "\(fonts.count) embedded font\(fonts.count == 1 ? "" : "s")"
+        )
 
         if Self.allFontsPresent(fonts, in: fontsDirectory) {
             installRenderer(at: fontsDirectory, fonts: fonts)
@@ -157,6 +166,11 @@ final class ASSRenderCoordinator {
     }
 
     func deactivate() {
+        if builder != nil {
+            TestDiagnosticLog.subtitles(
+                "ASS off after \(testLog.millisecondsSinceStart / 1_000) s, \(builder?.eventCount ?? 0) lines in the track"
+            )
+        }
         stopDisplayLink()
         scheduledReload?.cancel()
         scheduledReload = nil
@@ -181,6 +195,7 @@ final class ASSRenderCoordinator {
     }
 
     private func installRenderer(at directory: URL, fonts: [FontAttachment]) {
+        TestDiagnosticLog.subtitles("ASS renderer ready after \(testLog.millisecondsSinceStart) ms")
         let renderer = AssSubtitlesRenderer(
             fontConfig: FontConfig(fontsPath: directory, fontProvider: .coreText),
             librarySetup: { library in
@@ -338,13 +353,19 @@ final class ASSRenderCoordinator {
                    self.requiredReloadPasses == 0,
                    !hasPendingReloadRender {
                     self.reloadInFlightRevision = nil
+                    self.testLog.reloadBegan = nil
+                    self.testLog.countFrame(hasText: snapshot.image != nil)
                     self.cacheAcceptedSnapshot(snapshot, validity: identityState.validity)
                     self.reloadSignal.send(.finished(snapshot))
                 } else if reloadRevision == nil, self.reloadInFlightRevision == nil,
                           !isRequiredReloadRender {
+                    self.testLog.countFrame(hasText: snapshot.image != nil)
                     self.cacheAcceptedSnapshot(snapshot, validity: identityState.validity)
                     self.reloadSignal.send(.frameRendered(snapshot))
+                } else {
+                    self.testLog.framesHeldForReload += 1
                 }
+                self.testLog.summarizeIfDue(events: self.builder?.eventCount ?? 0)
                 self.isRendering = false
                 if let next = self.pendingRender {
                     self.pendingRender = nil
@@ -405,15 +426,31 @@ final class ASSRenderCoordinator {
         guard let builder else { return }
         var added = false
         for cue in cues {
-            guard case .text(let raw) = cue.body,
-                  offered.insert(OfferKey(id: cue.id, endTime: cue.endTime)).inserted else { continue }
+            guard offered.insert(OfferKey(id: cue.id, endTime: cue.endTime)).inserted else { continue }
+            guard case .text(let raw) = cue.body else {
+                testLog.otherCues += 1
+                continue
+            }
+            testLog.linesOffered += 1
             if builder.add(rawEventText: raw, start: cue.startTime, end: cue.endTime) {
                 added = true
+                testLog.linesTaken += 1
                 earliestPendingStart = min(earliestPendingStart, cue.startTime)
+            } else if testLog.rejectedSample == nil {
+                testLog.rejectedSample = String(raw.prefix(70))
             }
+        }
+        if testLog.linesOffered > 0, !testLog.loggedFirstLines {
+            testLog.loggedFirstLines = true
+            TestDiagnosticLog.subtitles(
+                "first ASS lines after \(testLog.millisecondsSinceStart) ms: \(testLog.linesOffered) in, "
+                    + "\(testLog.linesTaken) taken"
+                    + (testLog.rejectedSample.map { ", not taken e.g. \"\($0)\"" } ?? "")
+            )
         }
         if added { pendingReload = true }
         flushIfDue()
+        testLog.summarizeIfDue(events: builder.eventCount)
     }
 
     private func hasActiveCue(at time: Double) -> Bool {
@@ -493,6 +530,14 @@ final class ASSRenderCoordinator {
         reloadInFlightRevision = revision
         requiredReloadPasses = 1
         loadedDialogueTimeline = builder?.eventIdentitySnapshot() ?? []
+        testLog.reloads += 1
+        testLog.reloadBegan = testLog.reloadBegan ?? Date()
+        if testLog.reloads <= 3 {
+            TestDiagnosticLog.subtitles(
+                "ASS track loaded (#\(testLog.reloads)): \(builder?.eventCount ?? 0) lines, "
+                    + "script \(content.utf8.count / 1024) KB, \(testLog.millisecondsSinceStart) ms after start"
+            )
+        }
         reloadSignal.send(.began)
         renderer.loadTrack(content: content)
         let time = currentPlaybackTime() - subtitleDelaySeconds
@@ -560,5 +605,67 @@ final class ASSRenderCoordinator {
                 CTFontManagerRegisterFontsForURL(file as CFURL, .process, &error)
             }
         }
+    }
+}
+
+/// The fork's test build: counts for the test log's subtitle lines. A summary every 10 s for
+/// the first minute of a track, then every minute.
+struct ASSTestLogCounters {
+    let started = Date()
+    var lastSummary = Date()
+    var linesOffered = 0
+    var linesTaken = 0
+    var otherCues = 0
+    var rejectedSample: String?
+    var loggedFirstLines = false
+    var reloads = 0
+    var reloadBegan: Date?
+    var framesWithText = 0
+    var framesEmpty = 0
+    var framesHeldForReload = 0
+
+    var millisecondsSinceStart: Int { Int(Date().timeIntervalSince(started) * 1_000) }
+
+    mutating func countFrame(hasText: Bool) {
+        if hasText { framesWithText += 1 } else { framesEmpty += 1 }
+    }
+
+    mutating func summarizeIfDue(events: Int) {
+        let now = Date()
+        let interval: TimeInterval = now.timeIntervalSince(started) < 60 ? 10 : 60
+        guard now.timeIntervalSince(lastSummary) >= interval else { return }
+        var text = "ASS in \(Int(now.timeIntervalSince(lastSummary))) s: \(linesTaken) of \(linesOffered) new lines taken"
+        if otherCues > 0 { text += " (\(otherCues) other cues)" }
+        text += ", \(events) in the track, frames \(framesWithText) with text / \(framesEmpty) empty"
+        if framesHeldForReload > 0 { text += " / \(framesHeldForReload) held for a reload" }
+        text += ", \(reloads) reload\(reloads == 1 ? "" : "s") so far"
+        if let reloadBegan, now.timeIntervalSince(reloadBegan) > 2 {
+            text += ", a reload unfinished for \(Int(now.timeIntervalSince(reloadBegan))) s"
+        }
+        if let rejectedSample { text += ", not taken e.g. \"\(rejectedSample)\"" }
+        TestDiagnosticLog.subtitles(text)
+        lastSummary = now
+        linesOffered = 0
+        linesTaken = 0
+        otherCues = 0
+        rejectedSample = nil
+        framesWithText = 0
+        framesEmpty = 0
+        framesHeldForReload = 0
+    }
+
+    /// "[Events] yes, 3 styles, PlayRes 1920×1080" for the log.
+    static func describe(header: String) -> String {
+        var styles = 0
+        var playResX: String?
+        var playResY: String?
+        for line in header.split(whereSeparator: \.isNewline) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("Style:") { styles += 1 }
+            if trimmed.lowercased().hasPrefix("playresx:") { playResX = String(trimmed.dropFirst(9)).trimmingCharacters(in: .whitespaces) }
+            if trimmed.lowercased().hasPrefix("playresy:") { playResY = String(trimmed.dropFirst(9)).trimmingCharacters(in: .whitespaces) }
+        }
+        let events = header.contains("[Events]") ? "yes" : "no (added)"
+        return "[Events] \(events), \(styles) style\(styles == 1 ? "" : "s"), PlayRes \(playResX ?? "?")×\(playResY ?? "?")"
     }
 }
