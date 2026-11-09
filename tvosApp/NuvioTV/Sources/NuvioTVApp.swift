@@ -2678,7 +2678,11 @@ struct ContentView: View {
             if case .details(let contentId, let contentType) = activeScreen {
                 detailsScreen(contentId: contentId, contentType: contentType)
                     .id("\(contentType):\(contentId)")
-                    .transition(.leavingScreen)
+                    .transition(
+                        CardAppearance.stored(in: ProfileSettings.current).usesSteadyDetailsOpening
+                            ? .steadyDetailsScreen
+                            : .leavingScreen
+                    )
                     .onDisappear {
                         detailsDidDisappearGeneration &+= 1
                     }

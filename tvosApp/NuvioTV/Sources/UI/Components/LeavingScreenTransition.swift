@@ -20,6 +20,20 @@ extension AnyTransition {
             )
         )
     }
+
+    /// Test build (Details Opening: Steady): Details comes in without fading, its backdrop
+    /// covering Home at once; its content fades in by itself. It leaves as `leavingScreen` does.
+    static var steadyDetailsScreen: AnyTransition {
+        .asymmetric(
+            insertion: .identity,
+            removal: .opacity.combined(
+                with: .modifier(
+                    active: LeavingScreenModifier(isLeaving: true),
+                    identity: LeavingScreenModifier(isLeaving: false)
+                )
+            )
+        )
+    }
 }
 
 /// Takes a leaving screen out of focus (see `AnyTransition.leavingScreen`).
