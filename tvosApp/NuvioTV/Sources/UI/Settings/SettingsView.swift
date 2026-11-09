@@ -6358,7 +6358,7 @@ private struct TestDiagnosticsSheet: View {
                         SettingsActionRow(
                             title: "Vertical Scrolling",
                             subtitle: verticalScrolling == "smooth"
-                                ? "Smooth: Home builds the next row after a move, Details fades in a blurred backdrop and lets its scroll finish"
+                                ? "Smooth: Home and the Details episodes build what comes next after a move; Details lets its scroll finish, fades in a blurred backdrop and pauses a background trailer while scrolled down"
                                 : "Nuvio: up and down as Nuvio does it",
                             value: verticalScrolling == "smooth" ? "Smooth" : "Nuvio",
                             accentColor: accentColor
