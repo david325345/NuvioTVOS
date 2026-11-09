@@ -465,7 +465,8 @@ struct PosterCard: View {
                     cornerRadius: cardCornerRadius,
                     isFocused: showsFocusedAppearance,
                     isEnabled: liquidGlassCards,
-                    layoutKey: effectiveLandscape
+                    layoutKey: effectiveLandscape,
+                    coveredByArtwork: true
                 )
             )
             .overlay(
@@ -606,7 +607,7 @@ struct PosterCard: View {
                             .modifier(
                                 LiquidGlassBadgeModifier(
                                     cornerRadius: badgeRadius,
-                                    isFocused: showsFocusedAppearance
+                                    isFocused: showsBadgeGlass
                                 )
                             )
                     } else {
@@ -930,6 +931,11 @@ struct PosterCard: View {
         isFocused || retainFocusAppearance
     }
 
+    /// The badge's glass comes in once focus rests on the card, as the card's own did.
+    private var showsBadgeGlass: Bool {
+        showsFocusedAppearance && landscapePreloadArmed
+    }
+
     private var showsPosterTitle: Bool {
         effectivePosterLabels
     }
@@ -1028,6 +1034,10 @@ struct PosterCard: View {
 
     private var shadowOpacity: Double {
         0.2
+    }
+
+    private var showsBadgeGlass: Bool {
+        false
     }
 
     private var shadowRadius: CGFloat {
@@ -1551,7 +1561,8 @@ struct PosterGridCard: View {
                 LiquidGlassCardModifier(
                     cornerRadius: cardCornerRadius,
                     isFocused: showsFocusedAppearance,
-                    isEnabled: liquidGlassCards
+                    isEnabled: liquidGlassCards,
+                    coveredByArtwork: true
                 )
             )
             .overlay(alignment: .topTrailing) {
@@ -1712,10 +1723,14 @@ struct LiquidGlassSurface: ViewModifier {
 /// Uses native frosted glass only while focused; unfocused cards retain the
 /// specular highlight with a lightweight translucent fill.
 ///
-/// Real glass is costly to create and to redraw while the card scales or expands, and on a
-/// card it sits behind the artwork, where it only shows while the artwork loads. So it comes
-/// in once focus has rested on the card (and the card has finished changing shape); while
-/// focus moves across a row the cheap fill stands in for it.
+/// Real glass is costly to create and to redraw while the card scales or expands, and it
+/// redraws whenever what is behind it changes. So it comes in once focus has rested on the
+/// card (and the card has finished changing shape); while focus moves across a row the cheap
+/// fill stands in for it. A card whose artwork covers it (`coveredByArtwork`) gets no live
+/// glass at all: there it would only show while the artwork loads.
+///
+/// The specular gradient border is drawn through a mask, for every card, every frame a row
+/// moves; resting cards get a plain border of the same brightness, the focused one the gradient.
 struct LiquidGlassCardModifier: ViewModifier {
     static let glassSettleDelay: UInt64 = 450_000_000
 
@@ -1725,6 +1740,8 @@ struct LiquidGlassCardModifier: ViewModifier {
     /// Changes when the card changes shape (a poster expanding to landscape), so the glass
     /// waits for that too.
     var layoutKey: Bool = false
+    /// The card's artwork fills it, so live glass behind it would not be seen.
+    var coveredByArtwork: Bool = false
 
     @Environment(\.cardAppearance) private var cardAppearance
     @State private var glassSettled = false
@@ -1743,9 +1760,9 @@ struct LiquidGlassCardModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         styled(content)
-            .task(id: SettleKey(focused: isFocused && isEnabled, layout: layoutKey)) {
+            .task(id: SettleKey(focused: isFocused && isEnabled && !coveredByArtwork, layout: layoutKey)) {
                 if glassSettled { glassSettled = false }
-                guard isFocused, isEnabled else { return }
+                guard isFocused, isEnabled, !coveredByArtwork else { return }
                 do {
                     try await Task.sleep(nanoseconds: Self.glassSettleDelay)
                 } catch {
@@ -1800,20 +1817,24 @@ struct LiquidGlassCardModifier: ViewModifier {
                     #endif
                 }
                 .overlay {
-                    // Apple TV liquid glass specular reflection border
-                    shape
-                        .strokeBorder(
-                            LinearGradient(
-                                colors: [
-                                    Color.white.opacity(isFocused ? 0.55 : 0.28),
-                                    Color.white.opacity(isFocused ? 0.20 : 0.08),
-                                    Color.white.opacity(isFocused ? 0.35 : 0.12)
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            lineWidth: isFocused ? 1.5 : 1.0
-                        )
+                    if isFocused {
+                        // Apple TV liquid glass specular reflection border
+                        shape
+                            .strokeBorder(
+                                LinearGradient(
+                                    colors: [
+                                        Color.white.opacity(0.55),
+                                        Color.white.opacity(0.20),
+                                        Color.white.opacity(0.35)
+                                    ],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                ),
+                                lineWidth: 1.5
+                            )
+                    } else {
+                        shape.strokeBorder(Color.white.opacity(0.16), lineWidth: 1.0)
+                    }
                 }
         } else {
             content

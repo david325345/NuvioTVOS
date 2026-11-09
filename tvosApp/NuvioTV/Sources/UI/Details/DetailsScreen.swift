@@ -6182,7 +6182,8 @@ private struct TvDetailsCompanyCard: View {
                     LiquidGlassCardModifier(
                         cornerRadius: cardCornerRadius,
                         isFocused: isFocused,
-                        isEnabled: liquidGlassCards
+                        isEnabled: liquidGlassCards,
+                        coveredByArtwork: true
                     )
                 )
                 .overlay(
@@ -7353,32 +7354,37 @@ private struct TvDetailsPersonCard: View {
             return
         }
 
-        let targetPixelSize: CGFloat = 376
-        let downsampledImage: UIImage? = {
-            let options: [CFString: Any] = [
-                kCGImageSourceShouldCache: false
-            ]
-            guard let source = CGImageSourceCreateWithData(data as CFData, options as CFDictionary) else {
-                return UIImage(data: data)
-            }
-            guard CGImageSourceGetCount(source) > 0, CGImageSourceGetType(source) != nil else {
-                return UIImage(data: data)
-            }
-            let thumbnailOptions: [CFString: Any] = [
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceShouldCacheImmediately: true,
-                kCGImageSourceCreateThumbnailWithTransform: true,
-                kCGImageSourceThumbnailMaxPixelSize: targetPixelSize
-            ]
-            guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions as CFDictionary) else {
-                return UIImage(data: data)
-            }
-            return UIImage(cgImage: cgImage)
-        }()
+        // Decoded off the main thread: a cast row's photos decoded there held Details up for
+        // over a hundred milliseconds while it opened.
+        let downsampledImage = await Task.detached(priority: .userInitiated) {
+            Self.downsampledProfileImage(from: data, maxPixelSize: 376)
+        }.value
 
         guard let image = downsampledImage, !Task.isCancelled else { return }
         await PersonProfileImageCache.shared.insert(image, for: cacheKey)
         profileImage = image
+    }
+
+    nonisolated private static func downsampledProfileImage(from data: Data, maxPixelSize: CGFloat) -> UIImage? {
+        let options: [CFString: Any] = [
+            kCGImageSourceShouldCache: false
+        ]
+        guard let source = CGImageSourceCreateWithData(data as CFData, options as CFDictionary) else {
+            return UIImage(data: data)
+        }
+        guard CGImageSourceGetCount(source) > 0, CGImageSourceGetType(source) != nil else {
+            return UIImage(data: data)
+        }
+        let thumbnailOptions: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
+        ]
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions as CFDictionary) else {
+            return UIImage(data: data)
+        }
+        return UIImage(cgImage: cgImage)
     }
 }
 
@@ -8395,9 +8401,10 @@ private struct TvEpisodeCard: View {
     @Environment(\.cardAppearance) private var cardAppearance
     private var cardCornerRadiusSetting: String { cardAppearance.cardCornerRadius }
     private var liquidGlassCards: Bool { cardAppearance.liquidGlassCards }
-    /// Real glass only on the focused card, once focus rests on it (see
-    /// `LiquidGlassCardModifier`): every card of a long season used to carry two live glass
-    /// views, its background and its episode badge, focused or not.
+    /// Every card of a long season used to carry two live glass views, focused or not: its
+    /// background, hidden under the still, and its episode badge. The background has none now;
+    /// the badge gets glass on the focused card once focus rests on it (see
+    /// `LiquidGlassCardModifier`).
     @State private var glassSettled = false
 
     private var showsGlass: Bool { liquidGlassCards && isFocused && glassSettled }
@@ -8501,36 +8508,18 @@ private struct TvEpisodeCard: View {
                     continueProgressOverlay
                 }
                 .frame(width: cardWidth, height: cardHeight)
+                // No live glass behind the card: the still covers it.
                 .background {
-                    if liquidGlassCards {
-                        #if os(tvOS)
-                        if #available(tvOS 26.0, *) {
-                            if showsGlass {
-                                shape
-                                    .fill(Color.white.opacity(0.18))
-                                    .glassEffect(.regular, in: shape)
-                            } else {
-                                shape
-                                    .fill(isFocused ? Color.white.opacity(0.18) : Color.white.opacity(0.08))
-                            }
-                        } else {
-                            shape
-                                .fill(isFocused ? Color.white.opacity(0.18) : Color.white.opacity(0.08))
-                        }
-                        #else
-                        shape.fill(isFocused ? Color.white.opacity(0.18) : Color.white.opacity(0.08))
-                        #endif
-                    } else {
-                        shape
-                            .fill(isFocused ? Color.white.opacity(0.18) : Color.white.opacity(0.08))
-                    }
+                    shape
+                        .fill(isFocused ? Color.white.opacity(0.18) : Color.white.opacity(0.08))
                 }
                 .clipShape(shape)
                 .modifier(
                     LiquidGlassCardModifier(
                         cornerRadius: episodeCornerRadius,
                         isFocused: isFocused,
-                        isEnabled: liquidGlassCards
+                        isEnabled: liquidGlassCards,
+                        coveredByArtwork: true
                     )
                 )
                 .overlay(alignment: .topTrailing) {
