@@ -231,18 +231,19 @@ struct PosterCard: View {
 
     private let landscapeTransitionDuration: TimeInterval = 0.3
     @AppStorage(SettingsKey.focusedPosterBackdropEnabled) private var focusedPosterBackdropEnabled = true
-    @AppStorage(SettingsKey.customPosterURLPattern) private var customPosterURLPattern = ""
-    @AppStorage(SettingsKey.customPosterEnabledScreens) private var customPosterEnabledScreens = "all"
+    @Environment(\.cardAppearance) private var cardAppearance
+    private var customPosterURLPattern: String { cardAppearance.customPosterURLPattern }
+    private var customPosterEnabledScreens: String { cardAppearance.customPosterEnabledScreens }
+    private var cardCornerRadiusSetting: String { cardAppearance.cardCornerRadius }
+    private var liquidGlassCards: Bool { cardAppearance.liquidGlassCards }
     @State private var loadedCustomLandscapeArtworkURL: String?
 
     #if os(tvOS)
     @FocusState private var isFocused: Bool
     @State private var didRequestInitialFocus = false
     @State private var landscapeArtworkPrepared = false
-    @AppStorage(SettingsKey.trailersEnabled) private var trailersEnabled = true
-    @AppStorage(SettingsKey.trailerDelay) private var trailerDelay = 7
-    @AppStorage(SettingsKey.cardCornerRadius) private var cardCornerRadiusSetting = AppCardStyle.defaultCornerRadiusRaw
-    @AppStorage(SettingsKey.liquidGlassCards) private var liquidGlassCards = true
+    private var trailersEnabled: Bool { cardAppearance.trailersEnabled }
+    private var trailerDelay: Int { cardAppearance.trailerDelay }
     @State private var isTrailerPreviewActive = false
     @State private var isTrailerPreviewReady = false
     @State private var didFinishTrailerPreview = false
@@ -250,9 +251,6 @@ struct PosterCard: View {
     /// for every card passed over. Arm that preload only after focus has settled,
     /// matching Home's hero debounce.
     @State private var landscapePreloadArmed = false
-    #else
-    @AppStorage(SettingsKey.cardCornerRadius) private var cardCornerRadiusSetting = AppCardStyle.defaultCornerRadiusRaw
-    @AppStorage(SettingsKey.liquidGlassCards) private var liquidGlassCards = true
     #endif
 
     var body: some View {
@@ -466,7 +464,8 @@ struct PosterCard: View {
                 LiquidGlassCardModifier(
                     cornerRadius: cardCornerRadius,
                     isFocused: showsFocusedAppearance,
-                    isEnabled: liquidGlassCards
+                    isEnabled: liquidGlassCards,
+                    layoutKey: effectiveLandscape
                 )
             )
             .overlay(
@@ -912,12 +911,15 @@ struct PosterCard: View {
         showsFocusedAppearance ? (effectiveFocusHighlighter ? AppFocusOutline.emphasizedWidth : AppFocusOutline.width) : 0
     }
 
+    // Only the focused card casts a shadow. A shadow is drawn in a pass of its own for each
+    // card, every frame a row moves, and the faint one under resting cards barely shows on
+    // the dark background.
     private var shadowOpacity: Double {
-        showsFocusedAppearance ? 0.24 : 0.12
+        showsFocusedAppearance ? 0.24 : 0
     }
 
     private var shadowRadius: CGFloat {
-        showsFocusedAppearance ? 10 : 4
+        showsFocusedAppearance ? 10 : 0
     }
 
     private var titleColor: Color {
@@ -1500,13 +1502,14 @@ struct PosterGridCard: View {
 
     @FocusState private var focused: Bool
     @State private var didRequestInitialFocus = false
-    @AppStorage(SettingsKey.posterLabels) private var posterLabels = false
-    @AppStorage(SettingsKey.smoothFocus) private var smoothFocus = true
-    @AppStorage(SettingsKey.focusHighlighter) private var focusHighlighter = false
-    @AppStorage(SettingsKey.cardCornerRadius) private var cardCornerRadiusSetting = AppCardStyle.defaultCornerRadiusRaw
-    @AppStorage(SettingsKey.liquidGlassCards) private var liquidGlassCards = true
-    @AppStorage(SettingsKey.customPosterURLPattern) private var customPosterURLPattern = ""
-    @AppStorage(SettingsKey.customPosterEnabledScreens) private var customPosterEnabledScreens = "all"
+    @Environment(\.cardAppearance) private var cardAppearance
+    private var posterLabels: Bool { cardAppearance.posterLabels }
+    private var smoothFocus: Bool { cardAppearance.smoothFocus }
+    private var focusHighlighter: Bool { cardAppearance.focusHighlighter }
+    private var cardCornerRadiusSetting: String { cardAppearance.cardCornerRadius }
+    private var liquidGlassCards: Bool { cardAppearance.liquidGlassCards }
+    private var customPosterURLPattern: String { cardAppearance.customPosterURLPattern }
+    private var customPosterEnabledScreens: String { cardAppearance.customPosterEnabledScreens }
 
     private var customPosterArtworkURL: String? {
         CustomPosterURLResolver.resolve(
@@ -1560,9 +1563,10 @@ struct PosterGridCard: View {
                     lineWidth: focusHighlighter ? AppFocusOutline.emphasizedWidth : AppFocusOutline.width
                 )
             )
+            // Only the focused card casts a shadow (see PosterCard).
             .shadow(
-                color: .black.opacity(showsFocusedAppearance ? 0.5 : 0.2),
-                radius: showsFocusedAppearance ? 16 : 6
+                color: .black.opacity(showsFocusedAppearance ? 0.5 : 0),
+                radius: showsFocusedAppearance ? 16 : 0
             )
 
             if posterLabels || forceShowLabels {
@@ -1659,8 +1663,9 @@ struct LiquidGlassSurface: ViewModifier {
     let cornerRadius: CGFloat
     var prominent: Bool = false
 
-    @AppStorage(SettingsKey.amoled) private var amoled = false
-    @AppStorage(SettingsKey.amoledSurfaces) private var amoledSurfaces = false
+    @Environment(\.cardAppearance) private var cardAppearance
+    private var amoled: Bool { cardAppearance.amoled }
+    private var amoledSurfaces: Bool { cardAppearance.amoledSurfaces }
 
     private var shape: RoundedRectangle {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
@@ -1706,20 +1711,53 @@ struct LiquidGlassSurface: ViewModifier {
 /// Liquid Glass surface modifier for card shapes (posters, landscape cards, episode tiles).
 /// Uses native frosted glass only while focused; unfocused cards retain the
 /// specular highlight with a lightweight translucent fill.
+///
+/// Real glass is costly to create and to redraw while the card scales or expands, and on a
+/// card it sits behind the artwork, where it only shows while the artwork loads. So it comes
+/// in once focus has rested on the card (and the card has finished changing shape); while
+/// focus moves across a row the cheap fill stands in for it.
 struct LiquidGlassCardModifier: ViewModifier {
+    static let glassSettleDelay: UInt64 = 450_000_000
+
     let cornerRadius: CGFloat
     var isFocused: Bool = false
     var isEnabled: Bool = true
+    /// Changes when the card changes shape (a poster expanding to landscape), so the glass
+    /// waits for that too.
+    var layoutKey: Bool = false
 
-    @AppStorage(SettingsKey.amoled) private var amoled = false
-    @AppStorage(SettingsKey.amoledSurfaces) private var amoledSurfaces = false
+    @Environment(\.cardAppearance) private var cardAppearance
+    @State private var glassSettled = false
+
+    private var amoled: Bool { cardAppearance.amoled }
+    private var amoledSurfaces: Bool { cardAppearance.amoledSurfaces }
 
     private var shape: RoundedRectangle {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
     }
 
-    @ViewBuilder
+    private struct SettleKey: Hashable {
+        let focused: Bool
+        let layout: Bool
+    }
+
     func body(content: Content) -> some View {
+        styled(content)
+            .task(id: SettleKey(focused: isFocused && isEnabled, layout: layoutKey)) {
+                if glassSettled { glassSettled = false }
+                guard isFocused, isEnabled else { return }
+                do {
+                    try await Task.sleep(nanoseconds: Self.glassSettleDelay)
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled, isFocused else { return }
+                glassSettled = true
+            }
+    }
+
+    @ViewBuilder
+    private func styled(_ content: Content) -> some View {
         if amoled && amoledSurfaces {
             content
                 .background(Color.black, in: shape)
@@ -1735,9 +1773,13 @@ struct LiquidGlassCardModifier: ViewModifier {
                     #if os(tvOS)
                     if isFocused {
                         if #available(tvOS 26.0, *) {
-                            shape
-                                .fill(Color.white.opacity(0.16))
-                                .glassEffect(.regular, in: shape)
+                            if glassSettled {
+                                shape
+                                    .fill(Color.white.opacity(0.16))
+                                    .glassEffect(.regular, in: shape)
+                            } else {
+                                shape.fill(Color.white.opacity(0.16))
+                            }
                         } else {
                             shape
                                 .fill(.ultraThinMaterial)
