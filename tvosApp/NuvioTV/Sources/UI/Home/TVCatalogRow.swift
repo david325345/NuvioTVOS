@@ -951,9 +951,10 @@ struct TVHomeSeeAllCard: View {
 
     @FocusState private var isFocused: Bool
     @State private var didRequestInitialFocus = false
-    @AppStorage(SettingsKey.smoothFocus) private var smoothFocus = true
-    @AppStorage(SettingsKey.focusHighlighter) private var focusHighlighter = false
-    @AppStorage(SettingsKey.cardCornerRadius) private var cardCornerRadiusSetting = AppCardStyle.defaultCornerRadiusRaw
+    @Environment(\.cardAppearance) private var cardAppearance
+    private var smoothFocus: Bool { cardAppearance.smoothFocus }
+    private var focusHighlighter: Bool { cardAppearance.focusHighlighter }
+    private var cardCornerRadiusSetting: String { cardAppearance.cardCornerRadius }
 
     private var showsFocusedAppearance: Bool { isFocused || retainFocusAppearance }
 
@@ -988,9 +989,10 @@ struct TVHomeSeeAllCard: View {
                     lineWidth: focusHighlighter ? AppFocusOutline.emphasizedWidth : AppFocusOutline.width
                 )
             )
+            // Only the focused card casts a shadow (see PosterCard).
             .shadow(
-                color: .black.opacity(showsFocusedAppearance ? 0.5 : 0.2),
-                radius: showsFocusedAppearance ? 16 : 6
+                color: .black.opacity(showsFocusedAppearance ? 0.5 : 0),
+                radius: showsFocusedAppearance ? 16 : 0
             )
             .scaleEffect(showsFocusedAppearance ? 1.06 : 1)
         }
@@ -1589,7 +1591,8 @@ struct TVCollectionFolderCard: View {
 
     @FocusState private var isFocused: Bool
     @State private var didRequestInitialFocus = false
-    @AppStorage(SettingsKey.cardCornerRadius) private var cardCornerRadiusSetting = AppCardStyle.defaultCornerRadiusRaw
+    @Environment(\.cardAppearance) private var cardAppearance
+    private var cardCornerRadiusSetting: String { cardAppearance.cardCornerRadius }
 
     private var showFocus: Bool { isFocused || retainFocusAppearance }
 
@@ -1677,8 +1680,9 @@ struct TVCollectionFolderCard: View {
         showFocus ? (focusHighlighterEnabled ? AppFocusOutline.emphasizedWidth : AppFocusOutline.width) : 0
     }
 
-    private var shadowOpacity: Double { showFocus ? 0.5 : 0.2 }
-    private var shadowRadius: CGFloat { showFocus ? 16 : 6 }
+    // Only the focused card casts a shadow (see PosterCard).
+    private var shadowOpacity: Double { showFocus ? 0.5 : 0 }
+    private var shadowRadius: CGFloat { showFocus ? 16 : 0 }
 
     private var focusGifURLString: String? {
         folder.activeFocusGifURLString

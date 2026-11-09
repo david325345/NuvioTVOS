@@ -663,6 +663,9 @@ struct ContentView: View {
 
             AtvloadlyNoticeCountdownDriver(release: atvloadlyNoticeRelease)
         }
+        // The card settings, read once here for every card below (inside the
+        // profile store that follows).
+        .modifier(CardAppearanceProvider())
         // Resolve every @AppStorage in the app against the active profile's
         // settings suite, so each profile keeps its own theme, layout, playback
         // preferences, etc. Falls back to the shared store before a profile is picked.
