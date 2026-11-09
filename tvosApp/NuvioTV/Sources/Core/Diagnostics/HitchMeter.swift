@@ -45,10 +45,13 @@ final class HitchMeter: NSObject {
     private struct MoveWindow {
         var direction: String
         var moves: Int
+        var firstMoveAt: CFTimeInterval
         var lastMoveAt: CFTimeInterval
         var frames = 0
         var droppedFrames = 0
         var longest: CFTimeInterval = 0
+        /// When the longest gap ended, after the first move.
+        var longestAt: CFTimeInterval = 0
         var rowsBuilt = 0
         var screen: String
     }
@@ -64,10 +67,14 @@ final class HitchMeter: NSObject {
         var rowsBuilt: Int
         var glassCards: Bool
         var experiments: String = ""
+        /// When the longest gap ended, in milliseconds after the move: within the scroll's
+        /// animation (about 300 ms) or after it. Nil when no frame was late.
+        var longestAtMilliseconds: Int? = nil
 
         var text: String {
             "ui: move \(direction)\(moves > 1 ? " ×\(moves)" : "") on \(screen): "
-                + "\(droppedFrames) of \(frames) frames dropped (longest \(longestMilliseconds) ms), "
+                + "\(droppedFrames) of \(frames) frames dropped (longest \(longestMilliseconds) ms"
+                + (longestAtMilliseconds.map { " at \($0) ms" } ?? "") + "), "
                 + "\(rowsBuilt) row\(rowsBuilt == 1 ? "" : "s") built, glass \(glassCards ? "on" : "off")"
                 + (experiments.isEmpty ? "" : ", " + experiments)
         }
@@ -150,7 +157,7 @@ final class HitchMeter: NSObject {
             move = open
         } else {
             flushMove()
-            move = MoveWindow(direction: direction, moves: 1, lastMoveAt: now, screen: Self.screen)
+            move = MoveWindow(direction: direction, moves: 1, firstMoveAt: now, lastMoveAt: now, screen: Self.screen)
         }
     }
 
@@ -166,7 +173,8 @@ final class HitchMeter: NSObject {
             longestMilliseconds: Int(open.longest * 1_000),
             rowsBuilt: open.rowsBuilt,
             glassCards: Self.glassCardsOn,
-            experiments: Self.experiments
+            experiments: Self.experiments,
+            longestAtMilliseconds: open.droppedFrames > 0 ? Int(open.longestAt * 1_000) : nil
         )
         TestDiagnosticLog.ui(summary.text)
     }
@@ -198,7 +206,10 @@ final class HitchMeter: NSObject {
         if var open = move {
             open.frames += 1 + dropped
             open.droppedFrames += dropped
-            open.longest = max(open.longest, gap)
+            if gap > open.longest {
+                open.longest = gap
+                open.longestAt = now - open.firstMoveAt
+            }
             move = open
             if now - open.lastMoveAt >= Self.moveWindow { flushMove() }
         }

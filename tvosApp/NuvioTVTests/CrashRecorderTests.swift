@@ -68,10 +68,10 @@ final class CrashRecorderTests: XCTestCase {
     func testMoveLineSaysWhereAndHowSmooth() {
         let single = HitchMeter.MoveSummary(direction: "down", moves: 1, screen: "main · home",
                                             droppedFrames: 2, frames: 31, longestMilliseconds: 50,
-                                            rowsBuilt: 1, glassCards: true)
+                                            rowsBuilt: 1, glassCards: true, longestAtMilliseconds: 340)
         XCTAssertEqual(
             single.text,
-            "ui: move down on main · home: 2 of 31 frames dropped (longest 50 ms), 1 row built, glass on"
+            "ui: move down on main · home: 2 of 31 frames dropped (longest 50 ms at 340 ms), 1 row built, glass on"
         )
         let run = HitchMeter.MoveSummary(direction: "up", moves: 3, screen: "details(tt1, series)",
                                          droppedFrames: 0, frames: 60, longestMilliseconds: 17,
