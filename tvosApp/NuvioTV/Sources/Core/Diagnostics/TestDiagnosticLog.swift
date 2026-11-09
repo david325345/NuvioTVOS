@@ -3,7 +3,7 @@ import Foundation
 /// The log of the fork's test build (Settings → Advanced → Crash Reports & Test Log): what a
 /// Usenet stream asked for and how long it took, why the player moved to another source, the
 /// quick-Back guard's decisions and how smooth the interface was. The last lines are kept in
-/// Caches/Diagnostics on this Apple TV and never sent anywhere.
+/// Caches/Diagnostics on this Apple TV and leave it only when sent (GitHub or a phone).
 enum TestDiagnosticLog {
     static let maximumLines = 1_000
 
