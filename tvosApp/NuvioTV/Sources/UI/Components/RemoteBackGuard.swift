@@ -4,11 +4,11 @@ import UIKit
 /// Keeps a quick Back from sending the app to the Home screen.
 ///
 /// Closing a panel or a native menu (subtitles, audio), leaving the player, or going back from
-/// Details animates for a moment with nothing focused. A Back pressed then reaches no responder,
-/// and tvOS takes it as "leave the app". Installed once for the whole app: a Back that comes
-/// while nothing is focused is swallowed instead. If Back keeps coming with still nothing focused,
-/// the next one goes through, so the app can never hold the user in; with something focused (Home
-/// with its sidebar, any screen at rest) Back works as always.
+/// Details animates for a moment. A Back pressed then reaches no responder (the menu that took
+/// the first one is on its way out, or nothing is focused yet), and tvOS takes it as "leave the
+/// app". Installed once for the whole app, on every window: a Back is swallowed while nothing is
+/// focused, or when it comes right after the one before it. If Back keeps coming, the next one
+/// goes through, so the app can never hold the user in; at rest Back works as always.
 struct RemoteBackGuard: UIViewRepresentable {
     func makeUIView(context: Context) -> BackGuardHostView {
         BackGuardHostView()
@@ -17,55 +17,84 @@ struct RemoteBackGuard: UIViewRepresentable {
     func updateUIView(_ uiView: BackGuardHostView, context: Context) {}
 
     static func dismantleUIView(_ uiView: BackGuardHostView, coordinator: ()) {
-        uiView.removeRecognizer()
+        uiView.removeRecognizers()
     }
 }
 
 final class BackGuardHostView: UIView, UIGestureRecognizerDelegate {
-    /// After a swallowed Back, a further one this soon with still nothing focused goes through.
+    /// After a swallowed Back, a further one this soon goes through.
     static let passAfterSwallowWithin: CFTimeInterval = 1.5
+    /// A Back this soon after the previous one lands while what that one closed is still closing.
+    static let closingWithin: CFTimeInterval = 1.0
+    /// Each decision, for a test build's log ("swallowed", "passed", and why).
+    static let decisionNotification = Notification.Name("nuvio.backGuard.decision")
 
-    private var tap: UITapGestureRecognizer?
-    private weak var attachedWindow: UIWindow?
+    private var recognizers: [(window: UIWindow, tap: UITapGestureRecognizer)] = []
+    private var windowObserver: NSObjectProtocol?
+    private var lastBack: CFTimeInterval = -.infinity
     private var lastSwallow: CFTimeInterval = -.infinity
 
-    /// Swallow a Back while nothing is focused, unless the previous one was just swallowed.
-    static func shouldSwallow(nothingFocused: Bool, sinceLastSwallow: CFTimeInterval) -> Bool {
-        nothingFocused && sinceLastSwallow >= passAfterSwallowWithin
+    /// Swallow a Back while nothing is focused or right after the previous Back, unless the
+    /// previous one was itself just swallowed.
+    static func shouldSwallow(nothingFocused: Bool, sincePreviousBack: CFTimeInterval, sinceLastSwallow: CFTimeInterval) -> Bool {
+        (nothingFocused || sincePreviousBack < closingWithin) && sinceLastSwallow >= passAfterSwallowWithin
     }
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        removeRecognizer()
-        guard let window else { return }
+        removeRecognizers()
+        guard let window, let scene = window.windowScene else { return }
+        for sceneWindow in scene.windows { guardWindow(sceneWindow) }
+        // Menus and alerts can come in windows of their own.
+        windowObserver = NotificationCenter.default.addObserver(
+            forName: UIWindow.didBecomeVisibleNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let self, let newWindow = note.object as? UIWindow,
+                  newWindow.windowScene === self.window?.windowScene else { return }
+            self.guardWindow(newWindow)
+        }
+    }
+
+    private func guardWindow(_ window: UIWindow) {
+        recognizers.removeAll { $0.window !== window && $0.window.windowScene == nil }
+        guard !recognizers.contains(where: { $0.window === window }) else { return }
         let tap = UITapGestureRecognizer(target: self, action: #selector(swallowed(_:)))
         tap.allowedPressTypes = [NSNumber(value: UIPress.PressType.menu.rawValue)]
         tap.allowedTouchTypes = []
         tap.delegate = self
         window.addGestureRecognizer(tap)
-        self.tap = tap
-        attachedWindow = window
+        recognizers.append((window, tap))
     }
 
-    func removeRecognizer() {
-        if let attachedWindow, let tap {
-            attachedWindow.removeGestureRecognizer(tap)
-        }
-        tap = nil
-        attachedWindow = nil
+    func removeRecognizers() {
+        for entry in recognizers { entry.window.removeGestureRecognizer(entry.tap) }
+        recognizers.removeAll()
+        if let windowObserver { NotificationCenter.default.removeObserver(windowObserver) }
+        windowObserver = nil
     }
 
     @objc private func swallowed(_ recognizer: UITapGestureRecognizer) {}
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive press: UIPress) -> Bool {
-        guard press.type == .menu, let window = attachedWindow else { return false }
+        guard press.type == .menu, let window = gestureRecognizer.view as? UIWindow else { return false }
         let now = CACurrentMediaTime()
-        let nothingFocused = window.windowScene?.focusSystem?.focusedItem == nil
-        guard Self.shouldSwallow(nothingFocused: nothingFocused, sinceLastSwallow: now - lastSwallow) else {
-            return false
-        }
-        lastSwallow = now
-        return true
+        let focused = window.windowScene?.focusSystem?.focusedItem
+        let sincePrevious = now - lastBack
+        lastBack = now
+        let swallow = Self.shouldSwallow(
+            nothingFocused: focused == nil,
+            sincePreviousBack: sincePrevious,
+            sinceLastSwallow: now - lastSwallow
+        )
+        if swallow { lastSwallow = now }
+        let focusText = focused.map { String(describing: type(of: $0)) } ?? "nothing"
+        let gap = sincePrevious.isFinite ? "\(Int(sincePrevious * 1_000)) ms after the previous" : "first"
+        NotificationCenter.default.post(
+            name: Self.decisionNotification,
+            object: nil,
+            userInfo: ["text": "\(swallow ? "swallowed" : "passed"): focus on \(focusText), \(gap)"]
+        )
+        return swallow
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
