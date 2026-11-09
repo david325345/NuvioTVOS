@@ -4119,6 +4119,12 @@ struct TvDetailsContent: View {
     @AppStorage(SettingsKey.trailerPreviewSound) private var trailerPreviewSound = false
     @AppStorage(SettingsKey.trailerDelay) private var trailerDelay = 7
     @AppStorage(SettingsKey.detailsActionsBelowInfo) private var detailsActionsBelowInfo = false
+    /// The sections below the first screen (episodes, cast, more like this…) are built a moment
+    /// after Details opens, once its transition is over: the top part fills the first screen,
+    /// and building everything at once held the opening transition up for 150-250 ms. Opened
+    /// with focus going to an episode (calendar, Continue Watching), they are built at once.
+    @State private var showsLowerSections = false
+    private static let lowerSectionsDelay: UInt64 = 300_000_000
     @State private var configuredDetailsSections: [TVDetailsSection] = TVDetailsSectionOrder.currentOrder()
     @State private var disabledDetailsSections: Set<TVDetailsSection> = TVDetailsSectionOrder.disabledSections()
 
@@ -4762,19 +4768,29 @@ struct TvDetailsContent: View {
                             let productionCompanies = uiState.companies.filter { $0.kind == .production && $0.tmdbId != nil }
                             let networks = uiState.companies.filter { $0.kind == .network && $0.tmdbId != nil }
 
-                            ForEach(activeDetailsSections, id: \.self) { section in
-                                renderDetailsSection(
-                                    section,
-                                    meta: meta,
-                                    episodes: episodes,
-                                    episodeGuide: episodeGuide,
-                                    episodePresentation: episodePresentation,
-                                    continueItem: continueItem,
-                                    networks: networks,
-                                    productionCompanies: productionCompanies,
-                                    scrollProxy: scrollProxy
-                                )
+                            if showsLowerSections || initialFocusEpisode != nil {
+                                ForEach(activeDetailsSections, id: \.self) { section in
+                                    renderDetailsSection(
+                                        section,
+                                        meta: meta,
+                                        episodes: episodes,
+                                        episodeGuide: episodeGuide,
+                                        episodePresentation: episodePresentation,
+                                        continueItem: continueItem,
+                                        networks: networks,
+                                        productionCompanies: productionCompanies,
+                                        scrollProxy: scrollProxy
+                                    )
+                                }
                             }
+                            }
+                            .task {
+                                guard !showsLowerSections else { return }
+                                try? await Task.sleep(nanoseconds: Self.lowerSectionsDelay)
+                                guard !Task.isCancelled else { return }
+                                var transaction = Transaction()
+                                transaction.disablesAnimations = true
+                                withTransaction(transaction) { showsLowerSections = true }
                             }
                             // Inset and layout metrics matching Android TV.
                             .padding(.leading, 56)
