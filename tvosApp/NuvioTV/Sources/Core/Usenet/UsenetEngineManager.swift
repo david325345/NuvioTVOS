@@ -86,6 +86,8 @@ final class UsenetEngineManager: ObservableObject {
     func startStream(_ spec: UsenetStreamSpec) async throws -> URL {
         generation &+= 1
         let current = generation
+        let startedAt = Date()
+        TestDiagnosticLog.usenet("engine: start \(spec.nzbURL.host ?? "?") file filter \(spec.fileMustInclude ?? "-") idx \(spec.fileIdx.map(String.init) ?? "-")")
         await stopCurrent()
         lastError = nil
 
@@ -98,11 +100,14 @@ final class UsenetEngineManager: ObservableObject {
         let pool = UsenetConnectionPool(servers: servers, speedLimitMbps: UsenetSettings.speedLimitMbps())
         do {
             let nzb = try await Self.loadNZB(spec.nzbURL)
+            TestDiagnosticLog.usenet("engine: NZB ready after \(TestDiagnosticLog.elapsed(since: startedAt))")
             let resolver = UsenetReleaseResolver(nzb: nzb, pool: pool, mustInclude: spec.fileMustInclude, fileIdx: spec.fileIdx)
             let source = try await resolver.resolve()
             try Task.checkCancellation()
 
+            TestDiagnosticLog.usenet("engine: \(source.kind.rawValue) \(source.name), \(TestDiagnosticLog.size(source.totalSize)), \(source.volumes.count) file(s) after \(TestDiagnosticLog.elapsed(since: startedAt))")
             let health = try await UsenetHealthCheck.check(source, pool: pool)
+            TestDiagnosticLog.usenet("engine: health \(health.missing)/\(health.checked) sampled articles missing after \(TestDiagnosticLog.elapsed(since: startedAt))")
             usenetLog.notice("usenet: \(source.name, privacy: .public) [\(source.kind.rawValue, privacy: .public)] — \(source.volumes.count) file(s), \(health.missing)/\(health.checked) sampled articles missing")
             guard UsenetHealthCheck.isPlayable(health) else { throw UsenetError.releaseIncomplete }
 
@@ -110,6 +115,7 @@ final class UsenetEngineManager: ObservableObject {
                 Task { @MainActor in self?.reportDamage(generation: current) }
             }
             try await session.prepare()
+            TestDiagnosticLog.usenet("engine: head and tail warming, \(pool.totalConnections) connection(s) over \(servers.count) server(s), after \(TestDiagnosticLog.elapsed(since: startedAt))")
             guard current == generation, !Task.isCancelled else {
                 await session.stop()
                 throw CancellationError()
@@ -134,6 +140,7 @@ final class UsenetEngineManager: ObservableObject {
             Self.remember(source: spec.url.absoluteString, playback: url.absoluteString)
             if damagedGeneration == current { damagedStreamURL = url }
             startStatsLoop(session: session, pool: pool, generation: current)
+            TestDiagnosticLog.usenet("engine: stream ready for the player after \(TestDiagnosticLog.elapsed(since: startedAt))")
             return url
         } catch is CancellationError {
             await pool.shutdown()
@@ -143,6 +150,7 @@ final class UsenetEngineManager: ObservableObject {
             if (error as? UsenetError) == .nzbUnreadable { UsenetNZBCache.remove(spec.nzbURL) }
             lastError = error.localizedDescription
             usenetLog.error("usenet: start failed: \(error.localizedDescription, privacy: .public)")
+            TestDiagnosticLog.usenet("engine: start failed after \(TestDiagnosticLog.elapsed(since: startedAt)): \(error.localizedDescription)")
             throw error
         }
     }

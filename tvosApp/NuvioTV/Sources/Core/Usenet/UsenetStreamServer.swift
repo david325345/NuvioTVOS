@@ -195,16 +195,29 @@ actor UsenetStreamServer {
             lastOffset = range.lowerBound
         }
 
+        let requestedAt = Date()
+        let percent = fileLength > 0 ? Int(range.lowerBound * 100 / fileLength) : 0
+        TestDiagnosticLog.usenet("stream: \(isTailRead ? "index read" : "read") from \(TestDiagnosticLog.size(range.lowerBound)) (\(percent) %), \(TestDiagnosticLog.size(range.upperBound - range.lowerBound + 1)) asked")
         var position = range.lowerBound
-        while position <= range.upperBound {
-            try Task.checkCancellation()
-            let wanted = Int(min(Int64(Self.chunkBytes), range.upperBound - position + 1))
-            let isPlayback = !isTailRead && connection === playbackConnection
-            let chunk = try await session.read(offset: position, maxLength: wanted, updatesPlayhead: isPlayback)
-            guard !chunk.isEmpty else { throw NetworkIO.Failure.closed }
-            try await NetworkIO.send(connection, chunk)
-            position += Int64(chunk.count)
-            if connection === playbackConnection { lastOffset = position }
+        var firstSent = false
+        do {
+            while position <= range.upperBound {
+                try Task.checkCancellation()
+                let wanted = Int(min(Int64(Self.chunkBytes), range.upperBound - position + 1))
+                let isPlayback = !isTailRead && connection === playbackConnection
+                let chunk = try await session.read(offset: position, maxLength: wanted, updatesPlayhead: isPlayback)
+                guard !chunk.isEmpty else { throw NetworkIO.Failure.closed }
+                try await NetworkIO.send(connection, chunk)
+                if !firstSent {
+                    firstSent = true
+                    TestDiagnosticLog.usenet("stream: first bytes at \(percent) % after \(TestDiagnosticLog.elapsed(since: requestedAt))")
+                }
+                position += Int64(chunk.count)
+                if connection === playbackConnection { lastOffset = position }
+            }
+        } catch {
+            TestDiagnosticLog.usenet("stream: read at \(percent) % ended after \(TestDiagnosticLog.elapsed(since: requestedAt)), \(TestDiagnosticLog.size(position - range.lowerBound)) sent (\(error is CancellationError ? "player moved on" : "connection closed"))")
+            throw error
         }
         return true
     }

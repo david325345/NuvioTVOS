@@ -404,6 +404,7 @@ actor UsenetConnectionPool {
                             let host = servers[index].config.host
                             let configured = servers[index].config.maxConnections
                             usenetLog.info("usenet: \(host, privacy: .public) turned away a connection, using \(limit) of \(configured)")
+                            TestDiagnosticLog.usenet("pool: \(host) turned away a connection, using \(limit) of \(configured)")
                         }
                         servers[index].limit = limit
                         continue
@@ -484,6 +485,7 @@ actor UsenetConnectionPool {
         reconnects += entries.count
         let host = servers[index].config.host
         usenetLog.info("usenet: \(host, privacy: .public) closing \(entries.count) idle connection(s), opening fresh ones")
+        TestDiagnosticLog.usenet("pool: \(host) closing \(entries.count) idle connection(s), opening fresh ones")
         for _ in entries { wakeOne(index) }
         let connections = entries.map(\.connection)
         Task { for connection in connections { await connection.close() } }
