@@ -118,4 +118,19 @@ final class CrashRecorderTests: XCTestCase {
                 + " · in: SwiftUICore ×7, AttributeGraph ×5, CoreText ×1 (13 samples)"
         )
     }
+
+    func testASSHeaderSummaryForTheLog() {
+        let header = """
+        [Script Info]
+        PlayResX: 1920
+        PlayResY: 1080
+
+        [V4+ Styles]
+        Format: Name, Fontname, Fontsize
+        Style: Default,Arial,60
+        Style: Sign,Arial,40
+        """
+        XCTAssertEqual(ASSTestLogCounters.describe(header: header), "[Events] no (added), 2 styles, PlayRes 1920×1080")
+        XCTAssertEqual(ASSTestLogCounters.describe(header: "[Events]"), "[Events] yes, 0 styles, PlayRes ?×?")
+    }
 }

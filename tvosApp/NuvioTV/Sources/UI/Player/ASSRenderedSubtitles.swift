@@ -40,6 +40,9 @@ final class ASSFrameHostView: UIView {
     private var displayedRendererGeneration: Int?
     private var previousCanvasSize = CGSize.zero
     private var previousDisplayScale: CGFloat = 0
+    // Test build: a reload the overlay keeps waiting on.
+    private var reloadBeganAt: Date?
+    private var loggedLongReload = false
 
     init(
         renderer: AssSubtitlesRenderer,
@@ -61,11 +64,20 @@ final class ASSFrameHostView: UIView {
                 switch event {
                 case .began:
                     self.isReloading = true
+                    self.reloadBeganAt = self.reloadBeganAt ?? Date()
                 case .frameRendered(let snapshot):
-                    guard !self.isReloading else { return }
+                    guard !self.isReloading else {
+                        if let began = self.reloadBeganAt, !self.loggedLongReload,
+                           Date().timeIntervalSince(began) > 3 {
+                            self.loggedLongReload = true
+                            TestDiagnosticLog.subtitles("ASS overlay still waiting for a reload to finish after 3 s")
+                        }
+                        return
+                    }
                     self.acceptFrame(snapshot)
                 case .finished(let snapshot):
                     self.isReloading = false
+                    self.reloadBeganAt = nil
                     self.finishReload(snapshot)
                 }
             }
@@ -94,6 +106,7 @@ final class ASSFrameHostView: UIView {
         if canvasChanged {
             previousCanvasSize = bounds.size
             previousDisplayScale = scale
+            TestDiagnosticLog.subtitles("ASS canvas \(Int(bounds.width))×\(Int(bounds.height)) at \(Int(scale))x")
             onCanvasSizeChanged?(renderer)
         }
     }

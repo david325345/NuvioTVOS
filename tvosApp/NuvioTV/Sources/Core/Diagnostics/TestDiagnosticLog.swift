@@ -37,6 +37,11 @@ enum TestDiagnosticLog {
         append(message())
     }
 
+    /// A line about subtitles (the ASS pipeline: track, header, lines, frames).
+    static func subtitles(_ message: @autoclosure () -> String) {
+        append("subs: " + message())
+    }
+
     private static func append(_ message: String) {
         let line = timeFormatter.string(from: Date()) + "  " + message
         queue.async {
