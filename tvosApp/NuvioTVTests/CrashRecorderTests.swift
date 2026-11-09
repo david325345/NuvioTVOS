@@ -38,4 +38,19 @@ final class CrashRecorderTests: XCTestCase {
         XCTAssertTrue(closed.details.contains("90 s after launch"), closed.details)
         XCTAssertTrue(closed.details.contains("Screen: details(tt1, series)"))
     }
+
+    func testHitchesAreFramesMoreThanTwoFramesLate() {
+        XCTAssertFalse(HitchMeter.isHitch(gap: 1.0 / 60.0, frameDuration: 1.0 / 60.0))
+        XCTAssertFalse(HitchMeter.isHitch(gap: 0.033, frameDuration: 1.0 / 60.0))
+        XCTAssertTrue(HitchMeter.isHitch(gap: 0.050, frameDuration: 1.0 / 60.0))
+        // At 30 Hz a frame every 33 ms is on time.
+        XCTAssertFalse(HitchMeter.isHitch(gap: 0.045, frameDuration: 1.0 / 30.0))
+        XCTAssertTrue(HitchMeter.isHitch(gap: 0.070, frameDuration: 1.0 / 30.0))
+    }
+
+    func testHitchSummaryLine() {
+        let summary = HitchMeter.Summary(seconds: 5, hitches: 3, lostMilliseconds: 180, longestMilliseconds: 120,
+                                         focusMoves: 1, screen: "main · home", glassCards: true)
+        XCTAssertEqual(summary.text, "ui: 3 hitches in 5 s, longest 120 ms, 180 ms lost, 1 focus move, main · home, glass on")
+    }
 }

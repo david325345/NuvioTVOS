@@ -1,8 +1,9 @@
 import Foundation
 
-/// The Usenet log of the fork's test build (Settings → Advanced → Crash Reports & Usenet Log):
-/// what a Usenet stream asked for and how long it took, and why the player moved to another
-/// source. The last lines are kept in Caches/Diagnostics on this Apple TV and never sent anywhere.
+/// The log of the fork's test build (Settings → Advanced → Crash Reports & Test Log): what a
+/// Usenet stream asked for and how long it took, why the player moved to another source, the
+/// quick-Back guard's decisions and how smooth the interface was. The last lines are kept in
+/// Caches/Diagnostics on this Apple TV and never sent anywhere.
 enum TestDiagnosticLog {
     static let maximumLines = 1_000
 
@@ -28,7 +29,16 @@ enum TestDiagnosticLog {
 
     /// A line about Usenet playback.
     static func usenet(_ message: @autoclosure () -> String) {
-        let line = timeFormatter.string(from: Date()) + "  " + message()
+        append(message())
+    }
+
+    /// A line about the interface (hitches, stalls).
+    static func ui(_ message: @autoclosure () -> String) {
+        append(message())
+    }
+
+    private static func append(_ message: String) {
+        let line = timeFormatter.string(from: Date()) + "  " + message
         queue.async {
             loadIfNeeded()
             lines.append(line)
@@ -50,7 +60,7 @@ enum TestDiagnosticLog {
             forName: Notification.Name("nuvio.backGuard.decision"), object: nil, queue: nil
         ) { note in
             let text = note.userInfo?["text"] as? String ?? "?"
-            usenet("back: " + text)
+            append("back: " + text)
         }
     }
 
