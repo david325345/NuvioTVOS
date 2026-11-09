@@ -53,7 +53,8 @@ enum TestDiagnosticLog {
         }
     }
 
-    /// At launch: a marker between app sessions, and the quick-Back guard's decisions.
+    /// At launch: a marker between app sessions, the quick-Back guard's decisions, and when
+    /// focus came back to the player's button after its subtitle or audio menu closed.
     static func noteLaunch(version: String) {
         usenet("—— Nuvio \(version) started ——")
         NotificationCenter.default.addObserver(
@@ -61,6 +62,11 @@ enum TestDiagnosticLog {
         ) { note in
             let text = note.userInfo?["text"] as? String ?? "?"
             append("back: " + text)
+        }
+        NotificationCenter.default.addObserver(
+            forName: Notification.Name("nuvio.backGuard.menuFocusReturned"), object: nil, queue: nil
+        ) { _ in
+            append("back: focus is back on the menu's button")
         }
     }
 
