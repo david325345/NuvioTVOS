@@ -22,10 +22,12 @@ struct CardAppearance: Equatable {
     /// variants on the Apple TV. Defaults keep Nuvio as it is.
     var rowScrolling = CardExperiment.rowScrollingNuvio
     var focusEffect = CardExperiment.focusEffectNuvio
+    var verticalScrolling = CardExperiment.verticalScrollingNuvio
 
     var usesSystemRowScrolling: Bool { rowScrolling == CardExperiment.rowScrollingSystem }
     var usesSystemFocusEffect: Bool { focusEffect == CardExperiment.focusEffectSystem }
     var usesLightFocusEffect: Bool { focusEffect == CardExperiment.focusEffectLight }
+    var usesSmoothVerticalScrolling: Bool { verticalScrolling == CardExperiment.verticalScrollingSmooth }
 
     /// The values saved in `defaults`, for views outside ContentView's tree.
     static func stored(in defaults: UserDefaults) -> CardAppearance {
@@ -43,6 +45,7 @@ struct CardAppearance: Equatable {
         if let value = defaults.object(forKey: SettingsKey.amoledSurfaces) as? Bool { appearance.amoledSurfaces = value }
         if let value = defaults.string(forKey: CardExperiment.rowScrollingKey) { appearance.rowScrolling = value }
         if let value = defaults.string(forKey: CardExperiment.focusEffectKey) { appearance.focusEffect = value }
+        if let value = defaults.string(forKey: CardExperiment.verticalScrollingKey) { appearance.verticalScrolling = value }
         return appearance
     }
 }
@@ -74,6 +77,7 @@ struct CardAppearanceProvider: ViewModifier {
     @AppStorage(SettingsKey.amoledSurfaces) private var amoledSurfaces = false
     @AppStorage(CardExperiment.rowScrollingKey) private var rowScrolling = CardExperiment.rowScrollingNuvio
     @AppStorage(CardExperiment.focusEffectKey) private var focusEffect = CardExperiment.focusEffectNuvio
+    @AppStorage(CardExperiment.verticalScrollingKey) private var verticalScrolling = CardExperiment.verticalScrollingNuvio
 
     func body(content: Content) -> some View {
         content.environment(
@@ -91,7 +95,8 @@ struct CardAppearanceProvider: ViewModifier {
                 amoled: amoled,
                 amoledSurfaces: amoledSurfaces,
                 rowScrolling: rowScrolling,
-                focusEffect: focusEffect
+                focusEffect: focusEffect,
+                verticalScrolling: verticalScrolling
             )
         )
     }
@@ -101,6 +106,7 @@ struct CardAppearanceProvider: ViewModifier {
 enum CardExperiment {
     static let rowScrollingKey = "nuvio.tv.test.rowScrolling"
     static let focusEffectKey = "nuvio.tv.test.focusEffect"
+    static let verticalScrollingKey = "nuvio.tv.test.verticalScrolling"
 
     /// Rows move by Nuvio's own animated offset (focused card kept at the left).
     static let rowScrollingNuvio = "nuvio"
@@ -113,4 +119,10 @@ enum CardExperiment {
     static let focusEffectLight = "light"
     /// tvOS's own card focus effect (lift and tilt), drawn by the system.
     static let focusEffectSystem = "system"
+
+    /// Up and down as Nuvio does it.
+    static let verticalScrollingNuvio = "nuvio"
+    /// Home keeps one more row ready on each side and builds the farthest only once a move has
+    /// finished; Details fades in a backdrop blurred once instead of animating the blur.
+    static let verticalScrollingSmooth = "smooth"
 }

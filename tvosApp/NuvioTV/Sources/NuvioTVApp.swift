@@ -5525,6 +5525,11 @@ struct TVHomeView: View {
     @State private var focusMovedAwayGeneration = 0
     @Environment(\.isEnabled) private var isEnabled
     @State private var focusedRowIndex: Int = 0
+    /// Test build (Vertical Scrolling: Smooth): the row focus rested on last. Rows up to three
+    /// away from it stay built, so a move up or down finds the rows it shows already there and the
+    /// next one is built once the move has finished, not while it animates.
+    @State private var settledRowIndex: Int = 0
+    @Environment(\.cardAppearance) private var homeCardAppearance
     @State private var browsingSection: TVHomeSection?
     @State private var browsePresentationGeneration = 0
     @State private var gridHeroIndex = 0
@@ -5745,6 +5750,8 @@ struct TVHomeView: View {
 
                                         ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
                                             let isNearFocusedRow = abs(index - focusedRowIndex) <= 2
+                                                || (homeCardAppearance.usesSmoothVerticalScrolling
+                                                    && abs(index - settledRowIndex) <= 3)
                                             if isNearFocusedRow {
                                                 homeSectionRow(
                                                     index: index,
@@ -5752,6 +5759,10 @@ struct TVHomeView: View {
                                                     horizontalEdgeInset: horizontalEdgeInset,
                                                     verticalScrollProxy: verticalScrollProxy
                                                 )
+                                                // Test build: counted in the test log's move lines.
+                                                .onAppear {
+                                                    NotificationCenter.default.post(name: Notification.Name("nuvio.test.rowBuilt"), object: nil)
+                                                }
                                             } else {
                                                 Color.clear
                                                     .frame(
@@ -5766,6 +5777,23 @@ struct TVHomeView: View {
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .padding(.top, TVHomeLayout.rowsTopPadding)
                                     .padding(.bottom, 80)
+                                    .task(id: homeCardAppearance.usesSmoothVerticalScrolling ? focusedRowIndex : -1) {
+                                        guard homeCardAppearance.usesSmoothVerticalScrolling else { return }
+                                        let row = focusedRowIndex
+                                        // Past the vertical scroll's spring (0.28 s).
+                                        try? await Task.sleep(nanoseconds: 380_000_000)
+                                        guard !Task.isCancelled, row == focusedRowIndex, settledRowIndex != row else { return }
+                                        var transaction = Transaction(animation: nil)
+                                        transaction.disablesAnimations = true
+                                        withTransaction(transaction) {
+                                            settledRowIndex = focusedRowIndex
+                                            // A row far above may have turned back into its estimated-height
+                                            // placeholder; keep the focused row where it is.
+                                            if let focusedSectionId {
+                                                verticalScrollProxy.scrollTo(focusedSectionId, anchor: .top)
+                                            }
+                                        }
+                                    }
                                     #if os(tvOS)
                                     // Place the configurator inside the scroll content so its
                                     // ancestor is the UIScrollView that owns the row offset.
