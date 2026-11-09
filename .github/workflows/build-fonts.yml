@@ -111,6 +111,7 @@ jobs:
             -only-testing:NuvioTVTests/RemoteBackGuardTests \
             -only-testing:NuvioTVTests/MarqueeTextTests \
             -only-testing:NuvioTVTests/CardAppearanceTests \
+            -only-testing:NuvioTVTests/StreamBadgeImageStoreTests \
             -only-testing:NuvioTVTests/PlayerControlsSettingsTests
       - name: Fonts and related test results
         if: always()
