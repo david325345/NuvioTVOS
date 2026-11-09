@@ -42,6 +42,11 @@ enum TestDiagnosticLog {
         append("subs: " + message())
     }
 
+    /// A line about imported stream badge images (kept on the Apple TV or downloaded).
+    static func badges(_ message: @autoclosure () -> String) {
+        append("badges: " + message())
+    }
+
     private static func append(_ message: String) {
         let line = timeFormatter.string(from: Date()) + "  " + message
         queue.async {
