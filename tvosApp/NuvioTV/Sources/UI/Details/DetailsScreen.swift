@@ -211,12 +211,24 @@ struct DetailsScreen: View {
     }
 
     @FocusState private var isLoadingInitialFocusActive: Bool
+    @Environment(\.cardAppearance) private var cardAppearance
+    /// Test build (Details Opening: Steady): Details comes in without fading, so the spinner
+    /// of its first frame (before the cached title is read, a moment later) would flash;
+    /// it shows only if loading takes longer.
+    @State private var showsLoadingSpinner = false
 
     var body: some View {
         ZStack {
             if viewModel.uiState.isLoading {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .opacity(cardAppearance.usesSteadyDetailsOpening && !showsLoadingSpinner ? 0 : 1)
+                    .task {
+                        guard cardAppearance.usesSteadyDetailsOpening, !showsLoadingSpinner else { return }
+                        try? await Task.sleep(nanoseconds: 300_000_000)
+                        guard !Task.isCancelled else { return }
+                        showsLoadingSpinner = true
+                    }
                 #if os(tvOS)
                 Color.clear
                     .frame(width: 1, height: 1)
