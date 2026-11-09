@@ -50,8 +50,20 @@ final class CrashRecorderTests: XCTestCase {
 
     func testHitchSummaryLine() {
         let summary = HitchMeter.Summary(seconds: 5, hitches: 3, lostMilliseconds: 180, longestMilliseconds: 120,
-                                         focusMoves: 1, screen: "main · home", glassCards: true)
-        XCTAssertEqual(summary.text, "ui: 3 hitches in 5 s, longest 120 ms, 180 ms lost, 1 focus move, main · home, glass on")
+                                         focusMoves: 1, screen: "main · home", glassCards: true,
+                                         droppedFrames: 14, frames: 300)
+        XCTAssertEqual(
+            summary.text,
+            "ui: 14 of 300 frames dropped in 5 s, 3 hitches (longest 120 ms, 180 ms lost), 1 focus move, main · home, glass on"
+        )
+    }
+
+    func testDroppedFramesCountOneLateFrameToo() {
+        let frame = 1.0 / 60.0
+        XCTAssertEqual(HitchMeter.droppedFrames(gap: frame, frameDuration: frame), 0)
+        XCTAssertEqual(HitchMeter.droppedFrames(gap: frame * 1.3, frameDuration: frame), 0)
+        XCTAssertEqual(HitchMeter.droppedFrames(gap: frame * 2, frameDuration: frame), 1)
+        XCTAssertEqual(HitchMeter.droppedFrames(gap: 0.1, frameDuration: frame), 5)
     }
 
     func testSampledSymbolsAreCutToTheirFunction() {
