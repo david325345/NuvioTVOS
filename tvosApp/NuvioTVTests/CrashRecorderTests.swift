@@ -78,6 +78,31 @@ final class CrashRecorderTests: XCTestCase {
             "SwiftUI.View.liquidGlassCard"
         )
         XCTAssertEqual(MainThreadSampler.shortSymbol("_dispatch_main_queue_callback_4CF"), "dispatch_main_queue_callback_4CF")
+        XCTAssertEqual(
+            MainThreadSampler.shortSymbol(
+                "protocol witness for SwiftUI.View.body.getter : A.Body in conformance NuvioTV.PosterCard : SwiftUI.View in NuvioTV"
+            ),
+            "PosterCard.body.getter"
+        )
+    }
+
+    func testHelperFramesDontCountAsTheAppsCode() {
+        XCTAssertTrue(MainThreadSampler.isUninformative("main"))
+        XCTAssertTrue(MainThreadSampler.isUninformative("__swift_instantiateConcreteTypeFromMangledNameV2"))
+        XCTAssertTrue(MainThreadSampler.isUninformative("destroy value witness for NuvioTV.CachedPosterArtwork"))
+        XCTAssertFalse(MainThreadSampler.isUninformative("TVHomeView.focusRows.getter"))
+    }
+
+    func testShortBusySummaryLine() {
+        let line = MainThreadSampler.shortSummary(
+            rounds: 12, milliseconds: 610, seconds: 5, samples: 30,
+            app: ["TVHomeView.focusRows.getter": 6], libraries: ["AttributeGraph": 9]
+        )
+        XCTAssertEqual(
+            line,
+            "ui: 12 short busy rounds (34–80 ms), 610 ms in all, in 5 s on {screen}"
+                + " — app: TVHomeView.focusRows.getter ×6 · in: AttributeGraph ×9 (30 samples)"
+        )
     }
 
     func testBusySummaryLine() {

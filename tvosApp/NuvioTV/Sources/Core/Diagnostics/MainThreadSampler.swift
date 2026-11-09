@@ -5,7 +5,7 @@ import Synchronization
 /// The fork's test build: what the main thread is doing when the interface stutters.
 ///
 /// A run loop observer marks when the main thread starts and finishes a round of work. A
-/// background thread looks every 10 ms; once a round has gone on for 50 ms it pauses the main
+/// background thread looks every 10 ms; once a round has gone on for 20 ms it pauses the main
 /// thread for a moment every 10 ms, copies its call stack and lets it go on. When a round of
 /// 80 ms or more is over, the test log gets a line with the app's functions that came up most
 /// (the innermost app function of each sample) and the system libraries the samples were in:
@@ -13,13 +13,20 @@ import Synchronization
 ///     ui: busy 180 ms on main · home — app: TVHomeView.body.getter ×9, PosterCard.body.getter ×4
 ///         · in: SwiftUICore ×7, AttributeGraph ×5 (18 samples)
 ///
+/// Shorter rounds that still cost a frame (34–80 ms, as on a focus move) are added up and get one
+/// line for every five seconds that had any:
+///
+///     ui: 12 short busy rounds (34–80 ms), 610 ms in all, in 5 s on main · home — app: … · in: …
+///
 /// While the main thread is paused nothing is allocated and no lock is taken: only the thread
 /// state and the frame records on its stack are read, into buffers made at start.
 final class MainThreadSampler: @unchecked Sendable {
     static let shared = MainThreadSampler()
 
-    static let sampleAfter: UInt64 = 50_000_000
+    static let sampleAfter: UInt64 = 20_000_000
+    static let shortFrom: UInt64 = 34_000_000
     static let reportFrom: UInt64 = 80_000_000
+    static let shortSummaryInterval: UInt64 = 5_000_000_000
     static let interval: useconds_t = 10_000
     static let maximumSamples = 64
     static let maximumFrames = 64
@@ -37,6 +44,13 @@ final class MainThreadSampler: @unchecked Sendable {
     private let frameCounts = UnsafeMutablePointer<Int>.allocate(capacity: maximumSamples)
     private var sampleCount = 0
     private var periodStart: UInt64 = 0
+    // Short rounds of the current five seconds (the watching thread's own).
+    private var shortWindowStart: UInt64 = 0
+    private var shortRounds = 0
+    private var shortMilliseconds = 0
+    private var shortSamples = 0
+    private var shortApp: [String: Int] = [:]
+    private var shortLibraries: [String: Int] = [:]
 
     private init() {}
 
@@ -84,6 +98,10 @@ final class MainThreadSampler: @unchecked Sendable {
             let now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
             if periodStart != 0, since != periodStart {
                 finishPeriod(endedAt: now)
+            }
+            if shortWindowStart == 0 { shortWindowStart = now }
+            if now - shortWindowStart >= Self.shortSummaryInterval {
+                flushShortRounds(at: now)
             }
             guard since != 0, now > since, now - since >= Self.sampleAfter else { continue }
             if periodStart == 0 {
@@ -145,8 +163,54 @@ final class MainThreadSampler: @unchecked Sendable {
         let samples = sampleCount
         periodStart = 0
         sampleCount = 0
-        guard duration >= Self.reportFrom, samples > 0 else { return }
+        guard duration >= Self.shortFrom, samples > 0 else { return }
+        let (appCounts, libraryCounts) = countSamples(samples)
+        guard duration >= Self.reportFrom else {
+            shortRounds += 1
+            shortMilliseconds += Int(duration / 1_000_000)
+            shortSamples += samples
+            shortApp.merge(appCounts, uniquingKeysWith: +)
+            shortLibraries.merge(libraryCounts, uniquingKeysWith: +)
+            return
+        }
+        let line = Self.summary(
+            milliseconds: Int(duration / 1_000_000),
+            samples: samples,
+            app: appCounts,
+            libraries: libraryCounts
+        )
+        log(line)
+    }
 
+    private func flushShortRounds(at now: UInt64) {
+        defer {
+            shortWindowStart = now
+            shortRounds = 0
+            shortMilliseconds = 0
+            shortSamples = 0
+            shortApp = [:]
+            shortLibraries = [:]
+        }
+        guard shortRounds > 0 else { return }
+        log(Self.shortSummary(
+            rounds: shortRounds,
+            milliseconds: shortMilliseconds,
+            seconds: Int(((now - shortWindowStart) / 1_000_000_000)),
+            samples: shortSamples,
+            app: shortApp,
+            libraries: shortLibraries
+        ))
+    }
+
+    private func log(_ line: String) {
+        // The screen's name is the main thread's to read.
+        DispatchQueue.main.async {
+            TestDiagnosticLog.ui(line.replacingOccurrences(of: "{screen}", with: HitchMeter.screen))
+        }
+    }
+
+    /// For each sample, the innermost app function and the library at the top of the stack.
+    private func countSamples(_ samples: Int) -> (app: [String: Int], libraries: [String: Int]) {
         var appCounts: [String: Int] = [:]
         var libraryCounts: [String: Int] = [:]
         for sample in 0..<samples {
@@ -162,36 +226,42 @@ final class MainThreadSampler: @unchecked Sendable {
                 }
                 if isApp {
                     let raw = info.dli_sname.map { String(cString: $0) } ?? "?"
-                    appCounts[Self.shortSymbol(CrashRecorder.demangle(raw) ?? raw), default: 0] += 1
+                    let name = Self.shortSymbol(CrashRecorder.demangle(raw) ?? raw)
+                    // Compiler helpers and `main` say nothing about which code it was: look
+                    // further down the stack for the app function that called them.
+                    guard !Self.isUninformative(name) else { continue }
+                    appCounts[name, default: 0] += 1
                     break
                 }
             }
             if let library { libraryCounts[library, default: 0] += 1 }
         }
-        let line = Self.summary(
-            milliseconds: Int(duration / 1_000_000),
-            samples: samples,
-            app: appCounts,
-            libraries: libraryCounts
-        )
-        // The screen's name is the main thread's to read.
-        DispatchQueue.main.async {
-            TestDiagnosticLog.ui(line.replacingOccurrences(of: "{screen}", with: HitchMeter.screen))
-        }
+        return (appCounts, libraryCounts)
     }
 
     /// "ui: busy 180 ms on {screen} — app: A ×9, B ×4 · in: SwiftUICore ×7 (18 samples)".
     static func summary(milliseconds: Int, samples: Int, app: [String: Int], libraries: [String: Int]) -> String {
+        "ui: busy \(milliseconds) ms on {screen}" + details(samples: samples, app: app, libraries: libraries)
+    }
+
+    /// "ui: 12 short busy rounds (34–80 ms), 610 ms in all, in 5 s on {screen} — app: … · in: … (30 samples)".
+    static func shortSummary(rounds: Int, milliseconds: Int, seconds: Int, samples: Int,
+                             app: [String: Int], libraries: [String: Int]) -> String {
+        "ui: \(rounds) short busy round\(rounds == 1 ? "" : "s") (34–80 ms), \(milliseconds) ms in all, "
+            + "in \(max(1, seconds)) s on {screen}" + details(samples: samples, app: app, libraries: libraries)
+    }
+
+    private static func details(samples: Int, app: [String: Int], libraries: [String: Int]) -> String {
         func top(_ counts: [String: Int]) -> String {
             counts.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
                 .prefix(3)
                 .map { "\($0.key) ×\($0.value)" }
                 .joined(separator: ", ")
         }
-        var line = "ui: busy \(milliseconds) ms on {screen}"
-        if !app.isEmpty { line += " — app: " + top(app) }
-        if !libraries.isEmpty { line += " · in: " + top(libraries) }
-        return line + " (\(samples) sample\(samples == 1 ? "" : "s"))"
+        var text = ""
+        if !app.isEmpty { text += " — app: " + top(app) }
+        if !libraries.isEmpty { text += " · in: " + top(libraries) }
+        return text + " (\(samples) sample\(samples == 1 ? "" : "s"))"
     }
 
     /// A demangled Swift symbol cut down to the function it is in:
@@ -200,6 +270,17 @@ final class MainThreadSampler: @unchecked Sendable {
     static func shortSymbol(_ symbol: String) -> String {
         var text = symbol
         text = removingNested(text, open: "<", close: ">")
+        // "protocol witness for SwiftUI.View.body.getter : A.Body in conformance NuvioTV.PosterCard
+        // : SwiftUI.View in NuvioTV" is PosterCard's body.
+        if text.hasPrefix("protocol witness for "), let conformance = text.range(of: " in conformance ") {
+            let requirement = text[text.index(text.startIndex, offsetBy: "protocol witness for ".count)..<conformance.lowerBound]
+            let method = requirement.components(separatedBy: " : ").first ?? String(requirement)
+            let member = method.split(separator: ".").suffix(2).joined(separator: ".")
+            var type = String(text[conformance.upperBound...])
+            if let end = type.range(of: " : ") { type = String(type[..<end.lowerBound]) }
+            if type.hasPrefix("NuvioTV.") { type.removeFirst("NuvioTV.".count) }
+            return member.isEmpty ? type : type + "." + member
+        }
         // A private name: "(crashSignalHandler in _80B95622…)" is "crashSignalHandler".
         text = text.replacingOccurrences(of: #"\(([^()]+) in _[0-9A-F]+\)"#, with: "$1", options: .regularExpression)
         text = text.replacingOccurrences(of: #"\(extension in [^)]*\):"#, with: "", options: .regularExpression)
@@ -219,6 +300,13 @@ final class MainThreadSampler: @unchecked Sendable {
         if text.hasPrefix("NuvioTV.") { text.removeFirst("NuvioTV.".count) }
         if text.hasPrefix("_"), !text.hasPrefix("__") { text.removeFirst() }
         return text.isEmpty ? symbol : text
+    }
+
+    /// Names that don't point at the app's own code: `main` at the bottom of every stack and the
+    /// helpers the compiler generates (metadata, value witnesses, outlined copies).
+    static func isUninformative(_ name: String) -> Bool {
+        name == "main" || name == "NuvioTV" || name.hasPrefix("__swift_") || name.hasPrefix("swift_")
+            || name.contains("value witness") || name.hasPrefix("outlined ") || name.contains("metadata")
     }
 
     /// The text without what is inside `open`…`close` (nested). The ">" of an arrow "->" is
