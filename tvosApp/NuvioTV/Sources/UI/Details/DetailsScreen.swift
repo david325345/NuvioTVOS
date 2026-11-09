@@ -4139,7 +4139,13 @@ struct TvDetailsContent: View {
     private var activeDetailsSections: [TVDetailsSection] {
         configuredDetailsSections.filter { !disabledDetailsSections.contains($0) }
     }
-    @State private var trailerPlayer = AVPlayer()
+    /// The background trailer's player, made once. As `@State private var trailerPlayer = AVPlayer()`
+    /// a new player was made (and thrown away) every time Details' content was rebuilt, trailers
+    /// on or off.
+    @StateObject private var trailerPlayerHolder = TvDetailsTrailerPlayerHolder()
+    private var trailerPlayer: AVPlayer { trailerPlayerHolder.player }
+    /// Test build (Vertical Scrolling: Smooth): the trailer paused because Details scrolled down.
+    @State private var isTrailerParkedForScroll = false
     @State private var isTrailerPlaying = false
     @State private var isTrailerRenderReady = false
     @State private var isFullscreenTrailerPresented = false
@@ -4212,6 +4218,7 @@ struct TvDetailsContent: View {
     }
 
     private func presentFullscreenTrailer() {
+        isTrailerParkedForScroll = false
         if isTrailerPlaying && trailerPlayer.currentItem != nil {
             applySoundPreference(true)
             trailerPlayer.play()
@@ -4234,6 +4241,7 @@ struct TvDetailsContent: View {
         if !isBackgroundTrailerAllowed() {
             stopBackgroundTrailer(manual: false)
         }
+        DispatchQueue.main.async { updateTrailerParkingForScroll() }
         DispatchQueue.main.async {
             actionFocus = .trailer
         }
@@ -4283,6 +4291,7 @@ struct TvDetailsContent: View {
         }
         isTrailerPlaying = false
         isTrailerRenderReady = false
+        isTrailerParkedForScroll = false
         trailerPlayer.pause()
         trailerPlayer.replaceCurrentItem(with: nil)
     }
@@ -4307,8 +4316,36 @@ struct TvDetailsContent: View {
                 }
             }
         }
-        stopBackgroundTrailer(manual: false)
+        // Only paused here: releasing the player's item takes time on the main thread just as
+        // Details starts to leave. `onDisappear` releases it once Details has faded out.
+        pauseBackgroundTrailerForExit()
         onBack()
+    }
+
+    /// Test build (Vertical Scrolling: Smooth): a background trailer behind the lower sections
+    /// was drawn blurred, every video frame across the screen. Scrolled down, it now pauses and
+    /// gives way to the backdrop blurred once; back at the top it goes on where it was.
+    private func updateTrailerParkingForScroll() {
+        let shouldPark = cardAppearance.usesSmoothVerticalScrolling
+            && isScrolledDown
+            && isTrailerPlaying
+            && !isFullscreenTrailerPresented
+        guard shouldPark != isTrailerParkedForScroll else { return }
+        isTrailerParkedForScroll = shouldPark
+        if shouldPark {
+            trailerPlayer.pause()
+        } else if isTrailerPlaying, !isFullscreenTrailerPresented {
+            trailerPlayer.play()
+        }
+    }
+
+    private func pauseBackgroundTrailerForExit() {
+        trailerTask?.cancel()
+        trailerTask = nil
+        isTrailerPlaying = false
+        isTrailerRenderReady = false
+        isTrailerParkedForScroll = false
+        trailerPlayer.pause()
     }
 
     private var isScrolledDown: Bool {
@@ -4336,7 +4373,7 @@ struct TvDetailsContent: View {
             meta: meta,
             blurRadius: backdropBlurRadius,
             player: isFullscreenTrailerPresented ? nil : trailerPlayer,
-            isTrailerVisible: isTrailerPlaying && isTrailerRenderReady && !isFullscreenTrailerPresented,
+            isTrailerVisible: isTrailerPlaying && isTrailerRenderReady && !isFullscreenTrailerPresented && !isTrailerParkedForScroll,
             onTrailerReadyForDisplay: handleTrailerReady
         )
     }
@@ -4481,6 +4518,15 @@ struct TvDetailsContent: View {
                         handleMoveDownFromEpisodes(using: scrollProxy)
                     }
                 )
+                .detailsSnapshot(TvDetailsEpisodesSnapshotKey(
+                    meta: meta,
+                    revision: episodePresentation.revision,
+                    continueItem: continueItem,
+                    choosingWatchPartyEpisode: isChoosingWatchPartyEpisode,
+                    restoreEpisodeKey: restoreEpisodeKey,
+                    entryLocked: focusedDetailsSection != .episodes,
+                    hasManualPlay: onEpisodePlayManually != nil
+                ))
                 .padding(.top, 40)
                 .id(TvDetailsScrollID.episodesSection)
                 .disabled(!isDetailsFocusReachable(.episodes))
@@ -4518,6 +4564,16 @@ struct TvDetailsContent: View {
                         }
                     }
                 )
+                .detailsSnapshot(TvDetailsRowSnapshotKey(
+                    content: TvDetailsCastSnapshot(
+                        metaID: meta.id,
+                        cast: meta.cast,
+                        director: meta.director,
+                        writer: meta.writer,
+                        people: uiState.people
+                    ),
+                    entryLocked: focusedDetailsSection != .cast
+                ))
                 .padding(.top, 34)
                 .padding(.bottom, 52)
                 .id(TvDetailsScrollID.castSection)
@@ -4553,6 +4609,10 @@ struct TvDetailsContent: View {
                         }
                     }
                 )
+                .detailsSnapshot(TvDetailsRowSnapshotKey(
+                    content: uiState.moreLikeThis,
+                    entryLocked: focusedDetailsSection != .related
+                ))
                 .padding(.top, 34)
                 .id(TvDetailsScrollID.moreLikeThisSection)
                 .disabled(
@@ -4586,6 +4646,10 @@ struct TvDetailsContent: View {
                         }
                     }
                 )
+                .detailsSnapshot(TvDetailsRowSnapshotKey(
+                    content: networks,
+                    entryLocked: focusedDetailsSection != .network
+                ))
                 .padding(.top, 40)
                 .id(TvDetailsScrollID.networkSection)
                 .disabled(
@@ -4619,6 +4683,10 @@ struct TvDetailsContent: View {
                         }
                     }
                 )
+                .detailsSnapshot(TvDetailsRowSnapshotKey(
+                    content: productionCompanies,
+                    entryLocked: focusedDetailsSection != .production
+                ))
                 .padding(.top, 40)
                 .id(TvDetailsScrollID.productionSection)
                 .disabled(
@@ -4651,6 +4719,10 @@ struct TvDetailsContent: View {
                         }
                     }
                 )
+                .detailsSnapshot(TvDetailsRowSnapshotKey(
+                    content: uiState.comments,
+                    entryLocked: focusedDetailsSection != .comments
+                ))
                 .padding(.top, 40)
                 .id(TvDetailsScrollID.commentsSection)
                 .disabled(
@@ -4964,6 +5036,12 @@ struct TvDetailsContent: View {
             // episode on the way out, and while that capture stands every other
             // control here is unfocusable, so the engine can only put focus back
             // where it was.
+            .onChange(of: isScrolledDown) { _, _ in
+                updateTrailerParkingForScroll()
+            }
+            .onChange(of: isTrailerPlaying) { _, _ in
+                updateTrailerParkingForScroll()
+            }
             .onChange(of: isEnabled) { _, enabled in
                 if !enabled {
                     restoreGeneration &+= 1
@@ -5267,6 +5345,60 @@ private enum TvDetailsScrollTiming {
     static let duration = 0.3
 }
 
+/// Keeps a Details section as it was while `key` stays the same. A move between sections
+/// changes which section owns focus, and that rebuilt every section of Details (the poster
+/// cards of More Like This, the cast...) just as the scroll began; now only the two sections
+/// whose lock changed redraw. The key holds what a section shows and its lock; its actions
+/// read Details' state when they run, so a kept section still acts on the current screen.
+private struct TvDetailsSectionSnapshot<Key: Equatable, Content: View>: View, Equatable {
+    let key: Key
+    let content: Content
+
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.key == rhs.key }
+
+    var body: some View { content }
+}
+
+extension View {
+    fileprivate func detailsSnapshot<Key: Equatable>(_ key: Key) -> some View {
+        TvDetailsSectionSnapshot(key: key, content: self).equatable()
+    }
+}
+
+private struct TvDetailsRowSnapshotKey<Content: Equatable>: Equatable {
+    let content: Content
+    let entryLocked: Bool
+}
+
+private struct TvDetailsCastSnapshot: Equatable {
+    let metaID: String
+    let cast: [String]?
+    let director: [String]?
+    let writer: [String]?
+    let people: [TmdbPersonMetadata]
+}
+
+private struct TvDetailsEpisodesSnapshotKey: Equatable {
+    let meta: NuvioMeta
+    let revision: TvDetailsEpisodePresentationRevision
+    let continueItem: ContinueWatchingItem?
+    let choosingWatchPartyEpisode: Bool
+    let restoreEpisodeKey: String?
+    let entryLocked: Bool
+    let hasManualPlay: Bool
+}
+
+private struct TvDetailsSeasonSnapshot: Equatable {
+    let seasons: [Int]
+    let selectedSeason: Int
+    let locked: Bool
+}
+
+/// Holds Details' background trailer player for the life of the screen.
+private final class TvDetailsTrailerPlayerHolder: ObservableObject {
+    let player = AVPlayer()
+}
+
 /// When the last animated scroll between Details sections ends. A reference, so noting a scroll
 /// redraws nothing.
 private final class TvDetailsSectionScrollClock {
@@ -5414,11 +5546,16 @@ private struct TvDetailsBackdrop: View {
 
         ZStack {
             if let backdropImage {
+                // One sharp image throughout (switching between two versions of it when the
+                // blurred copy arrived could flash as Details opened); live blur only until the
+                // blurred copy is ready.
+                Image(uiImage: backdropImage)
+                    .resizable()
+                    .scaledToFill()
+                    .blur(radius: usesBlurredCopy && blurredBackdrop != nil ? 0 : blurRadius, opaque: true)
+                    .animation(.easeInOut(duration: 0.35), value: blurRadius)
+                    .ignoresSafeArea()
                 if usesBlurredCopy, let blurredBackdrop {
-                    Image(uiImage: backdropImage)
-                        .resizable()
-                        .scaledToFill()
-                        .ignoresSafeArea()
                     Image(uiImage: blurredBackdrop)
                         .resizable()
                         .scaledToFill()
@@ -5426,13 +5563,6 @@ private struct TvDetailsBackdrop: View {
                         .animation(.easeInOut(duration: 0.35), value: blurRadius)
                         .ignoresSafeArea()
                         .allowsHitTesting(false)
-                } else {
-                    Image(uiImage: backdropImage)
-                        .resizable()
-                        .scaledToFill()
-                        .blur(radius: blurRadius, opaque: true)
-                        .animation(.easeInOut(duration: 0.35), value: blurRadius)
-                        .ignoresSafeArea()
                 }
             } else {
                 backdropColor.ignoresSafeArea()
@@ -7939,6 +8069,10 @@ private struct TvDetailsEpisodes: View {
     @State private var seasonEpisodes: [NuvioVideo]
     @State private var seasonEpisodeIndexByID: [String: Int]
     @State private var episodeScrollIndex: Int
+    /// Test build (Vertical Scrolling: Smooth): the episode focus rested on last. The Nuvio strip
+    /// keeps the cards a few further from it built, so a move builds none while it animates; the
+    /// next ones are built once it has finished.
+    @State private var settledEpisodeIndex: Int
     @State private var watchedEpisodeKeys: Set<String>
     @State private var episodeWatchCounts: [String: Int]
     @State private var watchedSummary: WatchedEpisodeSummary?
@@ -8002,6 +8136,7 @@ private struct TvDetailsEpisodes: View {
             }
         }
         _episodeScrollIndex = State(initialValue: initialScrollIndex)
+        _settledEpisodeIndex = State(initialValue: initialScrollIndex)
         _watchedEpisodeKeys = State(initialValue: initialState.watchedEpisodeKeys)
         _episodeWatchCounts = State(initialValue: initialState.episodeWatchCounts)
         _watchedSummary = State(initialValue: initialState.watchedSummary)
@@ -8013,8 +8148,16 @@ private struct TvDetailsEpisodes: View {
             if isChoosingWatchPartyEpisode {
                 watchPartySelectionPrompt
             }
+            // Kept as they are while the strip moves (see `detailsSnapshot`): only the strip
+            // follows the episode index.
             watchedProgressSummary
+                .detailsSnapshot(watchedSummary)
             seasonSelector
+                .detailsSnapshot(TvDetailsSeasonSnapshot(
+                    seasons: seasons,
+                    selectedSeason: selectedSeason,
+                    locked: seasonPillsLocked
+                ))
             episodeCardStrip
         }
         .focusSection()
@@ -8187,8 +8330,19 @@ private struct TvDetailsEpisodes: View {
         }
     }
 
-    private func materializedEpisodeIndices(visibleCardCount: Int) -> [Int] {
+    private func materializedEpisodeIndices(visibleCardCount: Int, keepingSettled: Bool = false) -> [Int] {
         guard !seasonEpisodes.isEmpty else { return [] }
+        let window = baseEpisodeWindow(visibleCardCount: visibleCardCount)
+        guard keepingSettled,
+              let first = window.first, let last = window.last,
+              abs(settledEpisodeIndex - episodeScrollIndex) <= visibleCardCount + 3 else { return window }
+        // Three cards more on each side of where focus rested: a few quick moves stay inside.
+        let settledLower = max(0, settledEpisodeIndex - 7)
+        let settledUpper = min(seasonEpisodes.count - 1, settledEpisodeIndex + visibleCardCount + 5)
+        return Array(min(first, settledLower)...max(last, settledUpper))
+    }
+
+    private func baseEpisodeWindow(visibleCardCount: Int) -> [Int] {
         let targetIndex: Int? = {
             guard let restriction = effectiveFocusRestriction,
                   restriction.hasPrefix("episode-card\u{1}") else { return nil }
@@ -8214,6 +8368,16 @@ private struct TvDetailsEpisodes: View {
             }
         }
         .frame(height: TvEpisodeCardLayout.stripHeight)
+        .task(id: cardAppearance.usesSmoothVerticalScrolling ? episodeScrollIndex : -1) {
+            guard cardAppearance.usesSmoothVerticalScrolling else { return }
+            let index = episodeScrollIndex
+            // Past the strip's spring (0.3 s).
+            try? await Task.sleep(nanoseconds: 380_000_000)
+            guard !Task.isCancelled, index == episodeScrollIndex, settledEpisodeIndex != index else { return }
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { settledEpisodeIndex = index }
+        }
         .task(id: "\(selectedSeason)-\((materializedEpisodeIndices(visibleCardCount: 6).first ?? 0) / 6)") {
             // Debounce to keep rapid D-pad navigation butter-smooth without spamming network/state passes
             do {
@@ -8250,7 +8414,10 @@ private struct TvDetailsEpisodes: View {
 
     private func offsetEpisodeStrip(edgeInset: CGFloat, stripWidth: CGFloat) -> some View {
         let visibleCardCount = max(1, Int(ceil(stripWidth / TvEpisodeCardLayout.step)) + 1)
-        let materializedIndices = materializedEpisodeIndices(visibleCardCount: visibleCardCount)
+        let materializedIndices = materializedEpisodeIndices(
+            visibleCardCount: visibleCardCount,
+            keepingSettled: cardAppearance.usesSmoothVerticalScrolling
+        )
         let materializedEpisodes = materializedIndices.map { seasonEpisodes[$0] }
 
         return HStack(alignment: .bottom, spacing: TvEpisodeCardLayout.spacing) {
