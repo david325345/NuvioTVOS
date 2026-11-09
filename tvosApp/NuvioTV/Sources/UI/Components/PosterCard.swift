@@ -1758,6 +1758,38 @@ struct LiquidGlassCardModifier: ViewModifier {
         let layout: Bool
     }
 
+    @ViewBuilder
+    private var cardFill: some View {
+        #if os(tvOS)
+        if isFocused {
+            if #available(tvOS 26.0, *) {
+                if glassSettled {
+                    shape
+                        .fill(Color.white.opacity(0.16))
+                        .glassEffect(.regular, in: shape)
+                } else {
+                    shape.fill(Color.white.opacity(0.16))
+                }
+            } else {
+                shape
+                    .fill(.ultraThinMaterial)
+                    .overlay(shape.fill(Color.white.opacity(0.14)))
+            }
+        } else {
+            shape
+                .fill(Color.white.opacity(0.07))
+        }
+        #else
+        if isFocused {
+            shape
+                .fill(.ultraThinMaterial)
+                .overlay(shape.fill(Color.white.opacity(0.14)))
+        } else {
+            shape.fill(Color.white.opacity(0.07))
+        }
+        #endif
+    }
+
     func body(content: Content) -> some View {
         styled(content)
             .task(id: SettleKey(focused: isFocused && isEnabled && !coveredByArtwork, layout: layoutKey)) {
@@ -1787,34 +1819,11 @@ struct LiquidGlassCardModifier: ViewModifier {
         } else if isEnabled {
             content
                 .background {
-                    #if os(tvOS)
-                    if isFocused {
-                        if #available(tvOS 26.0, *) {
-                            if glassSettled {
-                                shape
-                                    .fill(Color.white.opacity(0.16))
-                                    .glassEffect(.regular, in: shape)
-                            } else {
-                                shape.fill(Color.white.opacity(0.16))
-                            }
-                        } else {
-                            shape
-                                .fill(.ultraThinMaterial)
-                                .overlay(shape.fill(Color.white.opacity(0.14)))
-                        }
-                    } else {
-                        shape
-                            .fill(Color.white.opacity(0.07))
+                    // Under artwork that covers the card the fill can't be seen; leave it out,
+                    // one shape less to draw for every card while rows move and cards resize.
+                    if !coveredByArtwork {
+                        cardFill
                     }
-                    #else
-                    if isFocused {
-                        shape
-                            .fill(.ultraThinMaterial)
-                            .overlay(shape.fill(Color.white.opacity(0.14)))
-                    } else {
-                        shape.fill(Color.white.opacity(0.07))
-                    }
-                    #endif
                 }
                 .overlay {
                     if isFocused {
