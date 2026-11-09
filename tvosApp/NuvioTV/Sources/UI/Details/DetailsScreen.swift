@@ -8295,12 +8295,13 @@ private struct TvDetailsEpisodes: View {
             .frame(width: stripWidth, height: TvEpisodeCardLayout.stripHeight, alignment: .leading)
             .offset(x: -edgeInset)
             .onAppear {
-                // Where the strip was left, or the card focus goes back to.
-                scrollEpisodeStrip(proxy, to: restoreIndex ?? episodeScrollIndex, anchor: anchor)
+                // Where the strip was left, or the card focus goes back to. Again once laid out:
+                // when Details opens the strip has no size yet, and the first try does nothing.
+                scrollEpisodeStrip(proxy, to: restoreIndex ?? episodeScrollIndex, anchor: anchor, again: true)
             }
             .onChange(of: restoreIndex) { _, index in
                 guard let index else { return }
-                scrollEpisodeStrip(proxy, to: index, anchor: anchor)
+                scrollEpisodeStrip(proxy, to: index, anchor: anchor, again: true)
             }
             .onChange(of: seasonEpisodes.first?.id) { _, _ in
                 // Another season: start where its index points (the first episode after a pick).
@@ -8311,12 +8312,21 @@ private struct TvDetailsEpisodes: View {
         }
     }
 
-    private func scrollEpisodeStrip(_ proxy: ScrollViewProxy, to index: Int, anchor: UnitPoint) {
+    private func scrollEpisodeStrip(_ proxy: ScrollViewProxy, to index: Int, anchor: UnitPoint, again: Bool = false) {
         guard seasonEpisodes.indices.contains(index) else { return }
+        let key = TvEpisodeFocus.card(seasonEpisodes[index].id)
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            proxy.scrollTo(TvEpisodeFocus.card(seasonEpisodes[index].id), anchor: anchor)
+            proxy.scrollTo(key, anchor: anchor)
+        }
+        guard again else { return }
+        DispatchQueue.main.async {
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                proxy.scrollTo(key, anchor: anchor)
+            }
         }
     }
 
@@ -8447,7 +8457,7 @@ private struct TvDetailsEpisodes: View {
                 .scrollClipDisabledIfAvailable()
                 // The pills are the strip's other focus target, and the one the
                 // engine picked when an episode's picker closed.
-                .disabled(effectiveFocusRestriction != nil)
+                .disabled(seasonPillsLocked)
                 .onAppear {
                     scrollProxy.scrollTo(selectedSeason, anchor: .center)
                 }
@@ -8474,8 +8484,19 @@ private struct TvDetailsEpisodes: View {
     private var effectiveFocusRestriction: String? {
         if let restrictFocusToKey { return restrictFocusToKey }
         guard entryLocked, !seasonEpisodes.isEmpty else { return nil }
+        // The system strip builds only the cards near the screen, so a lock on the remembered
+        // card left focus nowhere to go when that card wasn't built yet (Details opened at a later
+        // episode, from Continue Watching). The strip keeps that card at the column's start, where
+        // tvOS's own choice lands anyway.
+        guard !cardAppearance.usesSystemRowScrolling else { return nil }
         let index = min(max(episodeScrollIndex, 0), seasonEpisodes.count - 1)
         return TvEpisodeFocus.card(seasonEpisodes[index].id)
+    }
+
+    /// The season pills stay out of focus while the strip is entered (focus goes from Play
+    /// straight to an episode) or while focus is being put back on one.
+    private var seasonPillsLocked: Bool {
+        restrictFocusToKey != nil || (entryLocked && !seasonEpisodes.isEmpty)
     }
 
     /// A season counts as watched only when every episode in it is, which is
