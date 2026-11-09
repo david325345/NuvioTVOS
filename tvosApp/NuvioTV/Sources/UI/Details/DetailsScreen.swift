@@ -4212,6 +4212,7 @@ struct TvDetailsContent: View {
     }
 
     private func presentFullscreenTrailer() {
+        TestDiagnosticLog.ui("details: trailer opened full screen, focus on \(Self.testLogName(actionFocus)), section \(focusedDetailsSection)")
         if isTrailerPlaying && trailerPlayer.currentItem != nil {
             applySoundPreference(true)
             trailerPlayer.play()
@@ -4374,6 +4375,7 @@ struct TvDetailsContent: View {
                 ? L10n.string("details_play_hint_smart", fallback: "Plays the best link. Hold Select to choose a source manually.")
                 : L10n.string("details_play_hint", fallback: "Starts playback or opens stream sources"),
             onPlayClick: {
+                TestDiagnosticLog.ui("details: Play pressed (\(playTarget.label)), focus on \(Self.testLogName(actionFocus)), section \(focusedDetailsSection)")
                 handlePlayClick(playTarget: playTarget)
             },
             onPlayLongPress: canBypassPicker ? {
@@ -4457,6 +4459,7 @@ struct TvDetailsContent: View {
                         }
                     },
                     onSelect: { video in
+                        TestDiagnosticLog.ui("details: episode S\(video.season)E\(video.episode) selected")
                         stopBackgroundTrailer(manual: false)
                         if isChoosingWatchPartyEpisode {
                             isChoosingWatchPartyEpisode = false
@@ -4817,6 +4820,7 @@ struct TvDetailsContent: View {
                         .scrollClipDisabledIfAvailable()
                         .coordinateSpace(name: "tv-details-scroll")
                         .onChange(of: actionFocus) { _, newFocus in
+                            if newFocus != nil { TestDiagnosticLog.ui("details: focus on action \(Self.testLogName(newFocus))") }
                             guard newFocus != nil else { return }
                             guard !isSectionScrollAnimating else { return }
                             var transaction = Transaction(animation: nil)
@@ -4826,6 +4830,7 @@ struct TvDetailsContent: View {
                             }
                         }
                         .onChange(of: castHeaderFocus) { _, newFocus in
+                            if let newFocus { TestDiagnosticLog.ui("details: focus on cast header \(newFocus)") }
                             guard newFocus != nil else { return }
                             guard !isSectionScrollAnimating else { return }
                             var transaction = Transaction(animation: nil)
@@ -4964,6 +4969,9 @@ struct TvDetailsContent: View {
             // episode on the way out, and while that capture stands every other
             // control here is unfocusable, so the engine can only put focus back
             // where it was.
+            .onChange(of: focusedDetailsSection) { old, new in
+                TestDiagnosticLog.ui("details: section \(old) → \(new)")
+            }
             .onChange(of: isEnabled) { _, enabled in
                 if !enabled {
                     restoreGeneration &+= 1
@@ -5057,6 +5065,11 @@ struct TvDetailsContent: View {
     /// indicates that the user changed direction.
     private func handleEpisodeFocusChange(_ newFocus: String?, scrollProxy: ScrollViewProxy) {
         let focused = newFocus != nil
+        if focused != isEpisodeFocused {
+            TestDiagnosticLog.ui(focused
+                ? "details: focus into the episodes" + (newFocus == restoreEpisodeKey ? " (put back)" : "")
+                : "details: focus left the episodes")
+        }
         if isEpisodeFocused != focused { isEpisodeFocused = focused }
         // Restoration landed — lift the restriction.
         if let newFocus, newFocus == restoreEpisodeKey {
@@ -5069,6 +5082,11 @@ struct TvDetailsContent: View {
         withTransaction(transaction) {
             scrollProxy.scrollTo(TvDetailsScrollID.episodesSection, anchor: .top)
         }
+    }
+
+    /// Test log: "play", "trailer" or "none".
+    private static func testLogName(_ focus: DetailsActionFocus?) -> String {
+        focus.map { "\($0)" } ?? "none"
     }
 
     /// Test build (Vertical Scrolling: Smooth): a move into another section starts an animated
@@ -8313,6 +8331,7 @@ private struct TvDetailsEpisodes: View {
     private func scrollEpisodeStrip(_ proxy: ScrollViewProxy, to index: Int, anchor: UnitPoint, again: Bool = false) {
         guard seasonEpisodes.indices.contains(index) else { return }
         let key = TvEpisodeFocus.card(seasonEpisodes[index].id)
+        TestDiagnosticLog.ui("details: system episode strip scrolled to E\(seasonEpisodes[index].episode)\(again ? ", and again once laid out" : "")")
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
