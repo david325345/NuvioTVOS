@@ -9,6 +9,9 @@ import QuartzCore
 /// cards are on. A frame held up for a
 /// quarter of a second or more gets a line of its own at once. Frames the GPU drops while the
 /// main thread is idle don't show up here.
+///
+/// Every move up or down gets a line too, once its scroll has had time to finish: how many frames
+/// came late meanwhile and how many Home rows were built (moves in a quick run share one line).
 @MainActor
 final class HitchMeter: NSObject {
     static let shared = HitchMeter()
@@ -32,6 +35,43 @@ final class HitchMeter: NSObject {
     private var lostTime: CFTimeInterval = 0
     private var longest: CFTimeInterval = 0
     private var focusMoves = 0
+    private var move: MoveWindow?
+
+    /// How long after the last up or down move its line waits: past Home's and Details' scrolls.
+    static let moveWindow: CFTimeInterval = 0.5
+    /// Posted by Home whenever it builds a row (test build), counted for the move lines.
+    static let rowBuiltNotification = Notification.Name("nuvio.test.rowBuilt")
+
+    private struct MoveWindow {
+        var direction: String
+        var moves: Int
+        var lastMoveAt: CFTimeInterval
+        var frames = 0
+        var droppedFrames = 0
+        var longest: CFTimeInterval = 0
+        var rowsBuilt = 0
+        var screen: String
+    }
+
+    /// One up or down move's numbers (or a quick run of them), for the log line and the tests.
+    struct MoveSummary: Equatable {
+        var direction: String
+        var moves: Int
+        var screen: String
+        var droppedFrames: Int
+        var frames: Int
+        var longestMilliseconds: Int
+        var rowsBuilt: Int
+        var glassCards: Bool
+        var experiments: String = ""
+
+        var text: String {
+            "ui: move \(direction)\(moves > 1 ? " ×\(moves)" : "") on \(screen): "
+                + "\(droppedFrames) of \(frames) frames dropped (longest \(longestMilliseconds) ms), "
+                + "\(rowsBuilt) row\(rowsBuilt == 1 ? "" : "s") built, glass \(glassCards ? "on" : "off")"
+                + (experiments.isEmpty ? "" : ", " + experiments)
+        }
+    }
 
     /// One window's numbers, for the log line (and the tests).
     struct Summary: Equatable {
@@ -75,8 +115,16 @@ final class HitchMeter: NSObject {
         link.add(to: .main, forMode: .common)
         self.link = link
         let center = NotificationCenter.default
-        observers.append(center.addObserver(forName: UIFocusSystem.didUpdateNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.focusMoves += 1 }
+        observers.append(center.addObserver(forName: UIFocusSystem.didUpdateNotification, object: nil, queue: .main) { [weak self] note in
+            MainActor.assumeIsolated {
+                self?.focusMoves += 1
+                if let context = note.userInfo?[UIFocusSystem.focusUpdateContextUserInfoKey] as? UIFocusUpdateContext {
+                    self?.noteMove(context.focusHeading)
+                }
+            }
+        })
+        observers.append(center.addObserver(forName: Self.rowBuiltNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.move?.rowsBuilt += 1 }
         })
         observers.append(center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.pause() }
@@ -86,7 +134,45 @@ final class HitchMeter: NSObject {
         })
     }
 
+    private func noteMove(_ heading: UIFocusHeading) {
+        let direction: String
+        if heading.contains(.down) {
+            direction = "down"
+        } else if heading.contains(.up) {
+            direction = "up"
+        } else {
+            return
+        }
+        let now = CACurrentMediaTime()
+        if var open = move, open.direction == direction {
+            open.moves += 1
+            open.lastMoveAt = now
+            move = open
+        } else {
+            flushMove()
+            move = MoveWindow(direction: direction, moves: 1, lastMoveAt: now, screen: Self.screen)
+        }
+    }
+
+    private func flushMove() {
+        guard let open = move else { return }
+        move = nil
+        let summary = MoveSummary(
+            direction: open.direction,
+            moves: open.moves,
+            screen: open.screen,
+            droppedFrames: open.droppedFrames,
+            frames: open.frames,
+            longestMilliseconds: Int(open.longest * 1_000),
+            rowsBuilt: open.rowsBuilt,
+            glassCards: Self.glassCardsOn,
+            experiments: Self.experiments
+        )
+        TestDiagnosticLog.ui(summary.text)
+    }
+
     private func pause() {
+        flushMove()
         if lastTimestamp > 0 { flush(at: lastTimestamp) }
         link?.isPaused = true
         lastTimestamp = 0
@@ -109,6 +195,13 @@ final class HitchMeter: NSObject {
         let dropped = Self.droppedFrames(gap: gap, frameDuration: frameDuration)
         droppedFrames += dropped
         frames += 1 + dropped
+        if var open = move {
+            open.frames += 1 + dropped
+            open.droppedFrames += dropped
+            open.longest = max(open.longest, gap)
+            move = open
+            if now - open.lastMoveAt >= Self.moveWindow { flushMove() }
+        }
         if Self.isHitch(gap: gap, frameDuration: frameDuration) {
             hitches += 1
             lostTime += gap - frameDuration
@@ -151,6 +244,7 @@ final class HitchMeter: NSObject {
         var parts: [String] = []
         if let rows = defaults.string(forKey: "nuvio.tv.test.rowScrolling"), rows != "nuvio" { parts.append("rows \(rows)") }
         if let focus = defaults.string(forKey: "nuvio.tv.test.focusEffect"), focus != "nuvio" { parts.append("focus \(focus)") }
+        if let vertical = defaults.string(forKey: "nuvio.tv.test.verticalScrolling"), vertical != "nuvio" { parts.append("vertical \(vertical)") }
         return parts.joined(separator: ", ")
     }
 
