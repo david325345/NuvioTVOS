@@ -4960,6 +4960,23 @@ enum ProfileDisplayName {
     }
 }
 
+/// Follows Home's focused card for `TVHomeView`. Only this empty view reads it, so a move from
+/// card to card redraws it instead of all of Home.
+private struct TVHomeFocusedCardObserver: View {
+    let focus: FocusState<String?>.Binding
+    let onChange: (String?, String?) -> Void
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+            .onChange(of: focus.wrappedValue) { oldValue, newValue in
+                onChange(oldValue, newValue)
+            }
+    }
+}
+
 private final class TVHomeFocusWork {
     struct VisibleSectionsSignature: Equatable {
         let cwVisible: Bool
@@ -4980,6 +4997,16 @@ private final class TVHomeFocusWork {
         let sections: [TVHomeSection]
     }
     var cachedVisibleSections: CachedVisibleSections?
+    /// Every card's focus key, worked out again only when the rows change: Home's body asks for
+    /// them on each redraw (to notice a row change), and building a key for each card of every
+    /// row cost several milliseconds on every move.
+    struct CachedFocusRows {
+        let sectionsSignature: VisibleSectionsSignature
+        let layout: String
+        let gridRows: Int
+        let rows: [TVHomeFocusRow]
+    }
+    var cachedFocusRows: CachedFocusRows?
     var defersOverlayPreparation = false
     var pendingOverlayRestoreCardID: String?
     /// Remains set until the restored card's actual focus callback runs. The
@@ -6306,9 +6333,13 @@ struct TVHomeView: View {
             focusWork.landscapeFocusTask?.cancel()
             landscapeFocusedId = nil
         }
-        .onChange(of: focusedCardID) { oldValue, newValue in
-            handleFocusedCardIDChange(oldValue: oldValue, newValue: newValue)
-        }
+        // Followed by an empty view of its own: read here, the focused card made all of Home
+        // redraw on every move from card to card.
+        .background(
+            TVHomeFocusedCardObserver(focus: $focusedCardID) { oldValue, newValue in
+                handleFocusedCardIDChange(oldValue: oldValue, newValue: newValue)
+            }
+        )
         // Visible menus still toggle Home's disabled environment. Full-screen
         // overlays do not: their opacity-zero Home tree is already unfocusable,
         // and handling the overlay transition directly avoids invalidating all
@@ -6782,7 +6813,16 @@ struct TVHomeView: View {
     }
 
     private var focusRows: [TVHomeFocusRow] {
-        visibleSections.map { section in
+        let sections = visibleSections
+        let sectionsSignature = focusWork.cachedVisibleSections?.signature
+        if let sectionsSignature,
+           let cached = focusWork.cachedFocusRows,
+           cached.sectionsSignature == sectionsSignature,
+           cached.layout == homeLayout,
+           cached.gridRows == gridRows {
+            return cached.rows
+        }
+        let rows = sections.map { section in
             let keys: [String]
             if section.isLoadingPlaceholder {
                 keys = (0..<12).map {
@@ -6804,6 +6844,15 @@ struct TVHomeView: View {
             }
             return TVHomeFocusRow(id: section.id, keys: keys)
         }
+        if let sectionsSignature {
+            focusWork.cachedFocusRows = TVHomeFocusWork.CachedFocusRows(
+                sectionsSignature: sectionsSignature,
+                layout: homeLayout,
+                gridRows: gridRows,
+                rows: rows
+            )
+        }
+        return rows
     }
 
     private func validRestoreTarget(_ saved: String) -> String? {
