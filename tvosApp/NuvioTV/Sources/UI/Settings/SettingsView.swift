@@ -6308,6 +6308,7 @@ private struct TestDiagnosticsSheet: View {
     @AppStorage("nuvio.tv.test.rowScrolling") private var rowScrolling = "nuvio"
     @AppStorage("nuvio.tv.test.focusEffect") private var focusEffect = "nuvio"
     @AppStorage("nuvio.tv.test.verticalScrolling") private var verticalScrolling = "nuvio"
+    @AppStorage("nuvio.tv.test.detailsOpening") private var detailsOpening = "nuvio"
     @AppStorage(SettingsKey.liquidGlassCards) private var liquidGlassCards = true
 
     var body: some View {
@@ -6364,6 +6365,16 @@ private struct TestDiagnosticsSheet: View {
                             accentColor: accentColor
                         ) {
                             verticalScrolling = verticalScrolling == "smooth" ? "nuvio" : "smooth"
+                        }
+                        SettingsActionRow(
+                            title: "Details Opening",
+                            subtitle: detailsOpening == "steady"
+                                ? "Steady: the title's backdrop is there at once, only Details' content fades in"
+                                : "Nuvio: Details fades in over Home as a whole",
+                            value: detailsOpening == "steady" ? "Steady" : "Nuvio",
+                            accentColor: accentColor
+                        ) {
+                            detailsOpening = detailsOpening == "steady" ? "nuvio" : "steady"
                         }
                         SettingsActionRow(
                             title: "Card Focus Effect",
