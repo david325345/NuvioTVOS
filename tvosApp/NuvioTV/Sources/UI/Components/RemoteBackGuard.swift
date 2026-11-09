@@ -26,11 +26,17 @@ final class BackGuardHostView: UIView, UIGestureRecognizerDelegate {
     static let passAfterSwallowWithin: CFTimeInterval = 1.5
     /// A Back this soon after the previous one lands while what that one closed is still closing.
     static let closingWithin: CFTimeInterval = 1.0
-    /// Each decision, for a test build's log ("swallowed", "passed", and why).
+    /// Each Back and the decision, for a test build's log and for screens that act on a Back
+    /// they don't get themselves (a native menu takes it): `userInfo["swallowed"]` (Bool) and
+    /// `userInfo["text"]` ("swallowed"/"passed" and why).
     static let decisionNotification = Notification.Name("nuvio.backGuard.decision")
+    /// Posted by a screen that put focus back on its own control after a native menu closed:
+    /// the next Back then goes to that control and isn't taken for one landing on the menu.
+    static let menuFocusReturnedNotification = Notification.Name("nuvio.backGuard.menuFocusReturned")
 
     private var recognizers: [(window: UIWindow, tap: UITapGestureRecognizer)] = []
     private var windowObserver: NSObjectProtocol?
+    private var menuFocusObserver: NSObjectProtocol?
     private var lastBack: CFTimeInterval = -.infinity
     private var lastSwallow: CFTimeInterval = -.infinity
 
@@ -53,6 +59,11 @@ final class BackGuardHostView: UIView, UIGestureRecognizerDelegate {
                   newWindow.windowScene === self.window?.windowScene else { return }
             self.guardWindow(newWindow)
         }
+        menuFocusObserver = NotificationCenter.default.addObserver(
+            forName: Self.menuFocusReturnedNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.lastBack = -.infinity
+        }
     }
 
     private func guardWindow(_ window: UIWindow) {
@@ -71,6 +82,8 @@ final class BackGuardHostView: UIView, UIGestureRecognizerDelegate {
         recognizers.removeAll()
         if let windowObserver { NotificationCenter.default.removeObserver(windowObserver) }
         windowObserver = nil
+        if let menuFocusObserver { NotificationCenter.default.removeObserver(menuFocusObserver) }
+        menuFocusObserver = nil
     }
 
     @objc private func swallowed(_ recognizer: UITapGestureRecognizer) {}
@@ -92,7 +105,10 @@ final class BackGuardHostView: UIView, UIGestureRecognizerDelegate {
         NotificationCenter.default.post(
             name: Self.decisionNotification,
             object: nil,
-            userInfo: ["text": "\(swallow ? "swallowed" : "passed"): focus on \(focusText), \(gap)"]
+            userInfo: [
+                "swallowed": swallow,
+                "text": "\(swallow ? "swallowed" : "passed"): focus on \(focusText), \(gap)"
+            ]
         )
         return swallow
     }
