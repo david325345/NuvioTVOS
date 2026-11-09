@@ -467,6 +467,7 @@ final class ASSRenderCoordinator {
     private func dropStalePendingRender(at offset: TimeInterval) {
         guard let pending = pendingRender else { return }
         if pending.isRequiredReloadRender {
+            TestDiagnosticLog.subtitles("ASS seek kept a reload pass (the case that used to blank the subtitles)")
             pendingRender = (offset, pending.reloadRevision, true)
         } else {
             pendingRender = nil
@@ -480,6 +481,7 @@ final class ASSRenderCoordinator {
               requiredReloadPasses > 0,
               !isRendering,
               pendingRender == nil else { return }
+        TestDiagnosticLog.subtitles("ASS reload stalled, its next pass requested")
         requestRender(
             at: currentPlaybackTime() - subtitleDelaySeconds,
             reloadRevision: revision,
