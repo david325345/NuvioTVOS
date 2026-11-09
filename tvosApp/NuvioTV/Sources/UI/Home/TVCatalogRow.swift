@@ -416,6 +416,7 @@ struct TVCatalogRow: View {
     var onMove: ((MoveCommandDirection) -> Void)? = nil
 
     @State private var scrollIndex: Int?
+    @Environment(\.cardAppearance) private var cardAppearance
     @AppStorage(SettingsKey.homeLayout) private var homeLayout = "Modern"
     @AppStorage(SettingsKey.posterLabels) private var posterLabels = false
     @AppStorage(SettingsKey.theme) private var theme = SettingsAccent.white.rawValue
@@ -557,7 +558,195 @@ struct TVCatalogRow: View {
         .modifier(OptionalMoveCommandHandler(handler: onMove))
     }
 
+    /// One card of the row, for both strips (Nuvio's own offset strip, and the system scroll
+    /// view of the test build's row scrolling experiment).
+    @ViewBuilder
+    private func catalogCard(
+        _ card: TVCatalogMaterializedCard,
+        mountedCount: Int,
+        systemScrolling: Bool
+    ) -> some View {
+        let rowHomeLayout = homeLayout
+        let rowPosterLabels = posterLabels
+        let rowSmoothFocus = smoothFocus
+        let rowFocusHighlighter = focusHighlighter
+        let rowFastNavigation = fastNavigation
+        let rowCardFocusAnimations = rowSmoothFocus && !suppressFocusAnimations && !rowFastNavigation
+        let rowTileShape = rowTileShape
+        let itemIndex = card.index
+        let item = card.item
+        let cardKey = card.id
+        let shouldRequestInitialFocus = cardKey == initialFocusCardKey
+        let progressItem = progressByItemId[item.id]
+        let calendarLabel = calendarLabelsByItemId[item.id]
+        // Explicit types keep the card's long initializer quick to type-check.
+        let episodeText: String? = progressItem?.episodeLabel ?? calendarLabel?.episode
+        let episodeTitleText: String? = progressItem?.episodeDisplayTitle ?? calendarLabel?.episodeTitle
+        let upcomingArtworkURL: String? = id == TVHomeSection.upcomingId ? progressItem?.meta.backdropUrl : nil
+        let episodeArtworkURL: String? = progressItem?.episodeArtworkURL ?? upcomingArtworkURL ?? calendarLabel?.artworkURL
+        let isUpNext: Bool = progressItem?.isUpNextEntry == true || calendarLabel != nil
+        let upNextBadgeText: String? = progressItem?.upNextBadgeText ?? calendarLabel?.badge
+        let handleFocus: (NuvioMeta) -> Void = { focused in
+            let focusStarted = TVHomeDebugTrace.now()
+            let targetIndex = items.firstIndex(where: {
+                TVHomeCardIdentity.key(rowID: id, item: $0) == cardKey
+            }) ?? items.firstIndex(where: { $0.id == focused.id }) ?? itemIndex
+
+            TVHomeDebugTrace.log(
+                "focus.begin row=\(id) index=\(targetIndex) items=\(items.count) "
+                    + "mounted=\(mountedCount) meta=\(focused.id)"
+            )
+            if systemScrolling {
+                // tvOS scrolls the row itself; only remember where it is.
+                if let restrictFocusToCardKey, restrictFocusToCardKey != cardKey { return }
+                if scrollIndex != targetIndex {
+                    scrollIndex = targetIndex
+                    onScrollIndexChange(targetIndex)
+                }
+            } else if let restrictFocusToCardKey {
+                guard restrictFocusToCardKey == cardKey else { return }
+                // Keep the persisted row position current before Home
+                // releases the restore lock in response to this focus.
+                alignScrollIndexToRestrictedFocus()
+            } else if effectiveScrollIndex != targetIndex {
+                let updateScrollPosition = {
+                    scrollIndex = targetIndex
+                    onScrollIndexChange(targetIndex)
+                }
+                if rowSmoothFocus && !suppressFocusAnimations && !rowFastNavigation {
+                    TVHomeDebugTrace.log(
+                        "row.scroll.animated row=\(id) from=\(effectiveScrollIndex) to=\(targetIndex)"
+                    )
+                    withAnimation(TVHomeLayout.scrollAnimation) {
+                        updateScrollPosition()
+                    }
+                } else {
+                    updateScrollPosition()
+                }
+            } else if scrollIndex != targetIndex {
+                scrollIndex = targetIndex
+                onScrollIndexChange(targetIndex)
+            }
+            onFocus(focused)
+            if !suppressFocusAnimations {
+                onApproachEnd(focused)
+            }
+            let approachStarted = TVHomeDebugTrace.now()
+            TVHomeDebugTrace.log(
+                "focus.approach row=\(id) index=\(targetIndex) "
+                    + "elapsedMs=\(TVHomeDebugTrace.elapsedMilliseconds(since: approachStarted))"
+            )
+            TVHomeDebugTrace.log(
+                "focus.end row=\(id) index=\(targetIndex) "
+                    + "parentMs=\(TVHomeDebugTrace.elapsedMilliseconds(since: focusStarted)) "
+                    + "totalMs=\(TVHomeDebugTrace.elapsedMilliseconds(since: focusStarted))"
+            )
+        }
+
+        PosterCard(
+            meta: item,
+            customPosterScreen: customPosterScreen,
+            isLandscape: rowTileShape == .landscape || (rowHomeLayout == "Modern" && landscapeFocusedId == cardKey),
+            isAlwaysLandscape: rowTileShape == .landscape || item.tileShape == .landscape,
+            tileShape: item.tileShape != .poster ? item.tileShape : rowTileShape,
+            continueProgress: progressItem?.progress,
+            continueRemainingText: progressItem?.remainingText,
+            continueEpisodeText: episodeText,
+            continueEpisodeTitleText: episodeTitleText,
+            continueEpisodeArtworkURL: episodeArtworkURL,
+            continueIsUpNext: isUpNext,
+            continueUpNextBadgeText: upNextBadgeText,
+            collectionOrigin: id == TVHomeSection.continueWatchingId && progressItem?.isUpNextEntry == false
+                ? collectionOriginsByItemId[item.id] : nil,
+            showsWatchedBadge: id != TVHomeSection.continueWatchingId && id != TVHomeSection.upcomingId
+                && id != TVHomeSection.calendarTodayId,
+            shouldRequestInitialFocus: shouldRequestInitialFocus,
+            onInitialFocusRequested: shouldRequestInitialFocus ? onInitialFocusRequested : nil,
+            onFocus: handleFocus,
+            onBlur: onBlur,
+            externalFocus: externalFocus,
+            externalFocusValue: cardKey,
+            onLongPress: onLongPress,
+            onOpenDetails: onOpenDetails != nil ? { onOpenDetails?(item) } : nil,
+            onPlayManually: ((id == TVHomeSection.continueWatchingId || id == TVHomeSection.upcomingId) && progressItem != nil) ? {
+                if let p = progressItem { onPlayContinueWatchingManually?(p) }
+            } : nil,
+            onStartFromBeginning: ((id == TVHomeSection.continueWatchingId || id == TVHomeSection.upcomingId) && progressItem != nil) ? {
+                if let p = progressItem { onStartContinueWatchingFromBeginning?(p) }
+            } : nil,
+            onRemoveFromContinueWatching: ((id == TVHomeSection.continueWatchingId || id == TVHomeSection.upcomingId) && progressItem != nil) ? {
+                if let p = progressItem { onRemoveFromContinueWatching?(p) }
+            } : nil,
+            onRefreshCatalog: onRefreshCatalog,
+            cardIndex: itemIndex,
+            layoutMode: rowHomeLayout,
+            showPosterLabels: rowPosterLabels,
+            smoothFocusAnimations: rowCardFocusAnimations,
+            focusHighlighterEnabled: rowFocusHighlighter,
+            retainFocusAppearance: retainFocusAppearanceForCardKey == cardKey,
+            allowsFocus: restrictFocusToCardKey == nil || restrictFocusToCardKey == cardKey,
+            focusCallbackContext: TVCardFocusCallbackContext(
+                restrictFocusToCardKey: restrictFocusToCardKey,
+                suppressFocusAnimations: suppressFocusAnimations
+            ),
+            onMove: onMove
+        ) {
+            onSelect(item)
+        }
+    }
+
+    @ViewBuilder
     private var cardStrip: some View {
+        if cardAppearance.usesSystemRowScrolling {
+            systemCardStrip
+        } else {
+            offsetCardStrip
+        }
+    }
+
+    /// Test build experiment: the row as a system scroll view. tvOS scrolls it as focus moves
+    /// (outside the main thread); only cards near the screen are built.
+    private var systemCardStrip: some View {
+        let stripWidth = max(1920, UIScreen.main.bounds.width + horizontalEdgeInset * 2)
+        let rowHomeLayout = homeLayout
+        let rowCardFocusAnimations = smoothFocus && !suppressFocusAnimations && !fastNavigation
+        let rowCardSpacing: CGFloat = rowHomeLayout == "Compact" ? 22 : 28
+        let cards = TVHomeCardIdentity.materializedTitles(rowID: id, items: items, indices: Array(items.indices))
+        return ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(alignment: .top, spacing: rowCardSpacing) {
+                    ForEach(cards) { card in
+                        catalogCard(card, mountedCount: cards.count, systemScrolling: true)
+                            .id(card.id)
+                    }
+                }
+                .padding(.leading, horizontalEdgeInset + TVLayout.rowLeading)
+                .padding(.trailing, horizontalEdgeInset + TVLayout.rowLeading)
+                .padding(.vertical, TVHomeLayout.stripVerticalPadding)
+                .animation(
+                    rowCardFocusAnimations && restrictFocusToCardKey == nil
+                        ? TVHomeLayout.scrollAnimation : nil,
+                    value: landscapeFocusedId
+                )
+            }
+            .scrollClipDisabled()
+            .frame(width: stripWidth, height: stripHeight, alignment: .topLeading)
+            .offset(x: -horizontalEdgeInset)
+            .onAppear {
+                // Where the row was left (or the card focus goes back to), without animation.
+                let index = effectiveScrollIndex
+                guard index > 0, cards.indices.contains(index) else { return }
+                proxy.scrollTo(cards[index].id, anchor: .leading)
+            }
+            .onChange(of: restrictedFocusIndex) { _, index in
+                guard let index, cards.indices.contains(index) else { return }
+                proxy.scrollTo(cards[index].id, anchor: .leading)
+            }
+        }
+        .frame(height: stripHeight)
+    }
+
+    private var offsetCardStrip: some View {
         #if DEBUG
         let rowLayoutStarted = TVHomeDebugTrace.now()
         #endif
@@ -576,119 +765,11 @@ struct TVCatalogRow: View {
 
         return HStack(alignment: .top, spacing: rowCardSpacing) {
             ForEach(materializedCards) { card in
-                let itemIndex = card.index
-                let item = card.item
-                let cardKey = card.id
-                let shouldRequestInitialFocus = cardKey == initialFocusCardKey
-                let progressItem = progressByItemId[item.id]
-                let calendarLabel = calendarLabelsByItemId[item.id]
-                // Explicit types keep the card's long initializer quick to type-check.
-                let episodeText: String? = progressItem?.episodeLabel ?? calendarLabel?.episode
-                let episodeTitleText: String? = progressItem?.episodeDisplayTitle ?? calendarLabel?.episodeTitle
-                let upcomingArtworkURL: String? = id == TVHomeSection.upcomingId ? progressItem?.meta.backdropUrl : nil
-                let episodeArtworkURL: String? = progressItem?.episodeArtworkURL ?? upcomingArtworkURL ?? calendarLabel?.artworkURL
-                let isUpNext: Bool = progressItem?.isUpNextEntry == true || calendarLabel != nil
-                let upNextBadgeText: String? = progressItem?.upNextBadgeText ?? calendarLabel?.badge
-                let handleFocus: (NuvioMeta) -> Void = { focused in
-                    let focusStarted = TVHomeDebugTrace.now()
-                    let targetIndex = items.firstIndex(where: {
-                        TVHomeCardIdentity.key(rowID: id, item: $0) == cardKey
-                    }) ?? items.firstIndex(where: { $0.id == focused.id }) ?? itemIndex
-
-                    TVHomeDebugTrace.log(
-                        "focus.begin row=\(id) index=\(targetIndex) items=\(items.count) "
-                            + "mounted=\(materializedCards.count) meta=\(focused.id)"
-                    )
-                    if let restrictFocusToCardKey {
-                        guard restrictFocusToCardKey == cardKey else { return }
-                        // Keep the persisted row position current before Home
-                        // releases the restore lock in response to this focus.
-                        alignScrollIndexToRestrictedFocus()
-                    } else if effectiveScrollIndex != targetIndex {
-                        let updateScrollPosition = {
-                            scrollIndex = targetIndex
-                            onScrollIndexChange(targetIndex)
-                        }
-                        if rowSmoothFocus && !suppressFocusAnimations && !rowFastNavigation {
-                            TVHomeDebugTrace.log(
-                                "row.scroll.animated row=\(id) from=\(effectiveScrollIndex) to=\(targetIndex)"
-                            )
-                            withAnimation(TVHomeLayout.scrollAnimation) {
-                                updateScrollPosition()
-                            }
-                        } else {
-                            updateScrollPosition()
-                        }
-                    } else if scrollIndex != targetIndex {
-                        scrollIndex = targetIndex
-                        onScrollIndexChange(targetIndex)
-                    }
-                    onFocus(focused)
-                    if !suppressFocusAnimations {
-                        onApproachEnd(focused)
-                    }
-                    let approachStarted = TVHomeDebugTrace.now()
-                    TVHomeDebugTrace.log(
-                        "focus.approach row=\(id) index=\(targetIndex) "
-                            + "elapsedMs=\(TVHomeDebugTrace.elapsedMilliseconds(since: approachStarted))"
-                    )
-                    TVHomeDebugTrace.log(
-                        "focus.end row=\(id) index=\(targetIndex) "
-                            + "parentMs=\(TVHomeDebugTrace.elapsedMilliseconds(since: focusStarted)) "
-                            + "totalMs=\(TVHomeDebugTrace.elapsedMilliseconds(since: focusStarted))"
-                    )
-                }
-
-                PosterCard(
-                    meta: item,
-                    customPosterScreen: customPosterScreen,
-                    isLandscape: rowTileShape == .landscape || (rowHomeLayout == "Modern" && landscapeFocusedId == cardKey),
-                    isAlwaysLandscape: rowTileShape == .landscape || item.tileShape == .landscape,
-                    tileShape: item.tileShape != .poster ? item.tileShape : rowTileShape,
-                    continueProgress: progressItem?.progress,
-                    continueRemainingText: progressItem?.remainingText,
-                    continueEpisodeText: episodeText,
-                    continueEpisodeTitleText: episodeTitleText,
-                    continueEpisodeArtworkURL: episodeArtworkURL,
-                    continueIsUpNext: isUpNext,
-                    continueUpNextBadgeText: upNextBadgeText,
-                    collectionOrigin: id == TVHomeSection.continueWatchingId && progressItem?.isUpNextEntry == false
-                        ? collectionOriginsByItemId[item.id] : nil,
-                    showsWatchedBadge: id != TVHomeSection.continueWatchingId && id != TVHomeSection.upcomingId
-                        && id != TVHomeSection.calendarTodayId,
-                    shouldRequestInitialFocus: shouldRequestInitialFocus,
-                    onInitialFocusRequested: shouldRequestInitialFocus ? onInitialFocusRequested : nil,
-                    onFocus: handleFocus,
-                    onBlur: onBlur,
-                    externalFocus: externalFocus,
-                    externalFocusValue: cardKey,
-                    onLongPress: onLongPress,
-                    onOpenDetails: onOpenDetails != nil ? { onOpenDetails?(item) } : nil,
-                    onPlayManually: ((id == TVHomeSection.continueWatchingId || id == TVHomeSection.upcomingId) && progressItem != nil) ? {
-                        if let p = progressItem { onPlayContinueWatchingManually?(p) }
-                    } : nil,
-                    onStartFromBeginning: ((id == TVHomeSection.continueWatchingId || id == TVHomeSection.upcomingId) && progressItem != nil) ? {
-                        if let p = progressItem { onStartContinueWatchingFromBeginning?(p) }
-                    } : nil,
-                    onRemoveFromContinueWatching: ((id == TVHomeSection.continueWatchingId || id == TVHomeSection.upcomingId) && progressItem != nil) ? {
-                        if let p = progressItem { onRemoveFromContinueWatching?(p) }
-                    } : nil,
-                    onRefreshCatalog: onRefreshCatalog,
-                    cardIndex: itemIndex,
-                    layoutMode: rowHomeLayout,
-                    showPosterLabels: rowPosterLabels,
-                    smoothFocusAnimations: rowCardFocusAnimations,
-                    focusHighlighterEnabled: rowFocusHighlighter,
-                    retainFocusAppearance: retainFocusAppearanceForCardKey == cardKey,
-                    allowsFocus: restrictFocusToCardKey == nil || restrictFocusToCardKey == cardKey,
-                    focusCallbackContext: TVCardFocusCallbackContext(
-                        restrictFocusToCardKey: restrictFocusToCardKey,
-                        suppressFocusAnimations: suppressFocusAnimations
-                    ),
-                    onMove: onMove
-                ) {
-                    onSelect(item)
-                }
+                catalogCard(
+                    card,
+                    mountedCount: materializedCards.count,
+                    systemScrolling: false
+                )
             }
         }
         .padding(

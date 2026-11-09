@@ -260,15 +260,21 @@ struct PosterCard: View {
         ZStack(alignment: .topLeading) {
             Button(action: onClick) {
                 posterContent
+                    .background {
+                        // The system card style has no place for Nuvio's focus observer.
+                        if cardAppearance.usesSystemFocusEffect {
+                            TVNativeFocusObserver(onFocusChange: reportNativeFocus)
+                        }
+                    }
             }
-            .buttonStyle(PosterCardButtonStyle(onNativeFocusChange: { focused in
-                if focused { onFocus?(meta) } else { onBlur?(meta) }
-            }))
+            .modifier(CardFocusButtonStyle(
+                system: cardAppearance.usesSystemFocusEffect,
+                onNativeFocusChange: reportNativeFocus
+            ))
             .accessibilityIdentifier("poster-card-\(externalFocusValue ?? meta.id)")
             .disabled(!allowsFocus)
             .focused($isFocused)
             .modifier(ExternalFocusBinding(binding: externalFocus, id: externalFocusValue ?? meta.id))
-            .nuvioFocusEffectDisabledIfAvailable()
             .modifier(OptionalMoveCommandHandler(handler: onMove))
             .titleActionsContextMenu(
                 meta: meta,
@@ -462,7 +468,7 @@ struct PosterCard: View {
             .modifier(
                 LiquidGlassCardModifier(
                     cornerRadius: cardCornerRadius,
-                    isFocused: showsFocusedAppearance,
+                    isFocused: showsFocusedAppearance && !cardAppearance.usesSystemFocusEffect,
                     isEnabled: liquidGlassCards,
                     layoutKey: effectiveLandscape,
                     coveredByArtwork: true
@@ -910,18 +916,23 @@ struct PosterCard: View {
     }
 
     private var focusedBorderWidth: CGFloat {
-        showsFocusedAppearance ? (effectiveFocusHighlighter ? AppFocusOutline.emphasizedWidth : AppFocusOutline.width) : 0
+        guard !cardAppearance.usesSystemFocusEffect else { return 0 }
+        return showsFocusedAppearance ? (effectiveFocusHighlighter ? AppFocusOutline.emphasizedWidth : AppFocusOutline.width) : 0
+    }
+
+    private func reportNativeFocus(_ focused: Bool) {
+        if focused { onFocus?(meta) } else { onBlur?(meta) }
     }
 
     // Only the focused card casts a shadow. A shadow is drawn in a pass of its own for each
     // card, every frame a row moves, and the faint one under resting cards barely shows on
     // the dark background.
     private var shadowOpacity: Double {
-        showsFocusedAppearance ? 0.24 : 0
+        showsFocusedAppearance && cardAppearance.focusEffect == CardExperiment.focusEffectNuvio ? 0.24 : 0
     }
 
     private var shadowRadius: CGFloat {
-        showsFocusedAppearance ? 10 : 0
+        showsFocusedAppearance && cardAppearance.focusEffect == CardExperiment.focusEffectNuvio ? 10 : 0
     }
 
     private var titleColor: Color {
@@ -935,6 +946,7 @@ struct PosterCard: View {
     /// The badge's glass comes in once focus rests on the card, as the card's own did.
     private var showsBadgeGlass: Bool {
         showsFocusedAppearance && landscapePreloadArmed
+            && cardAppearance.focusEffect == CardExperiment.focusEffectNuvio
     }
 
     private var showsPosterTitle: Bool {
@@ -1828,7 +1840,9 @@ struct LiquidGlassCardModifier: ViewModifier {
                     }
                 }
                 .overlay {
-                    if isFocused {
+                    if isFocused, cardAppearance.usesLightFocusEffect {
+                        shape.strokeBorder(Color.white.opacity(0.4), lineWidth: 1.5)
+                    } else if isFocused {
                         // Apple TV liquid glass specular reflection border
                         shape
                             .strokeBorder(
@@ -3284,6 +3298,27 @@ struct PosterCardButtonStyle: ButtonStyle {
             .scaleEffect(configuration.isPressed ? 0.95 : 1.0)
             #endif
             .animation(.easeInOut(duration: 0.2), value: configuration.isPressed)
+    }
+}
+
+/// The poster card's button style: Nuvio's (its own focus look, the system effect off) or, as a
+/// test build experiment, tvOS's card style (lift and tilt drawn by the system).
+struct CardFocusButtonStyle: ViewModifier {
+    let system: Bool
+    let onNativeFocusChange: (Bool) -> Void
+
+    func body(content: Content) -> some View {
+        #if os(tvOS)
+        if system {
+            content.buttonStyle(.card)
+        } else {
+            content
+                .buttonStyle(PosterCardButtonStyle(onNativeFocusChange: onNativeFocusChange))
+                .nuvioFocusEffectDisabledIfAvailable()
+        }
+        #else
+        content.buttonStyle(PosterCardButtonStyle(onNativeFocusChange: onNativeFocusChange))
+        #endif
     }
 }
 

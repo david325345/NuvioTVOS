@@ -18,6 +18,14 @@ struct CardAppearance: Equatable {
     var focusHighlighter = false
     var amoled = false
     var amoledSurfaces = false
+    /// Test build experiments (Settings → Advanced → Crash Reports & Test Log), to compare
+    /// variants on the Apple TV. Defaults keep Nuvio as it is.
+    var rowScrolling = CardExperiment.rowScrollingNuvio
+    var focusEffect = CardExperiment.focusEffectNuvio
+
+    var usesSystemRowScrolling: Bool { rowScrolling == CardExperiment.rowScrollingSystem }
+    var usesSystemFocusEffect: Bool { focusEffect == CardExperiment.focusEffectSystem }
+    var usesLightFocusEffect: Bool { focusEffect == CardExperiment.focusEffectLight }
 
     /// The values saved in `defaults`, for views outside ContentView's tree.
     static func stored(in defaults: UserDefaults) -> CardAppearance {
@@ -33,6 +41,8 @@ struct CardAppearance: Equatable {
         if let value = defaults.object(forKey: SettingsKey.focusHighlighter) as? Bool { appearance.focusHighlighter = value }
         if let value = defaults.object(forKey: SettingsKey.amoled) as? Bool { appearance.amoled = value }
         if let value = defaults.object(forKey: SettingsKey.amoledSurfaces) as? Bool { appearance.amoledSurfaces = value }
+        if let value = defaults.string(forKey: CardExperiment.rowScrollingKey) { appearance.rowScrolling = value }
+        if let value = defaults.string(forKey: CardExperiment.focusEffectKey) { appearance.focusEffect = value }
         return appearance
     }
 }
@@ -62,6 +72,8 @@ struct CardAppearanceProvider: ViewModifier {
     @AppStorage(SettingsKey.focusHighlighter) private var focusHighlighter = false
     @AppStorage(SettingsKey.amoled) private var amoled = false
     @AppStorage(SettingsKey.amoledSurfaces) private var amoledSurfaces = false
+    @AppStorage(CardExperiment.rowScrollingKey) private var rowScrolling = CardExperiment.rowScrollingNuvio
+    @AppStorage(CardExperiment.focusEffectKey) private var focusEffect = CardExperiment.focusEffectNuvio
 
     func body(content: Content) -> some View {
         content.environment(
@@ -77,8 +89,28 @@ struct CardAppearanceProvider: ViewModifier {
                 smoothFocus: smoothFocus,
                 focusHighlighter: focusHighlighter,
                 amoled: amoled,
-                amoledSurfaces: amoledSurfaces
+                amoledSurfaces: amoledSurfaces,
+                rowScrolling: rowScrolling,
+                focusEffect: focusEffect
             )
         )
     }
+}
+
+/// The fork's test build: variants to compare how smooth Home moves.
+enum CardExperiment {
+    static let rowScrollingKey = "nuvio.tv.test.rowScrolling"
+    static let focusEffectKey = "nuvio.tv.test.focusEffect"
+
+    /// Rows move by Nuvio's own animated offset (focused card kept at the left).
+    static let rowScrollingNuvio = "nuvio"
+    /// Rows are system scroll views: tvOS scrolls them as focus moves, outside the main thread.
+    static let rowScrollingSystem = "system"
+
+    /// Nuvio's focus look: outline, shadow, glass border.
+    static let focusEffectNuvio = "nuvio"
+    /// The same outline without the shadow and with a plain glass border.
+    static let focusEffectLight = "light"
+    /// tvOS's own card focus effect (lift and tilt), drawn by the system.
+    static let focusEffectSystem = "system"
 }
