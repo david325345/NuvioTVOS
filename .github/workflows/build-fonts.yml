@@ -37,6 +37,9 @@ jobs:
               | sort -u | head -40 | while IFS= read -r line; do echo "::error::$line"; done
           }
           trap 'report' ERR
+          # Test build: keep the symbol table, so crash reports name the functions.
+          perl -0pi -e 's/(  CODE_SIGN_ENTITLEMENTS="" \\\n)/$1  STRIP_INSTALLED_PRODUCT=NO \\\n/' scripts/build-ipa.sh
+          grep -q 'STRIP_INSTALLED_PRODUCT=NO' scripts/build-ipa.sh
           bash scripts/build-ipa.sh 2>&1 | tee build.log
       - name: Embed the App Group entitlement (Top Shelf test)
         # The unsigned IPA carries no entitlements at all, so a sideloader has no App Group to
@@ -104,6 +107,8 @@ jobs:
           trap 'report' ERR
           bash scripts/test-tvos.sh \
             -only-testing:NuvioTVTests/SubtitleFontTests \
+            -only-testing:NuvioTVTests/CrashRecorderTests \
+            -only-testing:NuvioTVTests/RemoteBackGuardTests \
             -only-testing:NuvioTVTests/MarqueeTextTests \
             -only-testing:NuvioTVTests/PlayerControlsSettingsTests
       - name: Fonts and related test results
@@ -117,7 +122,7 @@ jobs:
             def walk(node, suite, out)
               name = node["name"].to_s
               suite = name if node["nodeType"] == "Test Suite"
-              if node["nodeType"] == "Test Case" && ["SubtitleFontTests", "MarqueeTextTests", "PlayerControlsSettingsTests"].include?(suite)
+              if node["nodeType"] == "Test Case" && ["SubtitleFontTests", "CrashRecorderTests", "RemoteBackGuardTests", "MarqueeTextTests", "PlayerControlsSettingsTests"].include?(suite)
                 out << ["#{suite}.#{name}", node["result"]]
               end
               (node["children"] || []).each { |child| walk(child, suite, out) }
