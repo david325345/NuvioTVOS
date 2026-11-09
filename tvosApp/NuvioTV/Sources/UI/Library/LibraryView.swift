@@ -1000,7 +1000,8 @@ struct LibraryItemButton: View {
                     LiquidGlassCardModifier(
                         cornerRadius: cardCornerRadius,
                         isFocused: showsFocusedAppearance,
-                        isEnabled: liquidGlassCards
+                        isEnabled: liquidGlassCards,
+                        coveredByArtwork: true
                     )
                 )
                 .overlay(alignment: .topTrailing) {

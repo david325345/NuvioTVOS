@@ -1173,7 +1173,8 @@ struct CollectionFolderResultCard: View {
                     LiquidGlassCardModifier(
                         cornerRadius: cardCornerRadius,
                         isFocused: focused,
-                        isEnabled: liquidGlassCards
+                        isEnabled: liquidGlassCards,
+                        coveredByArtwork: true
                     )
                 )
                 .overlay(alignment: .topTrailing) {
