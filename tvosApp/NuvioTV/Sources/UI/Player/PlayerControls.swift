@@ -316,13 +316,13 @@ struct PlayerControls: View {
 
     /// Back in a subtitle or audio menu: put focus back on its button at once. tvOS hands it
     /// back only when the menu's closing animation is over, and until then nothing is focused
-    /// and the remote does nothing. Asked again a few times, since tvOS may not let focus move
-    /// while its menu is still on its way out.
+    /// and the remote does nothing. Asked again every 100 ms (for up to about 2.5 s), since
+    /// tvOS lets focus move only once its menu is far enough on its way out.
     private func returnFocusAfterMenu(menuTakesThisBack: Bool) {
         guard let control = menuButtonControl, viewModel.showControls else { return }
         menuFocusReturnTask?.cancel()
         // A Back the menu takes is still being delivered to it; give it the press first.
-        let delays: [UInt64] = menuTakesThisBack ? [150, 150, 200, 300, 400] : [0, 100, 150, 200, 300, 400]
+        let delays: [UInt64] = [menuTakesThisBack ? 150 : 0] + Array(repeating: 100, count: 24)
         menuFocusReturnTask = Task { @MainActor in
             for delay in delays {
                 if delay > 0 {
