@@ -131,14 +131,32 @@ struct MarqueeText: View {
         return 0
     }
 
+    /// Measured widths and line heights, so a card that redraws doesn't lay its title out again:
+    /// every card on screen measures its title, and Home redraws many cards at once.
+    private static let measurements: NSCache<NSString, NSNumber> = {
+        let cache = NSCache<NSString, NSNumber>()
+        cache.countLimit = 2_000
+        return cache
+    }()
+
     /// The width of `text` on one line in the system font, as SwiftUI draws `.system(size:weight:)`.
     static func width(of text: String, size: CGFloat, weight: Font.Weight) -> CGFloat {
-        let font = UIFont.systemFont(ofSize: size, weight: uiWeight(weight))
-        return ceil((text as NSString).size(withAttributes: [.font: font]).width)
+        let fontWeight = uiWeight(weight)
+        let key = "w\u{1}\(size)\u{1}\(fontWeight.rawValue)\u{1}\(text)" as NSString
+        if let known = measurements.object(forKey: key) { return CGFloat(known.doubleValue) }
+        let font = UIFont.systemFont(ofSize: size, weight: fontWeight)
+        let width = ceil((text as NSString).size(withAttributes: [.font: font]).width)
+        measurements.setObject(NSNumber(value: Double(width)), forKey: key)
+        return width
     }
 
     static func lineHeight(size: CGFloat, weight: Font.Weight) -> CGFloat {
-        ceil(UIFont.systemFont(ofSize: size, weight: uiWeight(weight)).lineHeight)
+        let fontWeight = uiWeight(weight)
+        let key = "h\u{1}\(size)\u{1}\(fontWeight.rawValue)" as NSString
+        if let known = measurements.object(forKey: key) { return CGFloat(known.doubleValue) }
+        let height = ceil(UIFont.systemFont(ofSize: size, weight: fontWeight).lineHeight)
+        measurements.setObject(NSNumber(value: Double(height)), forKey: key)
+        return height
     }
 
     private static func uiWeight(_ weight: Font.Weight) -> UIFont.Weight {
