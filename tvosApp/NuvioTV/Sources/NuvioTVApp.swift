@@ -2677,7 +2677,7 @@ struct ContentView: View {
             if case .details(let contentId, let contentType) = activeScreen {
                 detailsScreen(contentId: contentId, contentType: contentType)
                     .id("\(contentType):\(contentId)")
-                    .transition(.opacity)
+                    .transition(.leavingScreen)
                     .onDisappear {
                         detailsDidDisappearGeneration &+= 1
                     }
@@ -2694,7 +2694,7 @@ struct ContentView: View {
                     resumeFrom: resumeFrom,
                     startupBenchmarkToken: playbackStartupBenchmarkToken
                 )
-                .transition(.opacity)
+                .transition(.leavingScreen)
                 .onDisappear {
                     detailsDidDisappearGeneration &+= 1
                 }
@@ -2710,7 +2710,7 @@ struct ContentView: View {
             if showCloudLibrary {
                 cloudLibraryScreen()
                     .disabled(activeScreen.isPlayer)
-                    .transition(.opacity)
+                    .transition(.leavingScreen)
                     .onDisappear {
                         detailsDidDisappearGeneration &+= 1
                     }
@@ -2764,7 +2764,7 @@ struct ContentView: View {
                     }
                 )
                 .disabled(!isCollectionFolderActive || cardMenuMeta != nil)
-                .transition(.opacity)
+                .transition(.leavingScreen)
                 .onDisappear {
                     detailsDidDisappearGeneration &+= 1
                 }
@@ -2803,7 +2803,7 @@ struct ContentView: View {
                         }
                     }
                 )
-                .transition(.opacity)
+                .transition(.leavingScreen)
                 .onDisappear {
                     detailsDidDisappearGeneration &+= 1
                 }
@@ -2842,7 +2842,7 @@ struct ContentView: View {
                         }
                     }
                 )
-                .transition(.opacity)
+                .transition(.leavingScreen)
                 .onDisappear {
                     detailsDidDisappearGeneration &+= 1
                 }
@@ -2859,7 +2859,7 @@ struct ContentView: View {
                         dismissOverlay()
                     }
                 )
-                .transition(.opacity)
+                .transition(.leavingScreen)
                 .onDisappear {
                     detailsDidDisappearGeneration &+= 1
                 }
