@@ -7356,32 +7356,37 @@ private struct TvDetailsPersonCard: View {
             return
         }
 
-        let targetPixelSize: CGFloat = 376
-        let downsampledImage: UIImage? = {
-            let options: [CFString: Any] = [
-                kCGImageSourceShouldCache: false
-            ]
-            guard let source = CGImageSourceCreateWithData(data as CFData, options as CFDictionary) else {
-                return UIImage(data: data)
-            }
-            guard CGImageSourceGetCount(source) > 0, CGImageSourceGetType(source) != nil else {
-                return UIImage(data: data)
-            }
-            let thumbnailOptions: [CFString: Any] = [
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceShouldCacheImmediately: true,
-                kCGImageSourceCreateThumbnailWithTransform: true,
-                kCGImageSourceThumbnailMaxPixelSize: targetPixelSize
-            ]
-            guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions as CFDictionary) else {
-                return UIImage(data: data)
-            }
-            return UIImage(cgImage: cgImage)
-        }()
+        // Decoded off the main thread: a cast row's photos decoded there held Details up for
+        // over a hundred milliseconds while it opened.
+        let downsampledImage = await Task.detached(priority: .userInitiated) {
+            Self.downsampledProfileImage(from: data, maxPixelSize: 376)
+        }.value
 
         guard let image = downsampledImage, !Task.isCancelled else { return }
         await PersonProfileImageCache.shared.insert(image, for: cacheKey)
         profileImage = image
+    }
+
+    nonisolated private static func downsampledProfileImage(from data: Data, maxPixelSize: CGFloat) -> UIImage? {
+        let options: [CFString: Any] = [
+            kCGImageSourceShouldCache: false
+        ]
+        guard let source = CGImageSourceCreateWithData(data as CFData, options as CFDictionary) else {
+            return UIImage(data: data)
+        }
+        guard CGImageSourceGetCount(source) > 0, CGImageSourceGetType(source) != nil else {
+            return UIImage(data: data)
+        }
+        let thumbnailOptions: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
+        ]
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions as CFDictionary) else {
+            return UIImage(data: data)
+        }
+        return UIImage(cgImage: cgImage)
     }
 }
 
