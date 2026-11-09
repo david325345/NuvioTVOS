@@ -58,6 +58,13 @@ final class CrashRecorderTests: XCTestCase {
         )
     }
 
+    func testHitchSummaryNamesTheExperimentsInUse() {
+        let summary = HitchMeter.Summary(seconds: 5, hitches: 0, lostMilliseconds: 0, longestMilliseconds: 0,
+                                         focusMoves: 4, screen: "main · home", glassCards: false,
+                                         droppedFrames: 3, frames: 300, experiments: "rows system")
+        XCTAssertTrue(summary.text.hasSuffix("main · home, glass off, rows system"), summary.text)
+    }
+
     func testDroppedFramesCountOneLateFrameToo() {
         let frame = 1.0 / 60.0
         XCTAssertEqual(HitchMeter.droppedFrames(gap: frame, frameDuration: frame), 0)
