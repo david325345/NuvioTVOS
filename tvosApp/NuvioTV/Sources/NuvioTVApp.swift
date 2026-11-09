@@ -18,6 +18,9 @@ import AetherEngine
 @main
 struct NuvioTVApp: App {
     init() {
+        // Test build: why the last session ended, and the Usenet log.
+        CrashRecorder.install()
+        TestDiagnosticLog.noteLaunch(version: CrashRecorder.appVersion)
         let totalRam = ProcessInfo.processInfo.physicalMemory
         let isLegacyDevice = totalRam <= 2_500_000_000 // <= 2.5 GB (Apple TV HD)
         let memCapacity = isLegacyDevice ? (12 * 1024 * 1024) : (32 * 1024 * 1024)
@@ -853,6 +856,12 @@ struct ContentView: View {
                 await SMBSessionManager.shared.connectAll()
                 await JellyfinSessionManager.shared.connectAll()
             }
+        }
+        .onChange(of: activeScreen) { _, screen in
+            CrashRecorder.noteScreen(screen.description)
+        }
+        .onChange(of: selectedTab) { _, tab in
+            CrashRecorder.noteScreen("main · \(tab)")
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {

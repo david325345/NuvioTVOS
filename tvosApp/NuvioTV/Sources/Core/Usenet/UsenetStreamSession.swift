@@ -543,12 +543,17 @@ actor UsenetStreamSession {
         let segment = source.volumes[place.volume].segments[place.index]
         let pool = self.pool
         return Task {
+            let fetchStarted = Date()
             let outcome = try await pool.fetch(
                 messageID: segment.messageID,
                 expectedBytes: segment.bytes,
                 priority: priority,
                 onProgress: { progress in Task { await self.fetchProgressed(index, token: token, progress) } }
             )
+            let fetchSeconds = Date().timeIntervalSince(fetchStarted)
+            if fetchSeconds > 3 {
+                TestDiagnosticLog.usenet("session: article \(index) took \(Int(fetchSeconds * 1_000)) ms (\(priority))")
+            }
             switch outcome {
             case .body(let body):
                 let decoded = try await Self.decode(body)
@@ -558,6 +563,7 @@ actor UsenetStreamSession {
                 // Keep playing past a hole rather than failing the whole stream:
                 // the player usually skips a damaged frame.
                 let filler = self.filler(for: index, place)
+                TestDiagnosticLog.usenet("session: article \(index) missing on every server")
                 self.counters.missingArticles += 1
                 self.recordOutcome(missing: true)
                 return filler
@@ -593,6 +599,7 @@ actor UsenetStreamSession {
         guard !reportedDamage, Self.isDamaged(consecutiveMissing: consecutiveMissing, recent: recentOutcomes) else { return }
         reportedDamage = true
         usenetLog.error("usenet: release damaged (\(self.counters.missingArticles) missing articles), asking for another source")
+        TestDiagnosticLog.usenet("session: release damaged (\(counters.missingArticles) missing articles), asking for another source")
         onDamaged()
     }
 

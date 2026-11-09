@@ -500,6 +500,7 @@ class PlayerViewModel: ObservableObject {
         didSet {
             if hasRenderedFirstFrame && !oldValue {
                 PlaybackTimelineRecorder.record(.playbackStarted, engine: activeEngineKind)
+                TestDiagnosticLog.usenet("player: first frame\(loadRequestedAt.map { " after " + TestDiagnosticLog.elapsed(since: $0) } ?? "")")
             }
         }
     }
@@ -568,6 +569,8 @@ class PlayerViewModel: ObservableObject {
     /// Watching so the Home hero can say which episode is in progress.
     private var activeEpisodeNumbers: (season: Int, episode: Int)?
     private var pendingResumeSeconds: Double?
+    /// When the current stream was asked for (Usenet log of the test build).
+    private var loadRequestedAt: Date?
     private var didApplyResume = false
     var pendingExternalSubtitles: [NuvioSubtitle] = []
     private var didAddExternalSubtitles = false
@@ -1702,6 +1705,8 @@ class PlayerViewModel: ObservableObject {
         self.activeTrackSelectionKey = selectionKey
         self.pendingTrackSelection = effectiveSelection
         self.pendingResumeSeconds = isActionPlaybackSession || isLiveStream ? nil : resumeFrom
+        self.loadRequestedAt = Date()
+        TestDiagnosticLog.usenet("player: load \(UsenetStreamServer.isStreamURL(url) || url.scheme == UsenetStreamSpec.scheme ? "Usenet" : "other") stream, resume at \(Int(self.pendingResumeSeconds ?? 0)) s")
         self.didApplyResume = false
         self.lastStablePlaybackTime = nil
         self.hasProducedMidFilePosition = false
@@ -3086,6 +3091,7 @@ class PlayerViewModel: ObservableObject {
                 AddonTransportUrls.diagnosticDescription(for: $0)
             } ?? "<redacted URL>"
             print("[TVTrace] ⚠️ [LOAD_WATCHDOG_TIMEOUT] Source failed to start within \(elapsedTimeout)s for url=\(diagnosticURL)\n\(memReport)")
+            TestDiagnosticLog.usenet("player: no first frame within \(elapsedTimeout) s (start limit), trying another source")
             if self.isStandalonePlaybackSession {
                 self.status = .error("The stream did not start within \(elapsedTimeout) seconds.")
                 return
@@ -3235,6 +3241,8 @@ class PlayerViewModel: ObservableObject {
             ?? pendingResumeSeconds
             ?? storedResumePositionForActiveItem
 
+        TestDiagnosticLog.usenet("player: switching source (\(toast ?? reason)), will resume at \(Int(resume ?? 0)) s, attempt \(reloadAttempts)")
+        loadRequestedAt = Date()
         let excluded = decision.exclusions
         Task { @MainActor [weak self] in
             guard let self else {
