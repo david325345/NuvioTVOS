@@ -6307,6 +6307,7 @@ private struct TestDiagnosticsSheet: View {
     // Smoothness experiments (read by the cards and rows through the shared card appearance).
     @AppStorage("nuvio.tv.test.rowScrolling") private var rowScrolling = "nuvio"
     @AppStorage("nuvio.tv.test.focusEffect") private var focusEffect = "nuvio"
+    @AppStorage("nuvio.tv.test.verticalScrolling") private var verticalScrolling = "nuvio"
     @AppStorage(SettingsKey.liquidGlassCards) private var liquidGlassCards = true
 
     var body: some View {
@@ -6342,7 +6343,7 @@ private struct TestDiagnosticsSheet: View {
 
                     SettingsGroup(
                         title: "Smoothness Experiments",
-                        subtitle: "Variants to compare on Home. The test log's \"frames dropped\" lines say which ones were on."
+                        subtitle: "Variants to compare on Home and in Details. The test log's \"frames dropped\" and \"move\" lines say which ones were on."
                     ) {
                         SettingsActionRow(
                             title: "Row Scrolling",
@@ -6353,6 +6354,16 @@ private struct TestDiagnosticsSheet: View {
                             accentColor: accentColor
                         ) {
                             rowScrolling = rowScrolling == "system" ? "nuvio" : "system"
+                        }
+                        SettingsActionRow(
+                            title: "Vertical Scrolling",
+                            subtitle: verticalScrolling == "smooth"
+                                ? "Smooth: Home builds the next row after a move, Details fades in a blurred backdrop and lets its scroll finish"
+                                : "Nuvio: up and down as Nuvio does it",
+                            value: verticalScrolling == "smooth" ? "Smooth" : "Nuvio",
+                            accentColor: accentColor
+                        ) {
+                            verticalScrolling = verticalScrolling == "smooth" ? "nuvio" : "smooth"
                         }
                         SettingsActionRow(
                             title: "Card Focus Effect",
