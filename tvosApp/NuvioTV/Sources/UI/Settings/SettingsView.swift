@@ -6280,7 +6280,7 @@ private struct CustomSubtitleFontRow: View {
     }
 }
 
-/// Test build: crash reports and the Usenet log, readable here and sent to a phone by QR code.
+/// Test build: crash reports and the test log (Usenet, Back, smoothness), readable here and sent to a phone by QR code.
 private struct TestDiagnosticsSheet: View {
     let accentColor: Color
 
@@ -6307,7 +6307,7 @@ private struct TestDiagnosticsSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     VStack(alignment: .leading, spacing: 7) {
-                        Text("Crash Reports & Usenet Log")
+                        Text("Crash Reports & Test Log")
                             .font(.system(size: 36, weight: .bold))
                             .foregroundColor(.white)
                         Text("Test build only. Kept on this Apple TV and sent nowhere, unless you scan a code below with a phone on the same network.")
@@ -6375,7 +6375,7 @@ private struct TestDiagnosticsSheet: View {
                     }
 
                     SettingsGroup(
-                        title: "Usenet Log",
+                        title: "Test Log (Usenet, Back, Smoothness)",
                         subtitle: usenetLines.isEmpty
                             ? "Nothing yet. Play a Usenet stream and come back."
                             : "The last \(usenetLines.count) lines; the newest are at the bottom."
@@ -6387,7 +6387,7 @@ private struct TestDiagnosticsSheet: View {
                                 .fixedSize(horizontal: false, vertical: true)
                                 .padding(.horizontal, 20)
                             SettingsActionRow(
-                                title: "Send Usenet Log to Phone",
+                                title: "Send Test Log to Phone",
                                 subtitle: "A file with the whole log",
                                 value: exporting == .usenet ? "Ready" : "",
                                 accentColor: accentColor
@@ -6395,7 +6395,7 @@ private struct TestDiagnosticsSheet: View {
                                 startExport(.usenet)
                             }
                             SettingsActionRow(
-                                title: "Clear Usenet Log",
+                                title: "Clear Test Log",
                                 subtitle: "Starts it empty",
                                 value: "",
                                 accentColor: accentColor
@@ -11403,7 +11403,7 @@ private struct AdvancedSettingsView: View {
                     action: { showingPlaybackHistory = true }
                 )
                 SettingsActionRow(
-                    title: L10n.string("tvos_settings_test_diagnostics", fallback: "Crash Reports & Usenet Log"),
+                    title: L10n.string("tvos_settings_test_diagnostics", fallback: "Crash Reports & Test Log"),
                     subtitle: L10n.string(
                         "tvos_settings_test_diagnostics_detail",
                         fallback: "Test build: why Nuvio closed, and what Usenet streams did; send them to a phone"
