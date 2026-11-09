@@ -53,4 +53,44 @@ final class CrashRecorderTests: XCTestCase {
                                          focusMoves: 1, screen: "main · home", glassCards: true)
         XCTAssertEqual(summary.text, "ui: 3 hitches in 5 s, longest 120 ms, 180 ms lost, 1 focus move, main · home, glass on")
     }
+
+    func testSampledSymbolsAreCutToTheirFunction() {
+        XCTAssertEqual(
+            MainThreadSampler.shortSymbol(
+                "closure #1 () -> SwiftUI.ModifiedContent<SwiftUI.ZStack<A>, B> in NuvioTV.TVHomeView.homeBodyFirstHalf.getter : some SwiftUI.View"
+            ),
+            "TVHomeView.homeBodyFirstHalf.getter"
+        )
+        XCTAssertEqual(
+            MainThreadSampler.shortSymbol(
+                "function signature specialization <Arg[2] = Dead> of NuvioTV.(crashSignalHandler in _80B95622ED5E5A8C6AA05B68B25997FB)"
+                    + "(Swift.Int32, Swift.Optional<Swift.UnsafeMutablePointer<__C.__siginfo>>, Swift.Optional<Swift.UnsafeMutableRawPointer>) -> ()"
+            ),
+            "crashSignalHandler"
+        )
+        XCTAssertEqual(MainThreadSampler.shortSymbol("NuvioTV.PosterCard.body.getter : some SwiftUI.View"), "PosterCard.body.getter")
+        XCTAssertEqual(
+            MainThreadSampler.shortSymbol("partial apply for closure #2 @Sendable (Swift.Int) -> () in NuvioTV.PlayerViewModel.load(url: Foundation.URL) -> ()"),
+            "PlayerViewModel.load"
+        )
+        XCTAssertEqual(
+            MainThreadSampler.shortSymbol("(extension in NuvioTV):SwiftUI.View.liquidGlassCard(cornerRadius: CoreGraphics.CGFloat) -> some SwiftUI.View"),
+            "SwiftUI.View.liquidGlassCard"
+        )
+        XCTAssertEqual(MainThreadSampler.shortSymbol("_dispatch_main_queue_callback_4CF"), "dispatch_main_queue_callback_4CF")
+    }
+
+    func testBusySummaryLine() {
+        let line = MainThreadSampler.summary(
+            milliseconds: 180,
+            samples: 13,
+            app: ["TVHomeView.body.getter": 9, "PosterCard.body.getter": 4],
+            libraries: ["SwiftUICore": 7, "AttributeGraph": 5, "CoreText": 1, "UIKitCore": 1]
+        )
+        XCTAssertEqual(
+            line,
+            "ui: busy 180 ms on {screen} — app: TVHomeView.body.getter ×9, PosterCard.body.getter ×4"
+                + " · in: SwiftUICore ×7, AttributeGraph ×5, CoreText ×1 (13 samples)"
+        )
+    }
 }
