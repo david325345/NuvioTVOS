@@ -3,9 +3,10 @@ import QuartzCore
 
 /// The fork's test build: how smooth the interface is, in the test log.
 ///
-/// Counts frames the main thread was too busy to draw on time (a hitch: one frame came more
-/// than two frames late) and writes a line for every five seconds that had any, with the
-/// screen, how many focus moves happened and whether glass cards are on. A frame held up for a
+/// Counts every frame the main thread didn't draw on time (one frame late included), and the
+/// hitches among them (a frame more than two frames late), and writes a line for every five
+/// seconds that dropped any, with the screen, how many focus moves happened and whether glass
+/// cards are on. A frame held up for a
 /// quarter of a second or more gets a line of its own at once. Frames the GPU drops while the
 /// main thread is idle don't show up here.
 @MainActor
@@ -26,6 +27,8 @@ final class HitchMeter: NSObject {
     private var lastTimestamp: CFTimeInterval = 0
     private var windowStart: CFTimeInterval = 0
     private var hitches = 0
+    private var droppedFrames = 0
+    private var frames = 0
     private var lostTime: CFTimeInterval = 0
     private var longest: CFTimeInterval = 0
     private var focusMoves = 0
@@ -39,12 +42,22 @@ final class HitchMeter: NSObject {
         var focusMoves: Int
         var screen: String
         var glassCards: Bool
+        /// Every frame that didn't come on time, one late frame included.
+        var droppedFrames: Int = 0
+        var frames: Int = 0
 
         var text: String {
-            "ui: \(hitches) hitch\(hitches == 1 ? "" : "es") in \(seconds) s, longest \(longestMilliseconds) ms, "
-                + "\(lostMilliseconds) ms lost, \(focusMoves) focus move\(focusMoves == 1 ? "" : "s"), "
+            "ui: \(droppedFrames) of \(frames) frames dropped in \(seconds) s, "
+                + "\(hitches) hitch\(hitches == 1 ? "" : "es") (longest \(longestMilliseconds) ms, \(lostMilliseconds) ms lost), "
+                + "\(focusMoves) focus move\(focusMoves == 1 ? "" : "s"), "
                 + "\(screen), glass \(glassCards ? "on" : "off")"
         }
+    }
+
+    /// Frames that should have come between two that came `gap` apart.
+    nonisolated static func droppedFrames(gap: CFTimeInterval, frameDuration: CFTimeInterval) -> Int {
+        guard frameDuration > 0 else { return 0 }
+        return max(0, Int((gap / frameDuration).rounded()) - 1)
     }
 
     /// Whether a frame that came `gap` after the one before it, where one frame lasts
@@ -90,6 +103,9 @@ final class HitchMeter: NSObject {
         }
         let frameDuration = max(link.targetTimestamp - link.timestamp, 1.0 / 120.0)
         let gap = now - lastTimestamp
+        let dropped = Self.droppedFrames(gap: gap, frameDuration: frameDuration)
+        droppedFrames += dropped
+        frames += 1 + dropped
         if Self.isHitch(gap: gap, frameDuration: frameDuration) {
             hitches += 1
             lostTime += gap - frameDuration
@@ -102,7 +118,7 @@ final class HitchMeter: NSObject {
     }
 
     private func flush(at now: CFTimeInterval) {
-        if hitches > 0 {
+        if droppedFrames > 0 {
             let summary = Summary(
                 seconds: max(1, Int((now - windowStart).rounded())),
                 hitches: hitches,
@@ -110,10 +126,14 @@ final class HitchMeter: NSObject {
                 longestMilliseconds: Int(longest * 1_000),
                 focusMoves: focusMoves,
                 screen: Self.screen,
-                glassCards: Self.glassCardsOn
+                glassCards: Self.glassCardsOn,
+                droppedFrames: droppedFrames,
+                frames: frames
             )
             TestDiagnosticLog.ui(summary.text)
         }
+        droppedFrames = 0
+        frames = 0
         hitches = 0
         lostTime = 0
         longest = 0
