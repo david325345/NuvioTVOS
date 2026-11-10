@@ -8699,9 +8699,16 @@ private struct TvDetailsEpisodes: View {
             upper = max(upper, target)
         }
         let appearStart = restoreEpisodeIndex ?? focused
-        // The card partly shown before the first whole one.
+        // The card partly shown before the first whole one. While the strip is still on its
+        // way to an episode, it is where it is going: where it reports being (its start, before
+        // the scroll lands) built every card between there and that episode at once, a stall
+        // of 277-315 ms as Details opened at a later episode.
+        let reportedStart = systemStripScreen.flatMap { screen -> Int? in
+            if let target = systemStripScrollTarget, !screen.contains(target) { return nil }
+            return screen.lowerBound - 1
+        }
         let screenStart = min(
-            max(systemStripScreen.map { $0.lowerBound - 1 } ?? appearStart, 0),
+            max(reportedStart ?? systemStripScrollTarget ?? appearStart, 0),
             max(0, last - visibleCardCount + 1)
         )
         lower = min(lower, screenStart)
@@ -8906,8 +8913,9 @@ private struct TvDetailsEpisodes: View {
         guard entryLocked, !seasonEpisodes.isEmpty else { return nil }
         var index = min(max(episodeScrollIndex, 0), seasonEpisodes.count - 1)
         // The system strip can leave the remembered episode off screen, and focus coming down
-        // could not find it: the lock goes to the nearest card on screen instead.
-        if cardAppearance.usesSystemRowScrolling, !isOnSystemStripScreen(index) {
+        // could not find it: the lock goes to the nearest card on screen instead. (Not while
+        // it is still being scrolled there: the lock would pull every card in between in.)
+        if cardAppearance.usesSystemRowScrolling, systemStripScrollTarget == nil, !isOnSystemStripScreen(index) {
             let range = systemStripScreenRange
             index = max(0, min(max(index, range.lowerBound), min(range.upperBound, seasonEpisodes.count - 1)))
         }

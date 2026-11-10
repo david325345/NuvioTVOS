@@ -2116,11 +2116,21 @@ struct CachedPosterArtwork<Placeholder: View>: View {
         if state.loadedKey == cacheKey { return state.image }
         if state.preloadedKey == cacheKey { return state.preloadedImage }
         if state.previousLoadedKey == cacheKey { return state.previousImage }
+        // Already decoded in memory (a card coming back on screen, Home rebuilt on returning
+        // to its tab): shown in the card's first frame. Asked for through the cache's actor, it
+        // came a few frames later, and the card showed its placeholder meanwhile (50-110 ms).
+        if let remembered = memoryCachedImage { return remembered }
 
         // While a brand-new variant is loading, keep real artwork on screen.
         // For landscape expansion this naturally starts with a zoomed poster;
         // for collapse the matching portrait is normally `previousImage`.
         return state.image ?? state.previousImage
+    }
+
+    /// The artwork this card asks for first, if it is already decoded in memory.
+    private var memoryCachedImage: UIImage? {
+        guard let rawURL = urlString ?? fallbackURLString, let url = URL(string: rawURL) else { return nil }
+        return PosterArtworkCache.shared.cachedImage(for: url, maxPixelSize: maxPixelSize)
     }
 
     @MainActor
@@ -2288,7 +2298,9 @@ actor PosterArtworkCache {
         maxCost: {
             let gib = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824.0
             if gib > 3.5 {
-                return 140 * 1024 * 1024 // 140 MB (Apple TV 4K Gen 2/3)
+                // Full at 140 MB (about 1 MB a poster): moving down Home read and decoded
+                // the rows it came back to from disk again, and their cards waited 50-130 ms.
+                return 200 * 1024 * 1024 // 200 MB (Apple TV 4K Gen 2/3)
             } else if gib > 2.5 {
                 return 100 * 1024 * 1024 // 100 MB (Apple TV 4K Gen 1)
             } else {
@@ -2301,13 +2313,24 @@ actor PosterArtworkCache {
         tracker.metrics()
     }
 
-    private let cache = NSCache<NSString, UIImage>()
+    /// NSCache is safe to read from any thread: the cards read it as they are drawn.
+    nonisolated(unsafe) private let cache = NSCache<NSString, UIImage>()
     private var inFlight: [String: Task<UIImage?, Never>] = [:]
+
+    private nonisolated static func memoryKey(for url: URL, maxPixelSize: Int) -> NSString {
+        let boundedPixelSize = min(max(maxPixelSize, 160), 1400)
+        return "\(url.absoluteString)#\(boundedPixelSize)" as NSString
+    }
+
+    /// The decoded poster when it is already in memory, at once: never loads.
+    nonisolated func cachedImage(for url: URL, maxPixelSize: Int) -> UIImage? {
+        cache.object(forKey: Self.memoryKey(for: url, maxPixelSize: maxPixelSize))
+    }
 
     init() {
         let gib = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824.0
         if gib > 3.5 {
-            cache.countLimit = 220
+            cache.countLimit = 320
             cache.totalCostLimit = Self.tracker.maxCost
         } else if gib > 2.5 {
             cache.countLimit = 160
@@ -2350,7 +2373,7 @@ actor PosterArtworkCache {
 
     func image(for url: URL, maxPixelSize: Int) async -> UIImage? {
         let boundedPixelSize = min(max(maxPixelSize, 160), 1400)
-        let key = "\(url.absoluteString)#\(boundedPixelSize)" as NSString
+        let key = Self.memoryKey(for: url, maxPixelSize: maxPixelSize)
 
         if let cached = cache.object(forKey: key) {
             return cached

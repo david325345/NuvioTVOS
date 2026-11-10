@@ -4088,6 +4088,74 @@ private struct ProfileScopedRootBackground: View {
 /// `alignment` controls which edge of a taller/wider image stays visible when
 /// aspect-filled (Android Modern Home uses top-trailing for hero art so faces
 /// and subjects aren't cropped off the top).
+/// What Home's hero shows: the title or collection folder focus settled on. Observed by the
+/// hero and its backdrop alone, so a settled move redraws them and not all of Home.
+@Observable
+private final class TVHomeHeroFocus {
+    var meta: NuvioMeta?
+    var folder: TVCollectionFolderItem?
+
+    /// The settled title, unless it is one Home hides (unreleased, when that is on).
+    func visibleMeta(_ isVisible: (NuvioMeta) -> Bool) -> NuvioMeta? {
+        guard let meta, isVisible(meta) else { return nil }
+        return meta
+    }
+}
+
+/// Home's hero text: the folder or title focus settled on, or Home's own hero.
+private struct TVHomeHeroHeader: View {
+    let heroFocus: TVHomeHeroFocus
+    let fallbackHero: NuvioMeta?
+    let isVisible: (NuvioMeta) -> Bool
+    let continueItem: (NuvioMeta) -> ContinueWatchingItem?
+    let onSelect: (NuvioMeta) -> Void
+
+    var body: some View {
+        if let folder = heroFocus.folder {
+            TVCollectionFolderHeroView(folder: folder)
+                .equatable()
+        } else if let heroMeta = heroFocus.visibleMeta(isVisible) ?? fallbackHero {
+            TVHeroView(
+                meta: heroMeta,
+                continueItem: continueItem(heroMeta)
+            ) {
+                onSelect(heroMeta)
+            }
+            .equatable()
+        }
+    }
+}
+
+/// Home's backdrop: the focused folder's or title's, else Home's own hero's.
+private struct TVHomeHeroBackdrop: View {
+    let heroFocus: TVHomeHeroFocus
+    let isHidden: Bool
+    let fallbackHero: NuvioMeta?
+    let isVisible: (NuvioMeta) -> Bool
+    let placeholder: Color
+    /// Nil: the folder hero's crop (top trailing) while a folder is focused, else centered.
+    let alignment: Alignment?
+
+    var body: some View {
+        CrossfadingBackdrop(
+            url: isHidden ? nil : url,
+            placeholder: placeholder,
+            alignment: alignment ?? (heroFocus.folder != nil ? .topTrailing : .center)
+        )
+        .equatable()
+    }
+
+    private var url: String? {
+        // Collection folder focus uses its own hero backdrop (Android Modern Home parity).
+        if let folder = heroFocus.folder {
+            return folder.preferredHeroBackdropURLString
+                ?? TVHomeView.preferredBackdropURL(for: fallbackHero)
+        }
+        return TVHomeView.preferredBackdropURL(for: heroFocus.visibleMeta(isVisible))
+            ?? TVHomeView.preferredBackdropURL(for: fallbackHero)
+    }
+}
+
 private struct CrossfadingBackdrop: View {
     let url: String?
     let placeholder: Color
@@ -4372,6 +4440,23 @@ final class ProfileTabAvatarRenderer: ObservableObject {
     }
 }
 
+/// Home, not redrawn from above while Details or the player (any full-screen overlay) covers
+/// it: it is see-through then and draws nothing, and redrawn as Details opened, loaded, took
+/// focus and closed, it was 9-22 times in 5 s (and its rows 16-41), 50-150 ms of the main
+/// thread each, under Details' own first moves. Its inputs catch up at once as it shows again
+/// (and on the change that covers it, which it handles). Its own state and store still update
+/// it meanwhile.
+private struct TVHomeCoveredFreeze<Content: View>: View, Equatable {
+    let isCovered: Bool
+    let content: Content
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.isCovered && rhs.isCovered
+    }
+
+    var body: some View { content }
+}
+
 private struct TVMainTabView: View {
     @Binding var selectedTab: TVTab
     let activeProfile: Profile?
@@ -4552,7 +4637,7 @@ private struct TVMainTabView: View {
     }
 
     private var homeTabContent: some View {
-        TVHomeView(
+        TVHomeCoveredFreeze(isCovered: isFullScreenOverlayPresented, content: TVHomeView(
             store: homeStore,
             repository: CinemetaCatalogRepository(),
             isActive: selectedTab == .home,
@@ -4582,7 +4667,8 @@ private struct TVMainTabView: View {
             onRequestAccountRefresh: onRequestAccountRefresh,
             onRequestReauth: { showingReauthSheet = true },
             onOpenCalendarEntry: onOpenCalendarEntry
-        )
+        ))
+            .equatable()
             .id(activeProfile?.id ?? "none")
     }
 
@@ -5475,10 +5561,21 @@ struct TVHomeView: View {
     @State private var jellyfinSections: [TVHomeSection] = []
     @State private var isLoading = true
     @State private var profileGateFailedLoadIdentity: TVHomeContentIdentity?
-    @State private var focusedMeta: NuvioMeta?
+    /// The title or collection folder focus settled on, for the hero and its backdrop, and read
+    /// only by them (`TVHomeHeroHeader`, `TVHomeHeroBackdrop`). Kept in Home's own state, every
+    /// settled move along a row redrew all of Home, rows included, and again when the title's
+    /// details arrived: 16 of Home's redraws for 19 moves.
+    @State private var heroFocus = TVHomeHeroFocus()
+    private var focusedMeta: NuvioMeta? {
+        get { heroFocus.meta }
+        nonmutating set { heroFocus.meta = newValue }
+    }
     /// Collection folder currently focused on Home. When set, the hero shows
     /// emoji + folder title instead of title poster meta/description.
-    @State private var focusedCollectionFolder: TVCollectionFolderItem?
+    private var focusedCollectionFolder: TVCollectionFolderItem? {
+        get { heroFocus.folder }
+        nonmutating set { heroFocus.folder = newValue }
+    }
     /// Row the settled focus lives in; the hero only shows Continue Watching
     /// context (episode line, time left) for cards focused in that row.
     @State private var focusedSectionId: String?
@@ -5635,12 +5732,14 @@ struct TVHomeView: View {
             let backdropColor = Color.nuvioBackground(amoled: amoled, body: bodyColor)
             GeometryReader { proxy in
                 if fullscreenHeroBackdrop {
-                    CrossfadingBackdrop(
-                        url: showsLoading || homeLayout == "Grid View" ? nil : homeBackdropURL,
+                    TVHomeHeroBackdrop(
+                        heroFocus: heroFocus,
+                        isHidden: showsLoading || homeLayout == "Grid View",
+                        fallbackHero: visibleHero,
+                        isVisible: { isVisible($0) },
                         placeholder: backdropColor,
-                        alignment: focusedCollectionFolder != nil ? .topTrailing : .center
+                        alignment: nil
                     )
-                    .equatable()
                     .frame(width: proxy.size.width, height: proxy.size.height)
                     .clipped()
                 } else {
@@ -5650,12 +5749,14 @@ struct TVHomeView: View {
                         backdropColor
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                        CrossfadingBackdrop(
-                            url: showsLoading || homeLayout == "Grid View" ? nil : homeBackdropURL,
+                        TVHomeHeroBackdrop(
+                            heroFocus: heroFocus,
+                            isHidden: showsLoading || homeLayout == "Grid View",
+                            fallbackHero: visibleHero,
+                            isVisible: { isVisible($0) },
                             placeholder: backdropColor,
                             alignment: .topTrailing
                         )
-                        .equatable()
                         .frame(width: backdropWidth, height: backdropHeight, alignment: .topTrailing)
                         .mask(
                             LinearGradient(
@@ -5755,18 +5856,13 @@ struct TVHomeView: View {
                     // Header Hero Meta block (static, outside the rows). Folder
                     // focus swaps poster meta for emoji + folder title (browse-style).
                     if heroEnabled && homeLayout != "Grid View" {
-                        if let folder = focusedCollectionFolder {
-                            TVCollectionFolderHeroView(folder: folder)
-                                .equatable()
-                        } else if let heroMeta = visibleFocusedMeta ?? visibleHero {
-                            TVHeroView(
-                                meta: heroMeta,
-                                continueItem: heroContinueItem(for: heroMeta)
-                            ) {
-                                navigateToDetailsFromHome(id: heroMeta.id, type: heroMeta.type)
-                            }
-                            .equatable()
-                        }
+                        TVHomeHeroHeader(
+                            heroFocus: heroFocus,
+                            fallbackHero: visibleHero,
+                            isVisible: { isVisible($0) },
+                            continueItem: { heroContinueItem(for: $0) },
+                            onSelect: { navigateToDetailsFromHome(id: $0.id, type: $0.type) }
+                        )
                     }
                     
                     // Android uses a LazyColumn of LazyRows: only viewport rows
@@ -8589,16 +8685,6 @@ struct TVHomeView: View {
             return nil
         }
         return landscapeFocusedId
-    }
-
-    private var homeBackdropURL: String? {
-        // Collection folder focus uses its own hero backdrop (Android Modern
-        // Home parity). Fall back to the focused/hero title poster otherwise.
-        if let folder = focusedCollectionFolder {
-            return folder.preferredHeroBackdropURLString
-                ?? preferredBackdropURL(for: visibleHero)
-        }
-        return preferredBackdropURL(for: visibleFocusedMeta) ?? preferredBackdropURL(for: visibleHero)
     }
 
     static func preferredBackdropURL(for meta: NuvioMeta?) -> String? {
@@ -11969,7 +12055,7 @@ enum AppCacheManager {
 let TVHomeRowPrefetchThreshold = 18
 
 /// Hero header while a collection folder card is focused.
-/// Full-screen backdrop is driven by `homeBackdropURL` (folder hero backdrop).
+/// Full-screen backdrop is driven by `TVHomeHeroBackdrop` (folder hero backdrop).
 /// This view only draws the title area: optional title logo, else emoji + name.
 ///
 /// Unlike `TVHeroView` (title + meta + multi-line description that fills the
