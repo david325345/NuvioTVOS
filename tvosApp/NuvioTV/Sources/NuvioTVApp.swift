@@ -1068,6 +1068,11 @@ struct ContentView: View {
         }
     }
 
+    private var isDetailsScreenShown: Bool {
+        if case .details = activeScreen { return true }
+        return false
+    }
+
     private var isDetailsOrPlayerOverlayPresented: Bool {
         switch activeScreen {
         case .details, .player: return true
@@ -2674,6 +2679,15 @@ struct ContentView: View {
                 // nothing to refract) — it's only `.disabled` so its cards can't
                 // steal focus, and the menu re-grabs focus if the engine drifts.
                 .opacity(fullScreenOverlayPresented ? 0 : 1)
+                // Test build (Details Opening: Steady): going back from Details, Home is there
+                // again at once, under Details as it fades out. Fading in while Details faded
+                // out, both were half see-through midway and the dark background showed through:
+                // a blink. (Going in, Details covers Home at once anyway.)
+                .transaction(value: isDetailsScreenShown) { transaction in
+                    if CardAppearance.stored(in: ProfileSettings.current).usesSteadyDetailsOpening {
+                        transaction.animation = nil
+                    }
+                }
 
             if case .details(let contentId, let contentType) = activeScreen {
                 detailsScreen(contentId: contentId, contentType: contentType)
