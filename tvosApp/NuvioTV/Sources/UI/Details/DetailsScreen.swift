@@ -8425,11 +8425,11 @@ private struct TvDetailsEpisodes: View {
         GeometryReader { geo in
             let edgeInset = max(0, geo.frame(in: .global).minX)
             let stripWidth = geo.size.width + edgeInset * 2
-            if cardAppearance.usesSystemRowScrolling {
-                systemEpisodeStrip(edgeInset: edgeInset, stripWidth: stripWidth)
-            } else {
-                offsetEpisodeStrip(edgeInset: edgeInset, stripWidth: stripWidth)
-            }
+            // Row Scrolling: System applies to Home's rows only. As a system scroll view this
+            // strip built only the cards near the screen and couldn't scroll reliably to one not
+            // built yet, so focus put back on a later episode (Details opened from Continue
+            // Watching) found no card and went back to Play.
+            offsetEpisodeStrip(edgeInset: edgeInset, stripWidth: stripWidth)
         }
         .frame(height: TvEpisodeCardLayout.stripHeight)
         .task(id: cardAppearance.usesSmoothVerticalScrolling ? episodeScrollIndex : -1) {
@@ -8498,77 +8498,6 @@ private struct TvDetailsEpisodes: View {
         .offset(x: -edgeInset)
         // Critically damped — same no-bounce Home strip feel.
         .animation(smoothFocus ? .spring(response: 0.3, dampingFraction: 1.0) : nil, value: episodeScrollIndex)
-    }
-
-    /// Test build experiment (Row Scrolling: System): the strip as a system scroll view, as Home's
-    /// rows. tvOS scrolls it as focus moves, outside the main thread, and only cards near the
-    /// screen are built.
-    private func systemEpisodeStrip(edgeInset: CGFloat, stripWidth: CGFloat) -> some View {
-        // Puts a card's leading edge where the details column starts.
-        let anchor = UnitPoint(
-            x: min(1, edgeInset / max(1, stripWidth - TvEpisodeCardLayout.width)),
-            y: 0.5
-        )
-        let restoreIndex = restoreEpisodeIndex
-        return ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(alignment: .bottom, spacing: TvEpisodeCardLayout.spacing) {
-                    ForEach(seasonEpisodes) { video in
-                        episodeCard(video)
-                            .id(TvEpisodeFocus.card(video.id))
-                    }
-                }
-                .padding(.leading, edgeInset)
-                .padding(.trailing, edgeInset + TVLayout.rowLeading)
-                .padding(.vertical, TvEpisodeCardLayout.verticalPadding)
-            }
-            .scrollClipDisabledIfAvailable()
-            .frame(width: stripWidth, height: TvEpisodeCardLayout.stripHeight, alignment: .leading)
-            .offset(x: -edgeInset)
-            .onAppear {
-                // Where the strip was left, or the card focus goes back to. Again once laid out:
-                // when Details opens the strip has no size yet, and the first try does nothing.
-                scrollEpisodeStrip(proxy, to: restoreIndex ?? episodeScrollIndex, anchor: anchor, again: true)
-            }
-            .onChange(of: restoreIndex) { _, index in
-                guard let index else { return }
-                scrollEpisodeStrip(proxy, to: index, anchor: anchor, again: true)
-            }
-            .onChange(of: seasonEpisodes.first?.id) { _, _ in
-                // Another season: start where its index points (the first episode after a pick).
-                DispatchQueue.main.async {
-                    scrollEpisodeStrip(proxy, to: episodeScrollIndex, anchor: anchor)
-                }
-            }
-        }
-    }
-
-    private func scrollEpisodeStrip(_ proxy: ScrollViewProxy, to index: Int, anchor: UnitPoint, again: Bool = false) {
-        guard seasonEpisodes.indices.contains(index) else { return }
-        let key = TvEpisodeFocus.card(seasonEpisodes[index].id)
-        TestDiagnosticLog.ui("details: system episode strip scrolled to E\(seasonEpisodes[index].episode)\(again ? ", and again once laid out" : "")")
-        var transaction = Transaction(animation: nil)
-        transaction.disablesAnimations = true
-        withTransaction(transaction) {
-            proxy.scrollTo(key, anchor: anchor)
-        }
-        guard again else { return }
-        DispatchQueue.main.async {
-            var transaction = Transaction(animation: nil)
-            transaction.disablesAnimations = true
-            withTransaction(transaction) {
-                proxy.scrollTo(key, anchor: anchor)
-            }
-        }
-    }
-
-    /// The episode Details is putting focus back on, if it is putting it on one. (Not the entry
-    /// lock's card: that is the one focus left, already on screen, and scrolling to it as focus
-    /// leaves the strip would jolt it.)
-    private var restoreEpisodeIndex: Int? {
-        guard let restriction = restrictFocusToKey,
-              restriction.hasPrefix("episode-card\u{1}") else { return nil }
-        return seasonEpisodeIndexByID[String(restriction.dropFirst("episode-card\u{1}".count))]
     }
 
     /// One episode card. Cards compare equal when what they show is the same, so a move redraws
@@ -8716,11 +8645,6 @@ private struct TvDetailsEpisodes: View {
     private var effectiveFocusRestriction: String? {
         if let restrictFocusToKey { return restrictFocusToKey }
         guard entryLocked, !seasonEpisodes.isEmpty else { return nil }
-        // The system strip builds only the cards near the screen, so a lock on the remembered
-        // card left focus nowhere to go when that card wasn't built yet (Details opened at a later
-        // episode, from Continue Watching). The strip keeps that card at the column's start, where
-        // tvOS's own choice lands anyway.
-        guard !cardAppearance.usesSystemRowScrolling else { return nil }
         let index = min(max(episodeScrollIndex, 0), seasonEpisodes.count - 1)
         return TvEpisodeFocus.card(seasonEpisodes[index].id)
     }
@@ -8917,14 +8841,9 @@ private struct TvEpisodeCard: View {
 
     @Environment(\.cardAppearance) private var cardAppearance
     private var cardCornerRadiusSetting: String { cardAppearance.cardCornerRadius }
-    private var liquidGlassCards: Bool { cardAppearance.liquidGlassCards }
     /// Every card of a long season used to carry two live glass views, focused or not: its
-    /// background, hidden under the still, and its episode badge. The background has none now;
-    /// the badge gets glass on the focused card once focus rests on it (see
-    /// `LiquidGlassCardModifier`).
-    @State private var glassSettled = false
-
-    private var showsGlass: Bool { liquidGlassCards && isFocused && glassSettled }
+    /// background, hidden under the still, and its episode badge. Neither has one now.
+    private var liquidGlassCards: Bool { cardAppearance.liquidGlassCards }
 
     private var cardKey: String { TvEpisodeFocus.card(video.id) }
     /// The card's own focus. It used to be read from the strip's shared focus binding, which made
@@ -8969,9 +8888,12 @@ private struct TvEpisodeCard: View {
                         .padding(.vertical, 8)
                         .background {
                             if liquidGlassCards {
+                                // No live glass: inside the card's scale effect it ghosted and
+                                // shimmered as focus moved between episodes. A translucent fill
+                                // and the glass badge's light border, a little brighter on focus.
                                 Capsule()
-                                    .fill(Color.white.opacity(0.14))
-                                    .modifier(LiquidGlassBadgeModifier(cornerRadius: 16, isFocused: showsGlass))
+                                    .fill(Color.white.opacity(isFocused ? 0.22 : 0.14))
+                                    .modifier(LiquidGlassBadgeModifier(cornerRadius: 16, isFocused: false))
                             } else {
                                 Capsule()
                                     .fill(Color.black.opacity(0.52))
@@ -9069,17 +8991,6 @@ private struct TvEpisodeCard: View {
             .animation(.easeOut(duration: 0.14), value: isFocused)
             .onChange(of: isFocused) { _, focused in
                 if focused { onFocus() }
-            }
-            .task(id: isFocused) {
-                if glassSettled { glassSettled = false }
-                guard isFocused, liquidGlassCards else { return }
-                do {
-                    try await Task.sleep(nanoseconds: LiquidGlassCardModifier.glassSettleDelay)
-                } catch {
-                    return
-                }
-                guard !Task.isCancelled else { return }
-                glassSettled = true
             }
             .onExitCommand {
                 onBack?()
