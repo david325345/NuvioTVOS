@@ -10,7 +10,7 @@ import QuartzCore
 /// quarter of a second or more gets a line of its own at once. Frames the GPU drops while the
 /// main thread is idle don't show up here.
 ///
-/// Every move up or down gets a line too, once its scroll has had time to finish: how many frames
+/// Every move (up, down, left or right) gets a line too, once its scroll has had time to finish: how many frames
 /// came late meanwhile, how many Home rows were built and how many cards were rebuilt (moves in a
 /// quick run share one line).
 @MainActor
@@ -44,7 +44,7 @@ final class HitchMeter: NSObject {
     private var recentCards: [String: Int] = [:]
     private var recentCardsAt: CFTimeInterval = 0
 
-    /// How long after the last up or down move its line waits: past Home's and Details' scrolls.
+    /// How long after the last move its line waits: past Home's and Details' scrolls.
     static let moveWindow: CFTimeInterval = 0.5
     /// Posted by Home whenever it builds a row (test build), counted for the move lines.
     static let rowBuiltNotification = Notification.Name("nuvio.test.rowBuilt")
@@ -67,7 +67,7 @@ final class HitchMeter: NSObject {
     /// How long before a move's line opens a card rebuilt still counts for it.
     static let cardLeadTime: CFTimeInterval = 0.1
 
-    /// One up or down move's numbers (or a quick run of them), for the log line and the tests.
+    /// One move's numbers (or a quick run of them), for the log line and the tests.
     struct MoveSummary: Equatable {
         var direction: String
         var moves: Int
@@ -191,6 +191,11 @@ final class HitchMeter: NSObject {
             direction = "down"
         } else if heading.contains(.up) {
             direction = "up"
+        } else if heading.contains(.right) {
+            // Along a row or Details' episode strip: a quick run of them shares one line.
+            direction = "right"
+        } else if heading.contains(.left) {
+            direction = "left"
         } else {
             return
         }
