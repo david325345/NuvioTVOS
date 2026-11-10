@@ -1337,6 +1337,8 @@ struct SettingsView: View {
     }
 
     var body: some View {
+        // Test build: counted in the test log's redraw lines.
+        let _ = RedrawLog.note("Settings")
         ZStack {
             HStack(spacing: 0) {
                 categoryGrid

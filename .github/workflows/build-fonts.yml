@@ -108,6 +108,7 @@ jobs:
           bash scripts/test-tvos.sh \
             -only-testing:NuvioTVTests/SubtitleFontTests \
             -only-testing:NuvioTVTests/CrashRecorderTests \
+            -only-testing:NuvioTVTests/ArtworkLoadLogTests \
             -only-testing:NuvioTVTests/RemoteBackGuardTests \
             -only-testing:NuvioTVTests/MarqueeTextTests \
             -only-testing:NuvioTVTests/CardAppearanceTests \
@@ -124,7 +125,7 @@ jobs:
             def walk(node, suite, out)
               name = node["name"].to_s
               suite = name if node["nodeType"] == "Test Suite"
-              if node["nodeType"] == "Test Case" && ["SubtitleFontTests", "CrashRecorderTests", "RemoteBackGuardTests", "MarqueeTextTests", "PlayerControlsSettingsTests"].include?(suite)
+              if node["nodeType"] == "Test Case" && ["SubtitleFontTests", "CrashRecorderTests", "ArtworkLoadLogTests", "RemoteBackGuardTests", "MarqueeTextTests", "PlayerControlsSettingsTests"].include?(suite)
                 out << ["#{suite}.#{name}", node["result"]]
               end
               (node["children"] || []).each { |child| walk(child, suite, out) }

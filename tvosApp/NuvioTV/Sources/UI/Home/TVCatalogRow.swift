@@ -519,6 +519,8 @@ struct TVCatalogRow: View {
     }
 
     var body: some View {
+        // Test build: counted in the test log's redraw lines.
+        let _ = RedrawLog.note("Home row")
         Group {
             if showsSectionTitle {
                 VStack(alignment: .leading, spacing: 10) {

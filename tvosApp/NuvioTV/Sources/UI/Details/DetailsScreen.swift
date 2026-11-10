@@ -220,6 +220,8 @@ struct DetailsScreen: View {
     @State private var lifecycleToken = UUID()
 
     var body: some View {
+        // Test build: counted in the test log's redraw lines.
+        let _ = RedrawLog.note("Details screen")
         ZStack {
             if viewModel.uiState.isLoading {
                 ProgressView()
@@ -4834,6 +4836,8 @@ struct TvDetailsContent: View {
     }
 
     var body: some View {
+        // Test build: counted in the test log's redraw lines.
+        let _ = RedrawLog.note("Details")
         if let meta = uiState.meta {
             let episodePresentation = episodeCache.resolve(
                 meta: meta,

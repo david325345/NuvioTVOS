@@ -309,6 +309,8 @@ struct NativeSearchView: View {
     }
 
     var body: some View {
+        // Test build: counted in the test log's redraw lines.
+        let _ = RedrawLog.note("Search")
         ZStack(alignment: .top) {
             Color.nuvioBackground(amoled: amoled, body: bodyColor).ignoresSafeArea()
 

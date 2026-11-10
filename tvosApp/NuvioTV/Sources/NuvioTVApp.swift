@@ -544,6 +544,8 @@ struct ContentView: View {
     @StateObject private var homeStore = TVHomeStore()
 
     var body: some View {
+        // Test build: counted in the test log's redraw lines.
+        let _ = RedrawLog.note("app root")
         ZStack {
             ProfileScopedRootBackground()
 
@@ -4267,18 +4269,39 @@ final class BackdropImageCache: @unchecked Sendable {
         minimumBytes: Int = 512
     ) async -> UIImage? {
         let key = url.absoluteString
-        if let cached = cache.object(forKey: key as NSString) { return cached }
+        if let cached = cache.object(forKey: key as NSString) {
+            ArtworkLoadLog.shared.noteSource(.memory, .backdrop)
+            return cached
+        }
         let pixelSize = Self.maxPixelSize
         let task: Task<UIImage?, Never> = lock.withLock {
-            if let pending = inFlight[key] { return pending }
+            if let pending = inFlight[key] {
+                ArtworkLoadLog.shared.noteSource(.shared, .backdrop)
+                return pending
+            }
             let task = Task.detached(priority: priority) { [weak self] () -> UIImage? in
                 var decoded: UIImage?
+                let downloadStarted = ArtworkLoadLog.now()
                 if let (data, response) = try? await URLSession.shared.data(from: url) {
+                    ArtworkLoadLog.shared.noteDownload(
+                        .backdrop,
+                        milliseconds: ArtworkLoadLog.milliseconds(since: downloadStarted),
+                        bytes: data.count
+                    )
                     let statusOK = (response as? HTTPURLResponse).map { (200...299).contains($0.statusCode) } ?? true
                     if statusOK, data.count > minimumBytes {
+                        let decodeStarted = ArtworkLoadLog.now()
                         decoded = downsampleBackdropImage(data: data, maxPixelSize: pixelSize)
+                        ArtworkLoadLog.shared.noteDecode(
+                            .backdrop,
+                            waitMilliseconds: 0,
+                            milliseconds: ArtworkLoadLog.milliseconds(since: decodeStarted),
+                            longestSide: decoded.map { max($0.size.width, $0.size.height) * $0.scale },
+                            bytes: decoded?.decodedByteCost ?? 0
+                        )
                     }
                 }
+                ArtworkLoadLog.shared.noteSource(decoded == nil ? .failed : .network, .backdrop)
                 // Store before leaving the in-flight list, so a caller arriving
                 // in between finds the image instead of downloading it again.
                 self?.finishLoad(key: key, image: decoded)
@@ -4477,6 +4500,8 @@ private struct TVMainTabView: View {
     }
 
     var body: some View {
+        // Test build: counted in the test log's redraw lines.
+        let _ = RedrawLog.note("tabs")
         Group {
             if #available(tvOS 18.0, *) {
                 tabs
@@ -6433,6 +6458,8 @@ struct TVHomeView: View {
     }
 
     var body: some View {
+        // Test build: counted in the test log's redraw lines.
+        let _ = RedrawLog.note("Home")
         let _ = TVHomeDebugTrace.breadcrumb("home.body.render active=\(isActive) row=\(focusedRowIndex)")
         bodyWithModifiers
             .fullScreenCover(item: $browsingSection) { section in

@@ -2183,6 +2183,9 @@ struct CachedPosterArtwork<Placeholder: View>: View {
             return
         }
 
+        // Test build: how long a card with nothing to show kept its placeholder.
+        let showedPlaceholder = displayedImage == nil
+        let placeholderSince = ArtworkLoadLog.now()
         if let loaded = await cachedImage(
             primaryURLString: urlString,
             fallbackURLString: fallbackURLString,
@@ -2199,6 +2202,9 @@ struct CachedPosterArtwork<Placeholder: View>: View {
             state.image = loaded.image
             state.loadedKey = key
             state.loadedSourceURL = loaded.urlString
+            if showedPlaceholder {
+                ArtworkLoadLog.shared.notePlaceholderWait(milliseconds: ArtworkLoadLog.milliseconds(since: placeholderSince))
+            }
             onArtworkLoaded(loaded.urlString)
         } else {
             guard !Task.isCancelled, key == cacheKey else { return }
@@ -2353,10 +2359,12 @@ actor PosterArtworkCache {
         let key = "\(url.absoluteString)#\(boundedPixelSize)" as NSString
 
         if let cached = cache.object(forKey: key) {
+            ArtworkLoadLog.shared.noteSource(.memory, .poster)
             return cached
         }
 
         if let task = inFlight[key as String] {
+            ArtworkLoadLog.shared.noteSource(.shared, .poster)
             return await task.value
         }
 
@@ -2365,11 +2373,17 @@ actor PosterArtworkCache {
         let task = Task.detached(priority: .utility) { () -> UIImage? in
             // Disk before network (Stale-While-Revalidate). The bytes are keyed by URL alone,
             // so one stored poster serves every size a card asks for.
-            if let stored = await PosterDiskCache.shared.data(for: url),
+            let readStarted = ArtworkLoadLog.now()
+            let stored = await PosterDiskCache.shared.data(for: url)
+            if stored != nil {
+                ArtworkLoadLog.shared.noteDiskRead(milliseconds: ArtworkLoadLog.milliseconds(since: readStarted))
+            }
+            if let stored,
                let image = await PosterDecodeLimiter.shared.image(
                    from: stored.data,
                    maxPixelSize: boundedPixelSize
                ) {
+                ArtworkLoadLog.shared.noteSource(.disk, .poster)
                 // If it's a dynamic/volatile rating poster and the disk cache is stale (> 24h),
                 // silently revalidate in the background to refresh rating badges without blocking UI.
                 if isVolatile && !stored.isFresh {
@@ -2387,12 +2401,23 @@ actor PosterArtworkCache {
                 return image
             }
 
-            guard let data = await downloadPosterData(url: url) else { return nil }
+            let downloadStarted = ArtworkLoadLog.now()
+            guard let data = await downloadPosterData(url: url) else {
+                ArtworkLoadLog.shared.noteSource(.failed, .poster)
+                return nil
+            }
+            ArtworkLoadLog.shared.noteDownload(
+                .poster,
+                milliseconds: ArtworkLoadLog.milliseconds(since: downloadStarted),
+                bytes: data.count
+            )
             await PosterDiskCache.shared.store(data, for: url)
-            return await PosterDecodeLimiter.shared.image(
+            let image = await PosterDecodeLimiter.shared.image(
                 from: data,
                 maxPixelSize: boundedPixelSize
             )
+            ArtworkLoadLog.shared.noteSource(image == nil ? .failed : .network, .poster)
+            return image
         }
 
         inFlight[key as String] = task
@@ -2422,13 +2447,24 @@ private actor PosterDecodeLimiter {
     }
 
     func image(from data: Data, maxPixelSize: Int) async -> UIImage? {
+        let waitStarted = ArtworkLoadLog.now()
         await acquire()
         defer { release() }
+        let waited = ArtworkLoadLog.milliseconds(since: waitStarted)
 
         guard !Task.isCancelled else { return nil }
-        return await Task.detached(priority: .utility) {
+        let decodeStarted = ArtworkLoadLog.now()
+        let image = await Task.detached(priority: .utility) {
             downsamplePosterImage(data: data, maxPixelSize: maxPixelSize)
         }.value
+        ArtworkLoadLog.shared.noteDecode(
+            .poster,
+            waitMilliseconds: waited,
+            milliseconds: ArtworkLoadLog.milliseconds(since: decodeStarted),
+            longestSide: image.map { max($0.size.width, $0.size.height) * $0.scale },
+            bytes: image?.decodedByteCost ?? 0
+        )
+        return image
     }
 
     private func acquire() async {
