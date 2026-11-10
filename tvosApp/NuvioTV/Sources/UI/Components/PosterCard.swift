@@ -1555,6 +1555,7 @@ struct PosterGridCard: View {
     }
 
     var body: some View {
+        let _ = HitchMeter.noteCardBuilt("grid poster")
         let cardContent = VStack(alignment: .leading, spacing: 12) {
             CachedPosterArtwork(
                 urlString: customPosterArtworkURL ?? meta.posterUrl,

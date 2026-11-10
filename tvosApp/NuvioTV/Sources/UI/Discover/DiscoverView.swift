@@ -537,6 +537,7 @@ private struct DiscoverCard: View {
     }
 
     var body: some View {
+        let _ = HitchMeter.noteCardBuilt("discover")
         Button(action: action) {
             VStack(alignment: .leading, spacing: 10) {
                 CachedPosterArtwork(
