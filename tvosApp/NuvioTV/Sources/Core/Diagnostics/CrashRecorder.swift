@@ -103,6 +103,7 @@ enum CrashRecorder {
 
     /// Where the app is (a screen's name), for a report about this session.
     static func noteScreen(_ name: String) {
+        if HitchMeter.screen != name { HitchMeter.previousScreen = HitchMeter.screen }
         HitchMeter.screen = name
         update { $0.screen = name }
     }

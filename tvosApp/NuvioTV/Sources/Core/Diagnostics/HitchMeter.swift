@@ -25,6 +25,8 @@ final class HitchMeter: NSObject {
 
     /// The screen on view, kept current by `CrashRecorder.noteScreen`.
     nonisolated(unsafe) static var screen = "launch"
+    /// The screen before it (where Details was opened from, for the test log).
+    nonisolated(unsafe) static var previousScreen = "launch"
 
     private var link: CADisplayLink?
     private var observers: [NSObjectProtocol] = []
