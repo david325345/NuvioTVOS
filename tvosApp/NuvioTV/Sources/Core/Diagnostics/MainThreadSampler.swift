@@ -164,7 +164,7 @@ final class MainThreadSampler: @unchecked Sendable {
         periodStart = 0
         sampleCount = 0
         guard duration >= Self.shortFrom, samples > 0 else { return }
-        let (appCounts, libraryCounts) = countSamples(samples)
+        let (appCounts, libraryCounts, chainCounts) = countSamples(samples)
         guard duration >= Self.reportFrom else {
             shortRounds += 1
             shortMilliseconds += Int(duration / 1_000_000)
@@ -177,7 +177,8 @@ final class MainThreadSampler: @unchecked Sendable {
             milliseconds: Int(duration / 1_000_000),
             samples: samples,
             app: appCounts,
-            libraries: libraryCounts
+            libraries: libraryCounts,
+            chains: chainCounts
         )
         log(line)
     }
@@ -209,13 +210,17 @@ final class MainThreadSampler: @unchecked Sendable {
         }
     }
 
-    /// For each sample, the innermost app function and the library at the top of the stack.
-    private func countSamples(_ samples: Int) -> (app: [String: Int], libraries: [String: Int]) {
+    /// For each sample, the innermost app function and the library at the top of the stack, and
+    /// the app functions that led to it ("A ← B ← C", innermost first): which code asked for the
+    /// work, when the innermost function is a helper called from many places.
+    private func countSamples(_ samples: Int) -> (app: [String: Int], libraries: [String: Int], chains: [String: Int]) {
         var appCounts: [String: Int] = [:]
         var libraryCounts: [String: Int] = [:]
+        var chainCounts: [String: Int] = [:]
         for sample in 0..<samples {
             let base = frames + sample * Self.maximumFrames
             var library: String?
+            var chain: [String] = []
             for index in 0..<frameCounts[sample] {
                 var info = Dl_info()
                 guard dladdr(UnsafeRawPointer(bitPattern: base[index]), &info) != 0 else { continue }
@@ -230,18 +235,26 @@ final class MainThreadSampler: @unchecked Sendable {
                     // Compiler helpers and `main` say nothing about which code it was: look
                     // further down the stack for the app function that called them.
                     guard !Self.isUninformative(name) else { continue }
-                    appCounts[name, default: 0] += 1
-                    break
+                    if chain.isEmpty { appCounts[name, default: 0] += 1 }
+                    if chain.last != name { chain.append(name) }
+                    if chain.count == 3 { break }
                 }
             }
             if let library { libraryCounts[library, default: 0] += 1 }
+            if chain.count > 1 { chainCounts[chain.joined(separator: " ← "), default: 0] += 1 }
         }
-        return (appCounts, libraryCounts)
+        return (appCounts, libraryCounts, chainCounts)
     }
 
     /// "ui: busy 180 ms on {screen} — app: A ×9, B ×4 · in: SwiftUICore ×7 (18 samples)".
-    static func summary(milliseconds: Int, samples: Int, app: [String: Int], libraries: [String: Int]) -> String {
-        "ui: busy \(milliseconds) ms on {screen}" + details(samples: samples, app: app, libraries: libraries)
+    static func summary(milliseconds: Int, samples: Int, app: [String: Int], libraries: [String: Int],
+                        chains: [String: Int] = [:]) -> String {
+        var text = "ui: busy \(milliseconds) ms on {screen}" + details(samples: samples, app: app, libraries: libraries)
+        // Long rounds only: which code it came from.
+        if milliseconds >= 150, let chain = chains.max(by: { $0.value != $1.value ? $0.value < $1.value : $0.key > $1.key }) {
+            text += " · via \(chain.key) ×\(chain.value)"
+        }
+        return text
     }
 
     /// "ui: 12 short busy rounds (34–80 ms), 610 ms in all, in 5 s on {screen} — app: … · in: … (30 samples)".
