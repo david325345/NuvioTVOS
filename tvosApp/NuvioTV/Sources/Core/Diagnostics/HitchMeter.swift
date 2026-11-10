@@ -11,7 +11,8 @@ import QuartzCore
 /// main thread is idle don't show up here.
 ///
 /// Every move up or down gets a line too, once its scroll has had time to finish: how many frames
-/// came late meanwhile and how many Home rows were built (moves in a quick run share one line).
+/// came late meanwhile, how many Home rows were built and how many cards were rebuilt (moves in a
+/// quick run share one line).
 @MainActor
 final class HitchMeter: NSObject {
     static let shared = HitchMeter()
@@ -36,6 +37,10 @@ final class HitchMeter: NSObject {
     private var longest: CFTimeInterval = 0
     private var focusMoves = 0
     private var move: MoveWindow?
+    /// Cards rebuilt just before a move's line opened: SwiftUI may redraw as focus moves, before
+    /// the focus system tells about the move.
+    private var recentCards: [String: Int] = [:]
+    private var recentCardsAt: CFTimeInterval = 0
 
     /// How long after the last up or down move its line waits: past Home's and Details' scrolls.
     static let moveWindow: CFTimeInterval = 0.5
@@ -53,8 +58,12 @@ final class HitchMeter: NSObject {
         /// When the longest gap ended, after the first move.
         var longestAt: CFTimeInterval = 0
         var rowsBuilt = 0
+        var cardsBuilt: [String: Int] = [:]
         var screen: String
     }
+
+    /// How long before a move's line opens a card rebuilt still counts for it.
+    static let cardLeadTime: CFTimeInterval = 0.1
 
     /// One up or down move's numbers (or a quick run of them), for the log line and the tests.
     struct MoveSummary: Equatable {
@@ -70,14 +79,47 @@ final class HitchMeter: NSObject {
         /// When the longest gap ended, in milliseconds after the move: within the scroll's
         /// animation (about 300 ms) or after it. Nil when no frame was late.
         var longestAtMilliseconds: Int? = nil
+        /// Cards whose view was rebuilt meanwhile, by kind ("episode", "poster"...).
+        var cardsBuilt: [String: Int] = [:]
 
         var text: String {
             "ui: move \(direction)\(moves > 1 ? " ×\(moves)" : "") on \(screen): "
                 + "\(droppedFrames) of \(frames) frames dropped (longest \(longestMilliseconds) ms"
                 + (longestAtMilliseconds.map { " at \($0) ms" } ?? "") + "), "
-                + "\(rowsBuilt) row\(rowsBuilt == 1 ? "" : "s") built, glass \(glassCards ? "on" : "off")"
+                + "\(rowsBuilt) row\(rowsBuilt == 1 ? "" : "s") built, "
+                + cardsText
+                + "glass \(glassCards ? "on" : "off")"
                 + (experiments.isEmpty ? "" : ", " + experiments)
         }
+
+        /// "20 cards built (12 episode, 8 person), ", most first; empty when none were.
+        private var cardsText: String {
+            let total = cardsBuilt.values.reduce(0, +)
+            guard total > 0 else { return "" }
+            let kinds = cardsBuilt
+                .filter { $0.value > 0 }
+                .sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
+                .map { "\($0.value) \($0.key)" }
+                .joined(separator: ", ")
+            return "\(total) card\(total == 1 ? "" : "s") built (\(kinds)), "
+        }
+    }
+
+    /// A card's view was built (its `body` ran): counted for the move lines.
+    static func noteCardBuilt(_ kind: String) {
+        shared.cardBuilt(kind)
+    }
+
+    private func cardBuilt(_ kind: String) {
+        if var open = move {
+            open.cardsBuilt[kind, default: 0] += 1
+            move = open
+            return
+        }
+        let now = CACurrentMediaTime()
+        if now - recentCardsAt > Self.cardLeadTime { recentCards = [:] }
+        recentCards[kind, default: 0] += 1
+        recentCardsAt = now
     }
 
     /// One window's numbers, for the log line (and the tests).
@@ -157,7 +199,10 @@ final class HitchMeter: NSObject {
             move = open
         } else {
             flushMove()
-            move = MoveWindow(direction: direction, moves: 1, firstMoveAt: now, lastMoveAt: now, screen: Self.screen)
+            var open = MoveWindow(direction: direction, moves: 1, firstMoveAt: now, lastMoveAt: now, screen: Self.screen)
+            if now - recentCardsAt <= Self.cardLeadTime { open.cardsBuilt = recentCards }
+            recentCards = [:]
+            move = open
         }
     }
 
@@ -174,7 +219,8 @@ final class HitchMeter: NSObject {
             rowsBuilt: open.rowsBuilt,
             glassCards: Self.glassCardsOn,
             experiments: Self.experiments,
-            longestAtMilliseconds: open.droppedFrames > 0 ? Int(open.longestAt * 1_000) : nil
+            longestAtMilliseconds: open.droppedFrames > 0 ? Int(open.longestAt * 1_000) : nil,
+            cardsBuilt: open.cardsBuilt
         )
         TestDiagnosticLog.ui(summary.text)
     }

@@ -82,6 +82,18 @@ final class CrashRecorderTests: XCTestCase {
         )
     }
 
+    func testMoveLineCountsTheCardsRebuiltMostFirst() {
+        let move = HitchMeter.MoveSummary(direction: "down", moves: 1, screen: "details(tt1, series)",
+                                          droppedFrames: 3, frames: 32, longestMilliseconds: 48,
+                                          rowsBuilt: 0, glassCards: true, longestAtMilliseconds: 30,
+                                          cardsBuilt: ["person": 8, "episode": 12, "comment": 0, "company": 8])
+        XCTAssertEqual(
+            move.text,
+            "ui: move down on details(tt1, series): 3 of 32 frames dropped (longest 48 ms at 30 ms), 0 rows built, "
+                + "28 cards built (12 episode, 8 company, 8 person), glass on"
+        )
+    }
+
     func testDroppedFramesCountOneLateFrameToo() {
         let frame = 1.0 / 60.0
         XCTAssertEqual(HitchMeter.droppedFrames(gap: frame, frameDuration: frame), 0)
