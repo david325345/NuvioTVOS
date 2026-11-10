@@ -4135,6 +4135,8 @@ private struct TVHomeHeroHeader: View {
     let onSelect: (NuvioMeta) -> Void
 
     var body: some View {
+        // Test build: counted in the test log's redraw lines.
+        let _ = RedrawLog.note("Home hero")
         if let folder = heroFocus.folder {
             TVCollectionFolderHeroView(folder: folder)
                 .equatable()
@@ -6556,7 +6558,7 @@ struct TVHomeView: View {
 
     var body: some View {
         // Test build: counted in the test log's redraw lines.
-        let _ = RedrawLog.note("Home")
+        let _ = RedrawLog.note(isFullScreenOverlayPresented ? "Home (covered)" : "Home")
         let _ = TVHomeDebugTrace.breadcrumb("home.body.render active=\(isActive) row=\(focusedRowIndex)")
         bodyWithModifiers
             .fullScreenCover(item: $browsingSection) { section in
