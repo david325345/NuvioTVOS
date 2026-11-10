@@ -4587,8 +4587,7 @@ struct TvDetailsContent: View {
                         cast: meta.cast,
                         director: meta.director,
                         writer: meta.writer,
-                        people: uiState.people,
-                        headerFocus: castHeaderFocus
+                        people: uiState.people
                     ),
                     entryLocked: focusedDetailsSection != .cast
                 ))
@@ -5412,16 +5411,22 @@ private struct TvDetailsRowSnapshotKey<Content: Equatable>: Equatable {
     let entryLocked: Bool
 }
 
+/// One card of a Details row, kept as it was while it shows the same thing at the same place.
+/// A row redraws when its lock switches (focus comes into it or leaves it) and when it scrolls;
+/// that used to rebuild every card in it, just as the move began. Now only the lock, outside
+/// the card, changes. `style` holds the settings the row hands the card.
+private struct TvDetailsCardSnapshotKey<Item: Equatable>: Equatable {
+    let item: Item
+    let index: Int
+    var style: String = ""
+}
+
 private struct TvDetailsCastSnapshot: Equatable {
     let metaID: String
     let cast: [String]?
     let director: [String]?
     let writer: [String]?
     let people: [TmdbPersonMetadata]
-    /// The section's headings follow Details' header focus through a binding, and notice that
-    /// they gained it only when redrawn: a cast section kept as it was left its heading
-    /// unaware, so the section never took focus and its rows stayed locked.
-    let headerFocus: DetailsCastHeaderFocus?
 }
 
 private struct TvDetailsEpisodesSnapshotKey: Equatable {
@@ -6264,6 +6269,7 @@ private struct TvDetailsCastAndTrailer: View {
                                 },
                                 onBack: onBack
                             )
+                            .detailsSnapshot(TvDetailsCardSnapshotKey(item: person, index: index))
                             .disabled(entryLocked)
                         }
                     }
@@ -6310,7 +6316,11 @@ private struct TvDetailsSectionButton: View {
     var onBack: (() -> Void)? = nil
     let action: () -> Void
 
-    private var isFocused: Bool { focus.wrappedValue == tag }
+    /// The heading's own focus. Read from Details' header focus binding, it noticed gaining
+    /// focus only when the cast section was redrawn, so the section had to redraw on every move
+    /// between its headings; a section kept as it was left the heading unaware. The binding
+    /// still follows (and restores) focus, see `.focused(focus, …)`.
+    @FocusState private var isFocused: Bool
 
     var body: some View {
         Button(action: action) {
@@ -6321,6 +6331,7 @@ private struct TvDetailsSectionButton: View {
                 .frame(height: 64)
         }
         .buttonStyle(PosterCardButtonStyle())
+        .focused($isFocused)
         .focused(focus, equals: tag)
         .focusEffectDisabledIfAvailable()
         .scaleEffect(isFocused ? 1.035 : 1)
@@ -6387,6 +6398,11 @@ private struct TvDetailsRelatedRow: View {
                     ) {
                         onSelect(item)
                     }
+                    .detailsSnapshot(TvDetailsCardSnapshotKey(
+                        item: item,
+                        index: index,
+                        style: "\(homeLayout)|\(posterLabels)|\(smoothFocus)|\(focusHighlighter)"
+                    ))
                     .disabled(entryLocked && index != scrollIndex)
                 }
             }
@@ -6451,6 +6467,7 @@ private struct TvDetailsProductionRow: View {
                         },
                         onBack: onBack
                     )
+                    .detailsSnapshot(TvDetailsCardSnapshotKey(item: company, index: index))
                     .disabled(entryLocked && index != entryCompanyIndex)
                 }
             }
@@ -6594,6 +6611,7 @@ private struct TvDetailsCommentsRow: View {
                         },
                         onBack: onBack
                     )
+                    .detailsSnapshot(TvDetailsCardSnapshotKey(item: comment, index: index))
                     .disabled(entryLocked && index != scrollIndex)
                 }
             }
@@ -8569,11 +8587,21 @@ private struct TvDetailsEpisodes: View {
             smartStreamSelection: smartStreamSelection || (reuseLastLink && itemIndex == episodeScrollIndex && LastPlaybackStreamStore.load(metaId: meta.id, season: video.season, episode: video.episode, meta: meta, profileId: ProfileSettings.activeProfileID) != nil),
             onBack: onBack,
             focus: episodeFocus,
-            restrictFocusToKey: effectiveFocusRestriction,
             onMoveDown: onMoveDownFromEpisode,
             onMoveUp: seasons.count <= 1 ? onMoveUpFromSeason : nil
         )
         .equatable()
+        // The entry lock stays outside the card: it switches every time focus comes into the
+        // strip or leaves it, and as part of the card it made every card of the strip rebuild
+        // on each of those moves. Out here only whether the card can take focus changes.
+        .disabled(isEpisodeCardBlocked(videoID))
+    }
+
+    /// Whether focus is kept off this card: while it is put back on another episode, or while
+    /// the strip is entered (focus goes to the remembered card).
+    private func isEpisodeCardBlocked(_ videoID: String) -> Bool {
+        guard let restriction = effectiveFocusRestriction else { return false }
+        return restriction != TvEpisodeFocus.card(videoID)
     }
 
     @ViewBuilder
@@ -8727,7 +8755,6 @@ extension TvEpisodeCard: Equatable {
             && lhs.isSeasonWatched == rhs.isSeasonWatched
             && lhs.episodeRatings == rhs.episodeRatings
             && lhs.smartStreamSelection == rhs.smartStreamSelection
-            && lhs.restrictFocusToKey == rhs.restrictFocusToKey
             && (lhs.onPlayManually == nil) == (rhs.onPlayManually == nil)
             && (lhs.onBack == nil) == (rhs.onBack == nil)
             && (lhs.onMoveUp == nil) == (rhs.onMoveUp == nil)
@@ -8821,7 +8848,6 @@ private struct TvEpisodeCard: View {
     var smartStreamSelection: Bool = false
     var onBack: (() -> Void)? = nil
     var focus: FocusState<String?>.Binding
-    let restrictFocusToKey: String?
     let onMoveDown: () -> Void
     var onMoveUp: (() -> Void)? = nil
 
@@ -8975,7 +9001,6 @@ private struct TvEpisodeCard: View {
             .focused($isFocused)
             .focused(focus, equals: cardKey)
             .focusEffectDisabledIfAvailable()
-            .disabled(restrictFocusToKey != nil && restrictFocusToKey != cardKey)
             .scaleEffect(isFocused ? 1.05 : 1)
             .animation(.easeOut(duration: 0.14), value: isFocused)
             .onChange(of: isFocused) { _, focused in
