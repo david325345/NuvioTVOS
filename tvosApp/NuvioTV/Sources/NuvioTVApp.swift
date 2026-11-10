@@ -5587,6 +5587,28 @@ struct TVHomeView: View {
         overlayRestoreCardID
     }
 
+    /// The restore lock as one row sees it: the card focus is being put back on, when it is in
+    /// this row. A row without it is locked out as a whole, from outside (`homeSectionRow`):
+    /// handed the lock, every one of its cards changed, and returning to Home (from Details,
+    /// Settings…) rebuilt every card of every row on screen each time the lock or the pause
+    /// of focus animations switched, up to 146 cards and a 350 ms stall.
+    private func rowFocusRestriction(_ sectionID: String) -> String? {
+        guard let key = activeFocusRestrictionCardID, key.hasPrefix("\(sectionID)\u{1}") else { return nil }
+        return key
+    }
+
+    private func isRowLockedOut(_ sectionID: String) -> Bool {
+        activeFocusRestrictionCardID != nil && rowFocusRestriction(sectionID) == nil
+    }
+
+    /// The pause of focus animations while focus comes back, for the row it comes back to
+    /// (every row when Home can't tell which). The others can't take focus meanwhile.
+    private func rowSuppressesReturnFocusAnimations(_ sectionID: String) -> Bool {
+        guard suppressReturnFocusAnimations else { return false }
+        guard let key = activeFocusRestrictionCardID ?? focusedCardID ?? store.lastFocusedCardID else { return true }
+        return key.hasPrefix("\(sectionID)\u{1}")
+    }
+
     private var tmdbHomeSettingsKey: String {
         "\(tmdbEnabled)|\(tmdbLanguage)|\(tmdbFollowAppLanguage)|\(TmdbDetailsService.preferredLanguage)|\(tmdbUseArtwork)|\(tmdbUseBasicInfo)|\(tmdbApplyToHome)"
     }
@@ -7879,9 +7901,9 @@ struct TVHomeView: View {
                 },
                 initialFocusCardKey: initialFocusCardKey,
                 externalFocus: $focusedCardID,
-                restrictFocusToCardKey: activeFocusRestrictionCardID,
+                restrictFocusToCardKey: rowFocusRestriction(section.id),
                 retainFocusAppearanceForCardKey: activeFocusRestrictionCardID,
-                suppressFocusAnimations: suppressReturnFocusAnimations,
+                suppressFocusAnimations: rowSuppressesReturnFocusAnimations(section.id),
                 onInitialFocusRequested: {
                     didRequestInitialCardFocus = true
                 },
@@ -7943,6 +7965,9 @@ struct TVHomeView: View {
                 },
             )
             .equatable()
+            // Outside the row: while focus is put back on a card in another row, this row
+            // is locked out as a whole instead of each of its cards (see `rowFocusRestriction`).
+            .disabled(isRowLockedOut(section.id))
             .frame(
                 height: estimatedHeight(for: section),
                 alignment: .topLeading
@@ -7972,9 +7997,9 @@ struct TVHomeView: View {
                             landscapeFocusedId: landscapeFocusedId(for: section.id),
                             explicitTileShape: effectiveTileShape(for: section),
                             externalFocus: $focusedCardID,
-                            restrictFocusToCardKey: activeFocusRestrictionCardID,
+                            restrictFocusToCardKey: rowFocusRestriction(section.id),
                             retainFocusAppearanceForCardKey: activeFocusRestrictionCardID,
-                suppressFocusAnimations: suppressReturnFocusAnimations,
+                suppressFocusAnimations: rowSuppressesReturnFocusAnimations(section.id),
                 onInitialFocusRequested: {
                     didRequestInitialCardFocus = true
                 },
@@ -8091,6 +8116,9 @@ struct TVHomeView: View {
                 onRefreshCatalog: { refreshHomeSection(sectionId: section.id) }
             )
             .equatable()
+            // Outside the row: while focus is put back on a card in another row, this row
+            // is locked out as a whole instead of each of its cards (see `rowFocusRestriction`).
+            .disabled(isRowLockedOut(section.id))
             .frame(
                 height: estimatedHeight(for: section),
                 alignment: .topLeading

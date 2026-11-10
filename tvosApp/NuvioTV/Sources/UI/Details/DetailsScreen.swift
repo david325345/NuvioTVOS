@@ -4160,8 +4160,13 @@ struct TvDetailsContent: View {
     /// after Details opens, once its transition is over: the top part fills the first screen,
     /// and building everything at once held the opening transition up for 150-250 ms. Opened
     /// with focus going to an episode (calendar, Continue Watching), they are built at once.
-    @State private var showsLowerSections = false
+    ///
+    /// They then come one at a time, a short step apart: all of them in one frame (the episode
+    /// cards, the cast, the posters of More Like This, the companies, the comments) held Details
+    /// up for 260-320 ms just as focus landed on Play. `Int.max` once all are built.
+    @State private var builtLowerSectionCount = 0
     private static let lowerSectionsDelay: UInt64 = 300_000_000
+    private static let lowerSectionStep: UInt64 = 45_000_000
     @State private var configuredDetailsSections: [TVDetailsSection] = TVDetailsSectionOrder.currentOrder()
     @State private var disabledDetailsSections: Set<TVDetailsSection> = TVDetailsSectionOrder.disabledSections()
 
@@ -4888,8 +4893,10 @@ struct TvDetailsContent: View {
                             let productionCompanies = uiState.companies.filter { $0.kind == .production && $0.tmdbId != nil }
                             let networks = uiState.companies.filter { $0.kind == .network && $0.tmdbId != nil }
 
-                            if showsLowerSections || initialFocusEpisode != nil {
-                                ForEach(activeDetailsSections, id: \.self) { section in
+                            let lowerSections = activeDetailsSections
+                            let builtSections = initialFocusEpisode != nil ? lowerSections.count : builtLowerSectionCount
+                            if builtSections > 0 {
+                                ForEach(Array(lowerSections.prefix(builtSections)), id: \.self) { section in
                                     renderDetailsSection(
                                         section,
                                         meta: meta,
@@ -4905,12 +4912,18 @@ struct TvDetailsContent: View {
                             }
                             }
                             .task {
-                                guard !showsLowerSections else { return }
+                                guard builtLowerSectionCount == 0 else { return }
                                 try? await Task.sleep(nanoseconds: Self.lowerSectionsDelay)
-                                guard !Task.isCancelled else { return }
+                                let count = activeDetailsSections.count
                                 var transaction = Transaction()
                                 transaction.disablesAnimations = true
-                                withTransaction(transaction) { showsLowerSections = true }
+                                for built in 1..<max(count, 1) {
+                                    guard !Task.isCancelled else { return }
+                                    withTransaction(transaction) { builtLowerSectionCount = built }
+                                    try? await Task.sleep(nanoseconds: Self.lowerSectionStep)
+                                }
+                                guard !Task.isCancelled else { return }
+                                withTransaction(transaction) { builtLowerSectionCount = .max }
                             }
                             // Inset and layout metrics matching Android TV.
                             .padding(.leading, 56)
