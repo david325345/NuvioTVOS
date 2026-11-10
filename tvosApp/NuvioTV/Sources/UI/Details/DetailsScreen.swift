@@ -4156,8 +4156,14 @@ struct TvDetailsContent: View {
     /// They start once focus has landed in the action row and its animation is over: started
     /// at a fixed 300 ms, they came just as focus landed on Play (380-650 ms after opening) and
     /// made it jerk. At the latest `lowerSectionsLatest` after opening.
+    ///
+    /// After the first one, a section is built only while focus rests: built while focus moved
+    /// down (often within a second of opening), they made that scroll carry 30-47 cards. The
+    /// section below the one focus moves into is built at once, so there is always somewhere to
+    /// go down to.
     @State private var builtLowerSectionCount = 0
-    private static let lowerSectionsAfterFocus: UInt64 = 250_000_000
+    private static let lowerSectionsAfterFocus: UInt64 = 160_000_000
+    private static let lowerSectionsFocusRest: CFTimeInterval = 0.3
     private static let lowerSectionsLatest: UInt64 = 900_000_000
     private static let lowerSectionStep: UInt64 = 45_000_000
     @State private var configuredDetailsSections: [TVDetailsSection] = TVDetailsSectionOrder.currentOrder()
@@ -4903,17 +4909,22 @@ struct TvDetailsContent: View {
                             }
                             .task {
                                 guard builtLowerSectionCount == 0 else { return }
+                                TvDetailsFocusActivity.start()
                                 await waitForActionFocusToSettle()
                                 let count = activeDetailsSections.count
-                                var transaction = Transaction()
-                                transaction.disablesAnimations = true
                                 for built in 1..<max(count, 1) {
+                                    if built > 1 { await waitForFocusToRest() }
                                     guard !Task.isCancelled else { return }
-                                    withTransaction(transaction) { builtLowerSectionCount = built }
+                                    // Already built: focus moved into the section above.
+                                    if builtLowerSectionCount < built { buildLowerSections(upTo: built) }
                                     try? await Task.sleep(nanoseconds: Self.lowerSectionStep)
                                 }
+                                await waitForFocusToRest()
                                 guard !Task.isCancelled else { return }
-                                withTransaction(transaction) { builtLowerSectionCount = .max }
+                                buildLowerSections(upTo: .max)
+                            }
+                            .onChange(of: focusedDetailsSection) { _, section in
+                                buildSectionBelow(section)
                             }
                             // Inset and layout metrics matching Android TV.
                             .padding(.leading, 56)
@@ -5177,6 +5188,43 @@ struct TvDetailsContent: View {
 
     /// Cancel a scroll-first handoff when a newly focused episode control
     /// indicates that the user changed direction.
+    private func buildLowerSections(upTo count: Int) {
+        guard builtLowerSectionCount < count else { return }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { builtLowerSectionCount = count }
+    }
+
+    /// The section below the one focus moved into, built now if it isn't yet.
+    private func buildSectionBelow(_ section: TvDetailsFocusSection) {
+        guard builtLowerSectionCount != .max else { return }
+        let order = detailsFocusOrder
+        guard let index = order.firstIndex(of: section), index + 1 < order.count,
+              let below = Self.lowerSection(for: order[index + 1]),
+              let position = activeDetailsSections.firstIndex(of: below) else { return }
+        buildLowerSections(upTo: position + 1)
+    }
+
+    private static func lowerSection(for section: TvDetailsFocusSection) -> TVDetailsSection? {
+        switch section {
+        case .actions: return nil
+        case .episodes: return .episodes
+        case .cast: return .cast
+        case .related: return .related
+        case .network: return .network
+        case .production: return .production
+        case .comments: return .comments
+        }
+    }
+
+    /// Until focus has not moved for `lowerSectionsFocusRest`.
+    private func waitForFocusToRest() async {
+        while TvDetailsFocusActivity.timeSinceLastMove < Self.lowerSectionsFocusRest {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            if Task.isCancelled { return }
+        }
+    }
+
     /// Until focus has landed in the action row (at most `lowerSectionsLatest` after opening),
     /// then `lowerSectionsAfterFocus` more, past its animation.
     private func waitForActionFocusToSettle() async {
@@ -5482,6 +5530,28 @@ private struct TvDetailsSeasonSnapshot: Equatable {
 /// Holds Details' background trailer player for the life of the screen.
 private final class TvDetailsTrailerPlayerHolder: ObservableObject {
     let player = AVPlayer()
+}
+
+/// When focus last moved anywhere, for Details' lower sections (built while it rests).
+@MainActor
+private enum TvDetailsFocusActivity {
+    private static var observer: NSObjectProtocol?
+    private static var lastMoveAt: CFTimeInterval = 0
+
+    static func start() {
+        guard observer == nil else { return }
+        observer = NotificationCenter.default.addObserver(
+            forName: UIFocusSystem.didUpdateNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            MainActor.assumeIsolated { lastMoveAt = CACurrentMediaTime() }
+        }
+    }
+
+    static var timeSinceLastMove: CFTimeInterval {
+        CACurrentMediaTime() - lastMoveAt
+    }
 }
 
 private final class TvDetailsEpisodeFocusMemory {
@@ -8175,6 +8245,9 @@ private struct TvDetailsEpisodes: View {
     /// keeps the cards a few further from it built, so a move builds none while it animates; the
     /// next ones are built once it has finished.
     @State private var settledEpisodeIndex: Int
+    /// The system strip's first card on screen, as its scroll last reported (in whole cards);
+    /// nil until it has, or after another season was picked.
+    @State private var systemStripFirstVisible: Int?
     @State private var watchedEpisodeKeys: Set<String>
     @State private var episodeWatchCounts: [String: Int]
     @State private var watchedSummary: WatchedEpisodeSummary?
@@ -8565,6 +8638,13 @@ private struct TvDetailsEpisodes: View {
                 .padding(.vertical, TvEpisodeCardLayout.verticalPadding)
             }
             .scrollClipDisabledIfAvailable()
+            .onScrollGeometryChange(for: Int.self) { geometry in
+                // Card i starts at edgeInset + i * step; the first one still partly on screen.
+                let hidden = geometry.contentOffset.x - edgeInset - TvEpisodeCardLayout.width
+                return max(0, Int(floor(hidden / TvEpisodeCardLayout.step)) + 1)
+            } action: { _, first in
+                if systemStripFirstVisible != first { systemStripFirstVisible = first }
+            }
             .frame(width: stripWidth, height: TvEpisodeCardLayout.stripHeight, alignment: .leading)
             .offset(x: -edgeInset)
             .onAppear {
@@ -8578,6 +8658,7 @@ private struct TvDetailsEpisodes: View {
             }
             .onChange(of: seasonEpisodes.first?.id) { _, _ in
                 // Another season: start where its index points (the first episode after a pick).
+                systemStripFirstVisible = nil
                 DispatchQueue.main.async {
                     scrollEpisodeStrip(proxy, to: episodeScrollIndex, anchor: anchor)
                 }
@@ -8585,9 +8666,11 @@ private struct TvDetailsEpisodes: View {
         }
     }
 
-    /// The cards the system strip builds: a screen and a little more on each side of the
-    /// focused episode, of the one focus is being put back on, and (Vertical Scrolling: Smooth)
-    /// of where focus last rested, so a few quick moves stay among built cards.
+    /// The cards the system strip builds: those on screen, two more on each side, and the
+    /// focused episode and the one focus is being put back on. Where the screen is comes from
+    /// the strip's scroll (until it reports, from where it is put as it appears: that episode
+    /// at the column's start). Built for a screen on either side of focus, as it was, the strip
+    /// made 15 or more cards at once as Details opened, a stall of 250-335 ms.
     private func systemEpisodeIndices(visibleCardCount: Int) -> [Int] {
         guard !seasonEpisodes.isEmpty else { return [] }
         let last = seasonEpisodes.count - 1
@@ -8598,13 +8681,14 @@ private struct TvDetailsEpisodes: View {
             lower = min(lower, target)
             upper = max(upper, target)
         }
-        if cardAppearance.usesSmoothVerticalScrolling,
-           abs(settledEpisodeIndex - focused) <= visibleCardCount + 3 {
-            let settled = min(max(settledEpisodeIndex, 0), last)
-            lower = min(lower, settled)
-            upper = max(upper, settled)
-        }
-        return Array(max(0, lower - visibleCardCount - 2)...min(last, upper + visibleCardCount + 2))
+        let appearStart = restoreEpisodeIndex ?? focused
+        let screenStart = min(
+            max(systemStripFirstVisible ?? appearStart, 0),
+            max(0, last - visibleCardCount + 1)
+        )
+        lower = min(lower, screenStart)
+        upper = max(upper, screenStart + visibleCardCount - 1)
+        return Array(max(0, lower - 2)...min(last, upper + 2))
     }
 
     private func scrollEpisodeStrip(_ proxy: ScrollViewProxy, to index: Int, anchor: UnitPoint, again: Bool = false) {
