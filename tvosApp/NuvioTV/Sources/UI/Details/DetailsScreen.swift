@@ -6521,6 +6521,7 @@ private struct TvDetailsCompanyCard: View {
     }
 
     var body: some View {
+        let _ = HitchMeter.noteCardBuilt("company")
         Button(action: onSelect) {
             VStack(spacing: 14) {
                 ZStack {
@@ -6657,6 +6658,7 @@ private struct TvDetailsCommentCard: View {
     @FocusState private var isFocused: Bool
 
     var body: some View {
+        let _ = HitchMeter.noteCardBuilt("comment")
         Button(action: onSelect) {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(spacing: 12) {
@@ -7640,6 +7642,7 @@ private struct TvDetailsPersonCard: View {
     @State private var profileImage: UIImage?
 
     var body: some View {
+        let _ = HitchMeter.noteCardBuilt("person")
         Button(action: onSelect) {
             VStack(spacing: 18) {
                 Circle()
@@ -8890,6 +8893,7 @@ private struct TvEpisodeCard: View {
     }
 
     var body: some View {
+        let _ = HitchMeter.noteCardBuilt("episode")
         ZStack(alignment: .topTrailing) {
             Button(action: action) {
                 ZStack(alignment: .bottomLeading) {

@@ -254,6 +254,7 @@ struct PosterCard: View {
     #endif
 
     var body: some View {
+        let _ = HitchMeter.noteCardBuilt("poster")
         #if os(tvOS)
         // Keep directional input in tvOS's focus engine. Per-card move
         // handlers bypass the clickpad dead zone and can turn a light touch
