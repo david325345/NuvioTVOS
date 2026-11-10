@@ -4152,8 +4152,13 @@ struct TvDetailsContent: View {
     /// They then come one at a time, a short step apart: all of them in one frame (the episode
     /// cards, the cast, the posters of More Like This, the companies, the comments) held Details
     /// up for 260-320 ms just as focus landed on Play. `Int.max` once all are built.
+    ///
+    /// They start once focus has landed in the action row and its animation is over: started
+    /// at a fixed 300 ms, they came just as focus landed on Play (380-650 ms after opening) and
+    /// made it jerk. At the latest `lowerSectionsLatest` after opening.
     @State private var builtLowerSectionCount = 0
-    private static let lowerSectionsDelay: UInt64 = 300_000_000
+    private static let lowerSectionsAfterFocus: UInt64 = 250_000_000
+    private static let lowerSectionsLatest: UInt64 = 900_000_000
     private static let lowerSectionStep: UInt64 = 45_000_000
     @State private var configuredDetailsSections: [TVDetailsSection] = TVDetailsSectionOrder.currentOrder()
     @State private var disabledDetailsSections: Set<TVDetailsSection> = TVDetailsSectionOrder.disabledSections()
@@ -4898,7 +4903,7 @@ struct TvDetailsContent: View {
                             }
                             .task {
                                 guard builtLowerSectionCount == 0 else { return }
-                                try? await Task.sleep(nanoseconds: Self.lowerSectionsDelay)
+                                await waitForActionFocusToSettle()
                                 let count = activeDetailsSections.count
                                 var transaction = Transaction()
                                 transaction.disablesAnimations = true
@@ -5172,8 +5177,24 @@ struct TvDetailsContent: View {
 
     /// Cancel a scroll-first handoff when a newly focused episode control
     /// indicates that the user changed direction.
+    /// Until focus has landed in the action row (at most `lowerSectionsLatest` after opening),
+    /// then `lowerSectionsAfterFocus` more, past its animation.
+    private func waitForActionFocusToSettle() async {
+        let start = DispatchTime.now().uptimeNanoseconds
+        while actionFocus == nil,
+              DispatchTime.now().uptimeNanoseconds - start < Self.lowerSectionsLatest {
+            try? await Task.sleep(nanoseconds: 30_000_000)
+            if Task.isCancelled { return }
+        }
+        guard actionFocus != nil else { return }
+        try? await Task.sleep(nanoseconds: Self.lowerSectionsAfterFocus)
+    }
+
     private func handleEpisodeFocusChange(_ newFocus: String?, scrollProxy: ScrollViewProxy) {
         episodeFocusMemory.generation &+= 1
+        // Focus already in the strip: a move along it. Details is already in place there, and
+        // putting it in place again on every move cost a pass over all of Details each time.
+        let movesAlongStrip = newFocus != nil && isEpisodeFocused
         if newFocus != nil {
             setEpisodeFocused(true)
         } else if isEpisodeFocused {
@@ -5189,7 +5210,7 @@ struct TvDetailsContent: View {
         if let newFocus, newFocus == restoreEpisodeKey {
             restoreEpisodeKey = nil
         }
-        guard newFocus != nil, focusedDetailsSection == .episodes else { return }
+        guard newFocus != nil, focusedDetailsSection == .episodes, !movesAlongStrip else { return }
         guard !isSectionScrollAnimating else { return }
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
@@ -8424,16 +8445,10 @@ private struct TvDetailsEpisodes: View {
     }
 
     private func baseEpisodeWindow(visibleCardCount: Int) -> [Int] {
-        let targetIndex: Int? = {
-            guard let restriction = effectiveFocusRestriction,
-                  restriction.hasPrefix("episode-card\u{1}") else { return nil }
-            let targetID = String(restriction.dropFirst("episode-card\u{1}".count))
-            return seasonEpisodeIndexByID[targetID]
-        }()
-        return TvDetailsEpisodeIndex.windowIndices(
+        TvDetailsEpisodeIndex.windowIndices(
             totalEpisodes: seasonEpisodes.count,
             scrollIndex: episodeScrollIndex,
-            targetIndex: targetIndex,
+            targetIndex: focusTargetEpisodeIndex,
             visibleCardCount: visibleCardCount
         )
     }
@@ -8442,11 +8457,11 @@ private struct TvDetailsEpisodes: View {
         GeometryReader { geo in
             let edgeInset = max(0, geo.frame(in: .global).minX)
             let stripWidth = geo.size.width + edgeInset * 2
-            // Row Scrolling: System applies to Home's rows only. As a system scroll view this
-            // strip built only the cards near the screen and couldn't scroll reliably to one not
-            // built yet, so focus put back on a later episode (Details opened from Continue
-            // Watching) found no card and went back to Play.
-            offsetEpisodeStrip(edgeInset: edgeInset, stripWidth: stripWidth)
+            if cardAppearance.usesSystemRowScrolling {
+                systemEpisodeStrip(edgeInset: edgeInset, stripWidth: stripWidth)
+            } else {
+                offsetEpisodeStrip(edgeInset: edgeInset, stripWidth: stripWidth)
+            }
         }
         .frame(height: TvEpisodeCardLayout.stripHeight)
         .task(id: cardAppearance.usesSmoothVerticalScrolling ? episodeScrollIndex : -1) {
@@ -8515,6 +8530,115 @@ private struct TvDetailsEpisodes: View {
         .offset(x: -edgeInset)
         // Critically damped — same no-bounce Home strip feel.
         .animation(smoothFocus ? .spring(response: 0.3, dampingFraction: 1.0) : nil, value: episodeScrollIndex)
+    }
+
+    /// Test build experiment (Row Scrolling: System): the strip as a system scroll view, as Home's
+    /// rows. tvOS scrolls it as focus moves, outside the main thread, so a move that costs some
+    /// work no longer holds the scroll up as the strip's own animation was.
+    ///
+    /// Not lazy: the cards near the screen, near the remembered episode and near where focus
+    /// is being put back are built, and the rest of the strip is empty space of the same width.
+    /// Every episode has its place, so the strip can always be scrolled to the one focus goes
+    /// back to (a lazy strip could not reach one it hadn't built yet, and focus put back on a
+    /// later episode found no card and went back to Play).
+    private func systemEpisodeStrip(edgeInset: CGFloat, stripWidth: CGFloat) -> some View {
+        let visibleCardCount = max(1, Int(ceil(stripWidth / TvEpisodeCardLayout.step)) + 1)
+        let indices = systemEpisodeIndices(visibleCardCount: visibleCardCount)
+        let first = indices.first ?? 0
+        let after = max(0, seasonEpisodes.count - 1 - (indices.last ?? -1))
+        // Puts a card's leading edge where the details column starts.
+        let anchor = UnitPoint(
+            x: min(1, edgeInset / max(1, stripWidth - TvEpisodeCardLayout.width)),
+            y: 0.5
+        )
+        let restoreIndex = restoreEpisodeIndex
+        return ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(alignment: .bottom, spacing: TvEpisodeCardLayout.spacing) {
+                    ForEach(indices.map { seasonEpisodes[$0] }) { video in
+                        episodeCard(video)
+                            .id(TvEpisodeFocus.card(video.id))
+                    }
+                }
+                .padding(.leading, edgeInset + CGFloat(first) * TvEpisodeCardLayout.step)
+                .padding(.trailing, edgeInset + TVLayout.rowLeading + CGFloat(after) * TvEpisodeCardLayout.step)
+                .padding(.vertical, TvEpisodeCardLayout.verticalPadding)
+            }
+            .scrollClipDisabledIfAvailable()
+            .frame(width: stripWidth, height: TvEpisodeCardLayout.stripHeight, alignment: .leading)
+            .offset(x: -edgeInset)
+            .onAppear {
+                // Where the strip was left, or the card focus goes back to. Again once laid out:
+                // when Details opens the strip has no size yet, and the first try does nothing.
+                scrollEpisodeStrip(proxy, to: restoreIndex ?? episodeScrollIndex, anchor: anchor, again: true)
+            }
+            .onChange(of: restoreIndex) { _, index in
+                guard let index else { return }
+                scrollEpisodeStrip(proxy, to: index, anchor: anchor, again: true)
+            }
+            .onChange(of: seasonEpisodes.first?.id) { _, _ in
+                // Another season: start where its index points (the first episode after a pick).
+                DispatchQueue.main.async {
+                    scrollEpisodeStrip(proxy, to: episodeScrollIndex, anchor: anchor)
+                }
+            }
+        }
+    }
+
+    /// The cards the system strip builds: a screen and a little more on each side of the
+    /// focused episode, of the one focus is being put back on, and (Vertical Scrolling: Smooth)
+    /// of where focus last rested, so a few quick moves stay among built cards.
+    private func systemEpisodeIndices(visibleCardCount: Int) -> [Int] {
+        guard !seasonEpisodes.isEmpty else { return [] }
+        let last = seasonEpisodes.count - 1
+        let focused = min(max(episodeScrollIndex, 0), last)
+        var lower = focused
+        var upper = focused
+        if let target = focusTargetEpisodeIndex {
+            lower = min(lower, target)
+            upper = max(upper, target)
+        }
+        if cardAppearance.usesSmoothVerticalScrolling,
+           abs(settledEpisodeIndex - focused) <= visibleCardCount + 3 {
+            let settled = min(max(settledEpisodeIndex, 0), last)
+            lower = min(lower, settled)
+            upper = max(upper, settled)
+        }
+        return Array(max(0, lower - visibleCardCount - 2)...min(last, upper + visibleCardCount + 2))
+    }
+
+    private func scrollEpisodeStrip(_ proxy: ScrollViewProxy, to index: Int, anchor: UnitPoint, again: Bool = false) {
+        guard seasonEpisodes.indices.contains(index) else { return }
+        let key = TvEpisodeFocus.card(seasonEpisodes[index].id)
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            proxy.scrollTo(key, anchor: anchor)
+        }
+        guard again else { return }
+        DispatchQueue.main.async {
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                proxy.scrollTo(key, anchor: anchor)
+            }
+        }
+    }
+
+    /// The episode Details is putting focus back on, if it is putting it on one. (Not the entry
+    /// lock's card: that is the one focus left, already on screen, and scrolling to it as focus
+    /// leaves the strip would jolt it.)
+    private var restoreEpisodeIndex: Int? {
+        guard let restriction = restrictFocusToKey,
+              restriction.hasPrefix("episode-card\u{1}") else { return nil }
+        return seasonEpisodeIndexByID[String(restriction.dropFirst("episode-card\u{1}".count))]
+    }
+
+    /// The episode focus is kept to (being put back on one, or the strip's entry lock), if any.
+    private var focusTargetEpisodeIndex: Int? {
+        guard let restriction = effectiveFocusRestriction,
+              restriction.hasPrefix("episode-card\u{1}") else { return nil }
+        return seasonEpisodeIndexByID[String(restriction.dropFirst("episode-card\u{1}".count))]
     }
 
     /// One episode card. Cards compare equal when what they show is the same, so a move redraws
@@ -8913,12 +9037,11 @@ private struct TvEpisodeCard: View {
                         .padding(.vertical, 8)
                         .background {
                             if liquidGlassCards {
-                                // No live glass: inside the card's scale effect it ghosted and
-                                // shimmered as focus moved between episodes. A translucent fill
-                                // and the glass badge's light border, a little brighter on focus.
+                                // No live glass, and no thin gradient border either: inside the
+                                // card's scale effect, as the strip moved, both shimmered and
+                                // swam. A translucent fill, a little brighter on focus.
                                 Capsule()
                                     .fill(Color.white.opacity(isFocused ? 0.22 : 0.14))
-                                    .modifier(LiquidGlassBadgeModifier(cornerRadius: 16, isFocused: false))
                             } else {
                                 Capsule()
                                     .fill(Color.black.opacity(0.52))
@@ -8984,11 +9107,14 @@ private struct TvEpisodeCard: View {
                         .fill(isFocused ? Color.white.opacity(0.18) : Color.white.opacity(0.08))
                 }
                 .clipShape(shape)
+                // Without glass's thin gradient border on the focused card (`isEnabled: false`):
+                // drawn beside the focus outline, it swam as the card grew and the strip moved.
+                // Only the AMOLED surfaces style applies.
                 .modifier(
                     LiquidGlassCardModifier(
                         cornerRadius: episodeCornerRadius,
                         isFocused: isFocused,
-                        isEnabled: liquidGlassCards,
+                        isEnabled: false,
                         coveredByArtwork: true
                     )
                 )
