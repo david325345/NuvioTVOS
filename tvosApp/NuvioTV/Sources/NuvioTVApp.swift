@@ -5574,6 +5574,11 @@ struct TVHomeView: View {
     /// away from it stay built, so a move up or down finds the rows it shows already there and the
     /// next one is built once the move has finished, not while it animates.
     @State private var settledRowIndex: Int = 0
+    /// How far around the focused row Home builds its rows. Each time Home is built (another
+    /// tab's return builds it anew), it starts with the rows on screen and widens to the usual
+    /// window a moment later: all of them at once, 5-7 rows and up to 146 cards, held the
+    /// switch back to Home up for 290-430 ms.
+    @State private var rowBuildReach = 1
     @Environment(\.cardAppearance) private var homeCardAppearance
     @State private var browsingSection: TVHomeSection?
     @State private var browsePresentationGeneration = 0
@@ -5608,6 +5613,14 @@ struct TVHomeView: View {
     /// of focus animations switched, up to 146 cards and a 350 ms stall.
     private func rowFocusRestriction(_ sectionID: String) -> String? {
         guard let key = activeFocusRestrictionCardID, key.hasPrefix("\(sectionID)\u{1}") else { return nil }
+        return key
+    }
+
+    /// The card Home puts focus on first, for the row it is in (nil for the others). Handed to
+    /// every row, it rebuilt every card on screen each time it was set and cleared (on every
+    /// return to Home's tab), though only that row uses it.
+    private func rowInitialFocusCardKey(_ sectionID: String) -> String? {
+        guard let key = initialFocusCardKey, key.hasPrefix("\(sectionID)\u{1}") else { return nil }
         return key
     }
 
@@ -5816,8 +5829,10 @@ struct TVHomeView: View {
                                         }
 
                                         ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
-                                            let isNearFocusedRow = abs(index - focusedRowIndex) <= 2
+                                            let isNearFocusedRow = (index >= focusedRowIndex - min(2, rowBuildReach)
+                                                    && index <= focusedRowIndex + min(2, rowBuildReach + 1))
                                                 || (homeCardAppearance.usesSmoothVerticalScrolling
+                                                    && rowBuildReach >= 3
                                                     && abs(index - settledRowIndex) <= 3)
                                             if isNearFocusedRow {
                                                 homeSectionRow(
@@ -6380,6 +6395,19 @@ struct TVHomeView: View {
                 handleFocusedCardIDChange(oldValue: oldValue, newValue: newValue)
             }
         )
+        .task {
+            // The rows past the screen come once Home is up, a step at a time (see
+            // `rowBuildReach`).
+            guard rowBuildReach < 3 else { return }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            for reach in 2...3 {
+                guard !Task.isCancelled else { return }
+                var transaction = Transaction(animation: nil)
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { rowBuildReach = reach }
+                try? await Task.sleep(nanoseconds: 120_000_000)
+            }
+        }
         // Visible menus still toggle Home's disabled environment. Full-screen
         // overlays do not: their opacity-zero Home tree is already unfocusable,
         // and handling the overlay transition directly avoids invalidating all
@@ -7913,7 +7941,7 @@ struct TVHomeView: View {
                 onScrollIndexChange: { newIndex in
                     rowScrollStore.setIndex(newIndex, for: section.id)
                 },
-                initialFocusCardKey: initialFocusCardKey,
+                initialFocusCardKey: rowInitialFocusCardKey(section.id),
                 externalFocus: $focusedCardID,
                 restrictFocusToCardKey: rowFocusRestriction(section.id),
                 retainFocusAppearanceForCardKey: activeFocusRestrictionCardID,
@@ -8007,7 +8035,7 @@ struct TVHomeView: View {
                 onScrollIndexChange: { newIndex in
                     rowScrollStore.setIndex(newIndex, for: section.id)
                 },
-                            initialFocusCardKey: initialFocusCardKey,
+                            initialFocusCardKey: rowInitialFocusCardKey(section.id),
                             landscapeFocusedId: landscapeFocusedId(for: section.id),
                             explicitTileShape: effectiveTileShape(for: section),
                             externalFocus: $focusedCardID,
