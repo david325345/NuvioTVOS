@@ -5028,6 +5028,12 @@ struct TvDetailsContent: View {
                     // instead of Play.
                     calendarEpisodeKey = calendarEpisodeFocusKey(in: episodePresentation.guide.episodes)
                     calendarFocusPending = initialFocusEpisode != nil && calendarEpisodeKey == nil
+                    if initialFocusEpisode != nil {
+                        TestDiagnosticLog.ui(
+                            "details: opened at an episode (Continue Watching, calendar): "
+                                + (calendarEpisodeKey == nil ? "not in the episode list (yet)" : "found, focus goes to it")
+                        )
+                    }
                 }
                 if let calendarEpisodeKey {
                     focusCalendarEpisode(calendarEpisodeKey)
@@ -8368,6 +8374,14 @@ private struct TvDetailsEpisodes: View {
                 ))
             episodeCardStrip
         }
+        .onAppear {
+            TestDiagnosticLog.ui(
+                "details: episode strip: season \(selectedSeason), \(seasonEpisodes.count) episodes, at #\(episodeScrollIndex + 1)"
+                    + (restoreEpisodeIndex.map { ", focus to go to #\($0 + 1)" }
+                        ?? (restrictFocusToKey != nil ? ", focus to go to an episode not in this season" : ""))
+                    + (cardAppearance.usesSystemRowScrolling ? ", system strip" : ", Nuvio strip")
+            )
+        }
         .focusSection()
         .onExitCommand {
             if isChoosingWatchPartyEpisode {
@@ -8701,10 +8715,17 @@ private struct TvDetailsEpisodes: View {
                     try? await Task.sleep(nanoseconds: delay * 1_000_000)
                     guard !Task.isCancelled, let target = systemStripScrollTarget else { return }
                     if isOnSystemStripScreen(target) {
+                        if delay > 80 { TestDiagnosticLog.ui("details: episode strip reached #\(target + 1) after another scroll") }
                         systemStripScrollTarget = nil
                         return
                     }
+                    TestDiagnosticLog.ui(
+                        "details: episode strip scrolled again to #\(target + 1) (on screen from #\((systemStripFirstVisible ?? 0) + 1))"
+                    )
                     scrollEpisodeStrip(proxy, to: target, anchor: anchor)
+                }
+                if let target = systemStripScrollTarget, !isOnSystemStripScreen(target) {
+                    TestDiagnosticLog.ui("details: episode strip never reached #\(target + 1); the lock goes to a card on screen")
                 }
                 systemStripScrollTarget = nil
             }
