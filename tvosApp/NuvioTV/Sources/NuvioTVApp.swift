@@ -5553,10 +5553,11 @@ struct TVHomeView: View {
     /// next one is built once the move has finished, not while it animates.
     @State private var settledRowIndex: Int = 0
     /// How far around the focused row Home builds its rows. Each time Home is built (another
-    /// tab's return builds it anew), it starts with the rows on screen and widens to the usual
-    /// window a moment later: all of them at once, 5-7 rows and up to 146 cards, held the
-    /// switch back to Home up for 290-430 ms.
-    @State private var rowBuildReach = 1
+    /// tab's return builds it anew), it starts with the focused row and the one below it, and
+    /// widens to the usual window a step at a time: all of them at once, 5-7 rows and up to 146
+    /// cards, held the switch back to Home up for 290-430 ms, and the four rows around focus
+    /// (56 cards) still for 256-280 ms.
+    @State private var rowBuildReach = 0
     @Environment(\.cardAppearance) private var homeCardAppearance
     @State private var browsingSection: TVHomeSection?
     @State private var browsePresentationGeneration = 0
@@ -6377,8 +6378,8 @@ struct TVHomeView: View {
             // The rows past the screen come once Home is up, a step at a time (see
             // `rowBuildReach`).
             guard rowBuildReach < 3 else { return }
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            for reach in 2...3 {
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            for reach in 1...3 {
                 guard !Task.isCancelled else { return }
                 var transaction = Transaction(animation: nil)
                 transaction.disablesAnimations = true

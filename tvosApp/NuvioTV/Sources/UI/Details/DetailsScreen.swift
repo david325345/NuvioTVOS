@@ -8245,13 +8245,15 @@ private struct TvDetailsEpisodes: View {
     /// keeps the cards a few further from it built, so a move builds none while it animates; the
     /// next ones are built once it has finished.
     @State private var settledEpisodeIndex: Int
-    /// The system strip's first card on screen, as its scroll last reported (in whole cards);
-    /// nil until it has, or after another season was picked.
-    @State private var systemStripFirstVisible: Int?
+    /// The episodes wholly on screen in the system strip, from where it is scrolled; nil until
+    /// it has reported, or after another season was picked.
+    @State private var systemStripScreen: ClosedRange<Int>?
     /// The episode the system strip still has to be scrolled to (put on screen as Details opens,
     /// or focus put back on it), checked again until it is on screen.
     @State private var systemStripScrollTarget: Int?
     @State private var systemStripScrollGeneration = 0
+    /// What the system strip is to scroll to, a new count each time.
+    @State private var systemStripScrollRequest = TvEpisodeStripScrollRequest()
     @State private var watchedEpisodeKeys: Set<String>
     @State private var episodeWatchCounts: [String: Int]
     @State private var watchedSummary: WatchedEpisodeSummary?
@@ -8623,68 +8625,60 @@ private struct TvDetailsEpisodes: View {
         let indices = systemEpisodeIndices(visibleCardCount: visibleCardCount)
         let first = indices.first ?? 0
         let after = max(0, seasonEpisodes.count - 1 - (indices.last ?? -1))
-        // Puts a card's leading edge where the details column starts.
-        let anchor = UnitPoint(
-            x: min(1, edgeInset / max(1, stripWidth - TvEpisodeCardLayout.width)),
-            y: 0.5
-        )
         let restoreIndex = restoreEpisodeIndex
-        return ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(alignment: .bottom, spacing: TvEpisodeCardLayout.spacing) {
-                    ForEach(indices.map { seasonEpisodes[$0] }) { video in
-                        episodeCard(video)
-                            .id(TvEpisodeFocus.card(video.id))
-                    }
+        return TvSystemEpisodeStripScroller(
+            edgeInset: edgeInset,
+            viewportWidth: min(stripWidth, 1920),
+            season: seasonEpisodes.first?.id ?? "",
+            request: systemStripScrollRequest,
+            onScreenChange: { screen in
+                // A report from the season shown before is no longer where this one is.
+                guard screen.season == (seasonEpisodes.first?.id ?? "") else { return }
+                if systemStripScreen != screen.cards { systemStripScreen = screen.cards }
+            }
+        ) {
+            HStack(alignment: .bottom, spacing: TvEpisodeCardLayout.spacing) {
+                ForEach(indices.map { seasonEpisodes[$0] }) { video in
+                    episodeCard(video)
                 }
-                .padding(.leading, edgeInset + CGFloat(first) * TvEpisodeCardLayout.step)
-                .padding(.trailing, edgeInset + TVLayout.rowLeading + CGFloat(after) * TvEpisodeCardLayout.step)
-                .padding(.vertical, TvEpisodeCardLayout.verticalPadding)
             }
-            .scrollClipDisabledIfAvailable()
-            .onScrollGeometryChange(for: Int.self) { geometry in
-                // Card i starts at edgeInset + i * step; the first one still partly on screen.
-                let hidden = geometry.contentOffset.x - edgeInset - TvEpisodeCardLayout.width
-                return max(0, Int(floor(hidden / TvEpisodeCardLayout.step)) + 1)
-            } action: { _, first in
-                if systemStripFirstVisible != first { systemStripFirstVisible = first }
-            }
-            .frame(width: stripWidth, height: TvEpisodeCardLayout.stripHeight, alignment: .leading)
-            .offset(x: -edgeInset)
-            .onAppear {
-                // Where the strip was left, or the card focus goes back to. Again once laid out:
-                // when Details opens the strip has no size yet, and the first try does nothing.
-                scrollEpisodeStrip(proxy, to: restoreIndex ?? episodeScrollIndex, anchor: anchor, again: true)
-                keepScrolling(to: restoreIndex ?? episodeScrollIndex)
-            }
-            .onChange(of: restoreIndex) { _, index in
-                guard let index else { return }
-                scrollEpisodeStrip(proxy, to: index, anchor: anchor, again: true)
-                keepScrolling(to: index)
-            }
-            .task(id: systemStripScrollGeneration) {
-                // Opened with everything built at once (Continue Watching, the calendar), the
-                // strip often wasn't laid out yet when it was scrolled, and stayed at its start:
-                // the episode focus was to go to was off screen, focus stayed on the buttons, and
-                // the strip's lock let it go nowhere else, so moving down did nothing. Checked
-                // again until that episode is on screen.
-                for delay: UInt64 in [80, 180, 350, 600] {
-                    try? await Task.sleep(nanoseconds: delay * 1_000_000)
-                    guard !Task.isCancelled, let target = systemStripScrollTarget else { return }
-                    if isOnSystemStripScreen(target) {
-                        systemStripScrollTarget = nil
-                        return
-                    }
-                    scrollEpisodeStrip(proxy, to: target, anchor: anchor)
+            .padding(.leading, edgeInset + CGFloat(first) * TvEpisodeCardLayout.step)
+            .padding(.trailing, edgeInset + TVLayout.rowLeading + CGFloat(after) * TvEpisodeCardLayout.step)
+            .padding(.vertical, TvEpisodeCardLayout.verticalPadding)
+        }
+        .frame(width: stripWidth, height: TvEpisodeCardLayout.stripHeight, alignment: .leading)
+        .offset(x: -edgeInset)
+        .onAppear {
+            // Where the strip was left, or the card focus goes back to.
+            keepScrolling(to: restoreIndex ?? episodeScrollIndex)
+        }
+        .onChange(of: restoreIndex) { _, index in
+            // Already on screen (focus is put back on the card it left), scrolling to it would
+            // jolt the strip as Details closes.
+            guard let index, !isOnSystemStripScreen(index) else { return }
+            keepScrolling(to: index)
+        }
+        .task(id: systemStripScrollGeneration) {
+            // Opened with everything built at once (Continue Watching, the calendar), the strip
+            // was scrolled before it was laid out, and stayed at its start: the episode focus
+            // was to go to was off screen. Checked again until that episode is on screen; until
+            // it is, the strip's lock goes to a card that is.
+            for delay: UInt64 in [80, 180, 350, 600] {
+                try? await Task.sleep(nanoseconds: delay * 1_000_000)
+                guard !Task.isCancelled, let target = systemStripScrollTarget else { return }
+                if isOnSystemStripScreen(target) {
+                    systemStripScrollTarget = nil
+                    return
                 }
-                systemStripScrollTarget = nil
+                requestStripScroll(to: target)
             }
-            .onChange(of: seasonEpisodes.first?.id) { _, _ in
-                // Another season: start where its index points (the first episode after a pick).
-                systemStripFirstVisible = nil
-                DispatchQueue.main.async {
-                    scrollEpisodeStrip(proxy, to: episodeScrollIndex, anchor: anchor)
-                }
+            systemStripScrollTarget = nil
+        }
+        .onChange(of: seasonEpisodes.first?.id) { _, _ in
+            // Another season: start where its index points (the first episode after a pick).
+            systemStripScreen = nil
+            DispatchQueue.main.async {
+                requestStripScroll(to: episodeScrollIndex)
             }
         }
     }
@@ -8705,8 +8699,9 @@ private struct TvDetailsEpisodes: View {
             upper = max(upper, target)
         }
         let appearStart = restoreEpisodeIndex ?? focused
+        // The card partly shown before the first whole one.
         let screenStart = min(
-            max(systemStripFirstVisible ?? appearStart, 0),
+            max(systemStripScreen.map { $0.lowerBound - 1 } ?? appearStart, 0),
             max(0, last - visibleCardCount + 1)
         )
         lower = min(lower, screenStart)
@@ -8714,41 +8709,28 @@ private struct TvDetailsEpisodes: View {
         return Array(max(0, lower - 2)...min(last, upper + 2))
     }
 
+    /// Scrolls the system strip to an episode, and checks again until it is on screen.
     private func keepScrolling(to index: Int) {
+        requestStripScroll(to: index)
         systemStripScrollTarget = index
         systemStripScrollGeneration &+= 1
     }
 
-    /// Cards wholly on screen in the system strip, as its scroll last reported (from its start
-    /// while it hasn't: it reports once it has scrolled).
+    private func requestStripScroll(to index: Int) {
+        guard seasonEpisodes.indices.contains(index) else { return }
+        systemStripScrollRequest = TvEpisodeStripScrollRequest(
+            index: index,
+            count: systemStripScrollRequest.count &+ 1
+        )
+    }
+
+    /// Cards wholly on screen in the system strip (from its start until it has reported).
     private var systemStripScreenRange: ClosedRange<Int> {
-        let first = systemStripFirstVisible ?? 0
-        // Scrolled, the card at the leading edge is partly hidden and doesn't count; nor the
-        // last one, partly shown.
-        let whole = max(1, Int(1920 / TvEpisodeCardLayout.step) - 1)
-        return (first == 0 ? 0 : first + 1)...(first + whole)
+        systemStripScreen ?? TvEpisodeStripScreen.cards(offset: 0, edgeInset: 0, viewportWidth: 1920)
     }
 
     private func isOnSystemStripScreen(_ index: Int) -> Bool {
         systemStripScreenRange.contains(index)
-    }
-
-    private func scrollEpisodeStrip(_ proxy: ScrollViewProxy, to index: Int, anchor: UnitPoint, again: Bool = false) {
-        guard seasonEpisodes.indices.contains(index) else { return }
-        let key = TvEpisodeFocus.card(seasonEpisodes[index].id)
-        var transaction = Transaction(animation: nil)
-        transaction.disablesAnimations = true
-        withTransaction(transaction) {
-            proxy.scrollTo(key, anchor: anchor)
-        }
-        guard again else { return }
-        DispatchQueue.main.async {
-            var transaction = Transaction(animation: nil)
-            transaction.disablesAnimations = true
-            withTransaction(transaction) {
-                proxy.scrollTo(key, anchor: anchor)
-            }
-        }
     }
 
     /// The episode Details is putting focus back on, if it is putting it on one. (Not the entry
@@ -9037,6 +9019,79 @@ private enum TvEpisodeCardLayout {
     static let verticalPadding: CGFloat = 28
     static let stripHeight: CGFloat = height + verticalPadding * 2
     static let step: CGFloat = width + spacing
+}
+
+/// An episode the system strip is to scroll to; `count` changes with every request, so one to
+/// the same episode again still scrolls.
+private struct TvEpisodeStripScrollRequest: Equatable {
+    var index = 0
+    var count = 0
+}
+
+/// The episodes wholly on screen in the system strip, and the season they belong to.
+private struct TvEpisodeStripScreen: Equatable {
+    var cards: ClosedRange<Int>
+    var season: String
+
+    /// Episode i starts `edgeInset + i * step` into the strip; of those, the ones between the
+    /// screen's edges (give or take a little) at this scroll offset.
+    static func cards(offset: CGFloat, edgeInset: CGFloat, viewportWidth: CGFloat) -> ClosedRange<Int> {
+        let step = TvEpisodeCardLayout.step
+        let slack: CGFloat = 24
+        let first = max(0, Int(ceil((offset - edgeInset - slack) / step)))
+        let last = Int(floor((offset + viewportWidth + slack - edgeInset - TvEpisodeCardLayout.width) / step))
+        return first...max(first, last)
+    }
+}
+
+/// The system episode strip's scroll view (Row Scrolling: System). It is scrolled to an episode
+/// by that episode's place, which never moves (episode i starts `i * step` in), rather than by
+/// finding its card: opened from Continue Watching or the calendar, scrolling to the card never
+/// took, and the strip stayed at its start. Where it is reads from where its content is, which
+/// also comes as it first appears (a scroll's report comes only when it has moved).
+private struct TvSystemEpisodeStripScroller<Content: View>: View {
+    let edgeInset: CGFloat
+    let viewportWidth: CGFloat
+    let season: String
+    let request: TvEpisodeStripScrollRequest
+    let onScreenChange: (TvEpisodeStripScreen) -> Void
+    @ViewBuilder let content: Content
+
+    @State private var position = ScrollPosition(edge: .leading)
+
+    var body: some View {
+        let edgeInset = edgeInset
+        let viewportWidth = viewportWidth
+        let season = season
+        return ScrollView(.horizontal, showsIndicators: false) {
+            content
+                .onGeometryChange(for: TvEpisodeStripScreen.self) { proxy in
+                    TvEpisodeStripScreen(
+                        cards: TvEpisodeStripScreen.cards(
+                            offset: -proxy.frame(in: .named("tvEpisodeStrip")).minX,
+                            edgeInset: edgeInset,
+                            viewportWidth: viewportWidth
+                        ),
+                        season: season
+                    )
+                } action: { screen in
+                    onScreenChange(screen)
+                }
+        }
+        .coordinateSpace(.named("tvEpisodeStrip"))
+        .scrollPosition($position)
+        .scrollClipDisabledIfAvailable()
+        .onChange(of: request, initial: true) { _, request in
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            // Half a point on every other request: the same place asked for again (the first
+            // try didn't take) is then still a change, and is scrolled to.
+            let x = CGFloat(request.index) * TvEpisodeCardLayout.step + (request.count % 2 == 0 ? 0 : 0.5)
+            withTransaction(transaction) {
+                position.scrollTo(x: x)
+            }
+        }
+    }
 }
 
 private struct TvSeasonPill: View {
