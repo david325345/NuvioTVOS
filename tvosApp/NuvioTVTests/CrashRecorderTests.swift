@@ -167,6 +167,23 @@ final class CrashRecorderTests: XCTestCase {
         )
     }
 
+    func testLongBusyLineNamesTheCodeItCameFrom() {
+        let chains = [
+            "StreamQualityTags.parse ← SmartPlaybackSelector.rankedStreams ← DetailsViewModel.applyStreams": 5,
+            "StreamQualityTags.parse ← TvStreamCardPresentation.init": 2
+        ]
+        let long = MainThreadSampler.summary(milliseconds: 240, samples: 9,
+                                             app: ["StreamQualityTags.parse": 7], libraries: [:], chains: chains)
+        XCTAssertEqual(
+            long,
+            "ui: busy 240 ms on {screen} — app: StreamQualityTags.parse ×7 (9 samples)"
+                + " · via StreamQualityTags.parse ← SmartPlaybackSelector.rankedStreams ← DetailsViewModel.applyStreams ×5"
+        )
+        let short = MainThreadSampler.summary(milliseconds: 120, samples: 4,
+                                              app: ["StreamQualityTags.parse": 4], libraries: [:], chains: chains)
+        XCTAssertFalse(short.contains(" via "))
+    }
+
     func testASSHeaderSummaryForTheLog() {
         let header = """
         [Script Info]
