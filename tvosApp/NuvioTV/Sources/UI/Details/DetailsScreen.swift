@@ -8248,6 +8248,10 @@ private struct TvDetailsEpisodes: View {
     /// The system strip's first card on screen, as its scroll last reported (in whole cards);
     /// nil until it has, or after another season was picked.
     @State private var systemStripFirstVisible: Int?
+    /// The episode the system strip still has to be scrolled to (put on screen as Details opens,
+    /// or focus put back on it), checked again until it is on screen.
+    @State private var systemStripScrollTarget: Int?
+    @State private var systemStripScrollGeneration = 0
     @State private var watchedEpisodeKeys: Set<String>
     @State private var episodeWatchCounts: [String: Int]
     @State private var watchedSummary: WatchedEpisodeSummary?
@@ -8651,10 +8655,29 @@ private struct TvDetailsEpisodes: View {
                 // Where the strip was left, or the card focus goes back to. Again once laid out:
                 // when Details opens the strip has no size yet, and the first try does nothing.
                 scrollEpisodeStrip(proxy, to: restoreIndex ?? episodeScrollIndex, anchor: anchor, again: true)
+                keepScrolling(to: restoreIndex ?? episodeScrollIndex)
             }
             .onChange(of: restoreIndex) { _, index in
                 guard let index else { return }
                 scrollEpisodeStrip(proxy, to: index, anchor: anchor, again: true)
+                keepScrolling(to: index)
+            }
+            .task(id: systemStripScrollGeneration) {
+                // Opened with everything built at once (Continue Watching, the calendar), the
+                // strip often wasn't laid out yet when it was scrolled, and stayed at its start:
+                // the episode focus was to go to was off screen, focus stayed on the buttons, and
+                // the strip's lock let it go nowhere else, so moving down did nothing. Checked
+                // again until that episode is on screen.
+                for delay: UInt64 in [80, 180, 350, 600] {
+                    try? await Task.sleep(nanoseconds: delay * 1_000_000)
+                    guard !Task.isCancelled, let target = systemStripScrollTarget else { return }
+                    if isOnSystemStripScreen(target) {
+                        systemStripScrollTarget = nil
+                        return
+                    }
+                    scrollEpisodeStrip(proxy, to: target, anchor: anchor)
+                }
+                systemStripScrollTarget = nil
             }
             .onChange(of: seasonEpisodes.first?.id) { _, _ in
                 // Another season: start where its index points (the first episode after a pick).
@@ -8689,6 +8712,25 @@ private struct TvDetailsEpisodes: View {
         lower = min(lower, screenStart)
         upper = max(upper, screenStart + visibleCardCount - 1)
         return Array(max(0, lower - 2)...min(last, upper + 2))
+    }
+
+    private func keepScrolling(to index: Int) {
+        systemStripScrollTarget = index
+        systemStripScrollGeneration &+= 1
+    }
+
+    /// Cards wholly on screen in the system strip, as its scroll last reported (from its start
+    /// while it hasn't: it reports once it has scrolled).
+    private var systemStripScreenRange: ClosedRange<Int> {
+        let first = systemStripFirstVisible ?? 0
+        // Scrolled, the card at the leading edge is partly hidden and doesn't count; nor the
+        // last one, partly shown.
+        let whole = max(1, Int(1920 / TvEpisodeCardLayout.step) - 1)
+        return (first == 0 ? 0 : first + 1)...(first + whole)
+    }
+
+    private func isOnSystemStripScreen(_ index: Int) -> Bool {
+        systemStripScreenRange.contains(index)
     }
 
     private func scrollEpisodeStrip(_ proxy: ScrollViewProxy, to index: Int, anchor: UnitPoint, again: Bool = false) {
@@ -8880,7 +8922,13 @@ private struct TvDetailsEpisodes: View {
     private var effectiveFocusRestriction: String? {
         if let restrictFocusToKey { return restrictFocusToKey }
         guard entryLocked, !seasonEpisodes.isEmpty else { return nil }
-        let index = min(max(episodeScrollIndex, 0), seasonEpisodes.count - 1)
+        var index = min(max(episodeScrollIndex, 0), seasonEpisodes.count - 1)
+        // The system strip can leave the remembered episode off screen, and focus coming down
+        // could not find it: the lock goes to the nearest card on screen instead.
+        if cardAppearance.usesSystemRowScrolling, !isOnSystemStripScreen(index) {
+            let range = systemStripScreenRange
+            index = max(0, min(max(index, range.lowerBound), min(range.upperBound, seasonEpisodes.count - 1)))
+        }
         return TvEpisodeFocus.card(seasonEpisodes[index].id)
     }
 
