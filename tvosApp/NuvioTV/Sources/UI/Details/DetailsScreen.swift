@@ -216,6 +216,8 @@ struct DetailsScreen: View {
     /// of its first frame (before the cached title is read, a moment later) would flash;
     /// it shows only if loading takes longer.
     @State private var showsLoadingSpinner = false
+    /// This screen in the test log's Details lines (see `DetailsLifecycleLog`).
+    @State private var lifecycleToken = UUID()
 
     var body: some View {
         ZStack {
@@ -478,6 +480,7 @@ struct DetailsScreen: View {
         }
         .onChange(of: viewModel.uiState.isLoading) { _, isLoading in
             if !isLoading {
+                DetailsLifecycleLog.loaded(lifecycleToken)
                 if let meta = viewModel.uiState.meta, meta.id == id, !meta.isSeries {
                     onWatchPartyMovieReady?(meta)
                 }
@@ -497,6 +500,13 @@ struct DetailsScreen: View {
             }
         }
         .onAppear {
+            DetailsLifecycleLog.opened(
+                lifecycleToken,
+                id: id,
+                type: type,
+                loaded: !viewModel.uiState.isLoading && viewModel.uiState.meta?.id == id,
+                steady: cardAppearance.usesSteadyDetailsOpening
+            )
             isDetailsPlaybackContextActive = true
             didHandOffPlayback = false
             playbackPrewarmer.activateContext()
@@ -531,6 +541,7 @@ struct DetailsScreen: View {
             performBackgroundAutoSelectionAndPreResolution()
         }
         .onDisappear {
+            DetailsLifecycleLog.closed(lifecycleToken)
             TVHomeDebugTrace.log("details.disappear id=\(id) type=\(type)")
             isDetailsPlaybackContextActive = false
             cancelStartupRequest()
@@ -550,6 +561,7 @@ struct DetailsScreen: View {
     /// Waiting for onDisappear is too late: enrichment can still publish
     /// updates while the opacity transition is trying to tear Details down.
     private func handleBack() {
+        DetailsLifecycleLog.backPressed(lifecycleToken)
         isDetailsPlaybackContextActive = false
         cancelStartupRequest()
         cleanupPreFetchedResources()
