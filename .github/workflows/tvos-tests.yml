@@ -10,7 +10,7 @@ jobs:
   unit-tests:
     # Match the Apple Silicon / Xcode 27 configuration used for local validation.
     runs-on: xcode-27
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
@@ -31,7 +31,14 @@ jobs:
         env:
           NUVIO_TEST_ARTIFACTS: ${{ runner.temp }}/nuvio-tests
           NUVIO_DERIVED_DATA: ${{ runner.temp }}/NuvioTVDerivedData
-        run: bash scripts/test-tvos.sh
+          # Prep branch only (not in the PR): AIOStreams in the simulator too.
+          TEST_RUNNER_AIO_TESTS: "1"
+          TEST_RUNNER_AIO_REPORT: ${{ runner.temp }}/nuvio-tests/aio-report.txt
+        run: |
+          bash scripts/test-tvos.sh || status=$?
+          grep -h "^AIO-TEST" "$NUVIO_TEST_ARTIFACTS/aio-report.txt" 2>/dev/null | head -20 | while IFS= read -r line; do echo "::notice::$line"; done
+          awk '/Failing tests:/{f=1;next} f&&/TEST FAILED/{f=0} f' "$NUVIO_TEST_ARTIFACTS/xcodebuild.log" 2>/dev/null | sed 's/^[[:space:]]*//' | sort -u | while IFS= read -r line; do [ -n "$line" ] && echo "::warning::failing: $line"; done
+          exit ${status:-0}
 
       - name: Upload test results
         if: always()
