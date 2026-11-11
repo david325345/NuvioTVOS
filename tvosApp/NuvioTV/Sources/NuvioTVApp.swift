@@ -865,6 +865,12 @@ struct ContentView: View {
         .onAppear {
             Task { await releaseUpdateService.checkIfNeeded() }
             Task { await announcementService.checkIfNeeded() }
+            AIOExperiment.shared.startIfWanted()
+            Task(priority: .utility) {
+                // Plugin repository updates wait until the first screen has loaded.
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                await PluginStore.shared.appBecameActive()
+            }
             if WatchPartyConfiguration.isEnabled {
                 watchPartyOwner.attach(authManager: authManager, profiles: profileViewModel)
             }
@@ -967,6 +973,7 @@ struct ContentView: View {
                     Task(priority: .utility) {
                         await JellyfinSessionManager.shared.handleForegroundSession()
                     }
+                    Task(priority: .utility) { await PluginStore.shared.appBecameActive() }
                 }
                 Task { await releaseUpdateService.checkIfNeeded() }
                 Task { await announcementService.checkIfNeeded() }
