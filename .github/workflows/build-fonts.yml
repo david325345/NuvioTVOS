@@ -29,6 +29,12 @@ jobs:
           perl -pi -e 's/group\.com\.pyksel\.nuviotvos</group.com.pyksel.nuviotvos.test</' \
             tvosApp/NuvioTV/NuvioTV.entitlements tvosApp/TopShelf/TopShelf.entitlements
           echo "::notice::bundle com.pyksel.nuviotvos.test · Nuvio Test · group.com.pyksel.nuviotvos.test"
+          # A build number of its own for every run (81.<run>), the app's and its Top Shelf
+          # extension's: reinstalled with the same version, the Apple TV kept the old extension
+          # and showed the shelf grey until it was restarted.
+          perl -pi -e 's/^let projectVersion = "(\d+)"$/let projectVersion = "$1.$ENV{GITHUB_RUN_NUMBER}"/' tvosApp/Project.swift
+          grep -q "^let projectVersion = \"[0-9]*\.$GITHUB_RUN_NUMBER\"$" tvosApp/Project.swift
+          echo "::notice::build $(sed -n 's/^let projectVersion = "\(.*\)"$/\1/p' tvosApp/Project.swift)"
       - name: Build unsigned IPA
         run: |
           set -o pipefail
