@@ -8582,6 +8582,10 @@ private struct TvDetailsEpisodes: View {
         )
     }
 
+    private var keepsSettledEpisode: Bool {
+        cardAppearance.usesSmoothVerticalScrolling && !cardAppearance.usesSystemRowScrolling
+    }
+
     private var episodeCardStrip: some View {
         GeometryReader { geo in
             let edgeInset = max(0, geo.frame(in: .global).minX)
@@ -8593,8 +8597,11 @@ private struct TvDetailsEpisodes: View {
             }
         }
         .frame(height: TvEpisodeCardLayout.stripHeight)
-        .task(id: cardAppearance.usesSmoothVerticalScrolling ? episodeScrollIndex : -1) {
-            guard cardAppearance.usesSmoothVerticalScrolling else { return }
+        // Where focus rested keeps cards built around it in the strip Nuvio scrolls itself. The
+        // system strip builds by where it is scrolled and never reads it: set there, it only
+        // redrew the episodes once more after every run of moves, the longest frame of the run.
+        .task(id: keepsSettledEpisode ? episodeScrollIndex : -1) {
+            guard keepsSettledEpisode else { return }
             let index = episodeScrollIndex
             // Past the strip's spring (0.3 s).
             try? await Task.sleep(nanoseconds: 380_000_000)

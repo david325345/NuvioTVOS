@@ -5070,6 +5070,10 @@ private final class TVHomeFocusWork {
     }
     var cachedFocusRows: CachedFocusRows?
     var defersOverlayPreparation = false
+    /// Bumped when focus leaves the card Home is putting it back on (after Details or the
+    /// player), for the Back press that checks whether it stayed. Kept here, out of Home's state:
+    /// bumped on every move after a return from Details, it redrew Home two more times a move.
+    var focusMovedAwayGeneration = 0
     var pendingOverlayRestoreCardID: String?
     /// Remains set until the restored card's actual focus callback runs. The
     /// shared FocusState can be updated before that callback, so it cannot be
@@ -5611,7 +5615,6 @@ struct TVHomeView: View {
     @State private var detailsPlayerRestoreNativeFocusLostTarget = false
     @State private var detailsPlayerRestoreGeneration: Int?
     @State private var detailsPlayerRestorePresentationID: Int?
-    @State private var focusMovedAwayGeneration = 0
     @Environment(\.isEnabled) private var isEnabled
     @State private var focusedRowIndex: Int = 0
     /// Test build (Vertical Scrolling: Smooth): the row focus rested on last. Rows up to three
@@ -6579,7 +6582,7 @@ struct TVHomeView: View {
         if let newValue,
            let expected = detailsPlayerRestoreExpectedFocusCardID,
            newValue != expected {
-            focusMovedAwayGeneration &+= 1
+            focusWork.focusMovedAwayGeneration &+= 1
         }
         TVHomeDebugTrace.measure("home.focusedCardID.onChange") {
             TVHomeDebugTrace.log(
@@ -7049,12 +7052,12 @@ struct TVHomeView: View {
             fullScreenPresentationID: presentationID,
             visibleOverlayPresentationID: visibleOverlayPresentationID,
             browsePresentationGeneration: browsePresentationGeneration,
-            focusMovedAwayGeneration: focusMovedAwayGeneration
+            focusMovedAwayGeneration: focusWork.focusMovedAwayGeneration
         )
     }
 
     private func handleOverlayRestoreLeftPress(_ snapshot: TVHomeRestoreLeftPressSnapshot) {
-        let focusStayedOnRestoreSource = focusMovedAwayGeneration == snapshot.focusMovedAwayGeneration
+        let focusStayedOnRestoreSource = focusWork.focusMovedAwayGeneration == snapshot.focusMovedAwayGeneration
             && (focusedCardID == nil || focusedCardID == snapshot.sourceCardID)
         let restoreStillPending = detailsPlayerRestoreTargetCardID == snapshot.sourceCardID
             && detailsPlayerRestoreExpectedFocusCardID == snapshot.sourceCardID
@@ -7403,7 +7406,7 @@ struct TVHomeView: View {
             if cardKey == expected {
                 detailsPlayerRestoreNativeFocusReachedTarget = true
             } else {
-                focusMovedAwayGeneration &+= 1
+                focusWork.focusMovedAwayGeneration &+= 1
                 if detailsPlayerRestoreNativeFocusReachedTarget {
                     detailsPlayerRestoreNativeFocusLostTarget = true
                 }
@@ -7559,7 +7562,7 @@ struct TVHomeView: View {
            detailsPlayerRestoreNativeFocusReachedTarget,
            !detailsPlayerRestoreNativeFocusLostTarget {
             detailsPlayerRestoreNativeFocusLostTarget = true
-            focusMovedAwayGeneration &+= 1
+            focusWork.focusMovedAwayGeneration &+= 1
         }
         guard nativeProfileFocusedCardKey == cardKey else { return }
         nativeProfileFocusedCardKey = nil
