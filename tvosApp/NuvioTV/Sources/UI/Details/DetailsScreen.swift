@@ -6530,10 +6530,17 @@ private struct TvDetailsRelatedRow: View {
     let onFocus: () -> Void
 
     @State private var scrollIndex = 0
+    /// The row's posters come a few at a time, empty space of their size until then: built all
+    /// at once (16 or more) as Details built this section, half a second after focus went into
+    /// the episodes, they were a 90-150 ms frame. All of them once focus comes into the row.
+    @State private var builtCount = Self.firstCards
     @AppStorage(SettingsKey.homeLayout) private var homeLayout = "Modern"
     @AppStorage(SettingsKey.posterLabels) private var posterLabels = false
     @AppStorage(SettingsKey.smoothFocus) private var smoothFocus = true
     @AppStorage(SettingsKey.focusHighlighter) private var focusHighlighter = false
+
+    private static let firstCards = 3
+    private static let cardsPerStep = 3
 
     private var cardWidth: CGFloat { homeLayout == "Compact" ? 170 : 210 }
     private var cardHeight: CGFloat { homeLayout == "Compact" ? 255 : 315 }
@@ -6551,24 +6558,27 @@ private struct TvDetailsRelatedRow: View {
 
             HStack(alignment: .bottom, spacing: spacing) {
                 ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                    let buildsLater = index >= builtCount
                     PosterCard(
                         meta: item.asMeta,
                         customPosterScreen: .details,
                         onFocus: { _ in
                             if scrollIndex != index { scrollIndex = index }
+                            if builtCount < items.count { builtCount = items.count }
                             onFocus()
                         },
                         layoutMode: homeLayout,
                         showPosterLabels: posterLabels,
                         smoothFocusAnimations: smoothFocus,
-                        focusHighlighterEnabled: focusHighlighter
+                        focusHighlighterEnabled: focusHighlighter,
+                        buildsLater: buildsLater
                     ) {
                         onSelect(item)
                     }
                     .detailsSnapshot(TvDetailsCardSnapshotKey(
                         item: item,
                         index: index,
-                        style: "\(homeLayout)|\(posterLabels)|\(smoothFocus)|\(focusHighlighter)"
+                        style: "\(homeLayout)|\(posterLabels)|\(smoothFocus)|\(focusHighlighter)|\(buildsLater)"
                     ))
                     .disabled(entryLocked && index != scrollIndex)
                 }
@@ -6586,6 +6596,17 @@ private struct TvDetailsRelatedRow: View {
         .focusSection()
         .onExitCommand {
             onBack?()
+        }
+        .task {
+            while builtCount < items.count {
+                try? await Task.sleep(nanoseconds: 40_000_000)
+                guard !Task.isCancelled else { return }
+                var transaction = Transaction(animation: nil)
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    builtCount = min(items.count, builtCount + Self.cardsPerStep)
+                }
+            }
         }
     }
 }

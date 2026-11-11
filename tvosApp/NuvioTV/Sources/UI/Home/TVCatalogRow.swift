@@ -202,6 +202,13 @@ enum CollectionFolderGridMetrics {
     static let posterGap: CGFloat = 28
 }
 
+/// Whether a row is being built a few cards at a time (`TVCatalogRow.stagesCardBuild`), decided
+/// by its first build. Not observed: the row redraws as its count of built cards changes.
+final class TVRowCardStaging {
+    var isDecided = false
+    var isActive = false
+}
+
 /// Test build (Focus: Rows): Home asking a row to put focus on one of its cards. A new request
 /// (another generation) is applied by the row it is for at once; one that a row only now coming on
 /// screen finds is applied if it is under a second old, so a row built later never takes focus
@@ -421,10 +428,12 @@ struct TVCatalogRow: View {
     /// and puts it where Home asks (`focusRequest`).
     var ownsCardFocus = false
     var focusRequest: TVHomeRowFocusRequest? = nil
-    /// A row Home builds ahead, off screen (more than two rows from focus): its cards come a few
-    /// at a time, from where it is scrolled, instead of all in one frame. Built as focus settled
-    /// on a row, the row three below came in one go, the 60-160 ms frame half a second after a
-    /// move down. Once it comes within two rows of focus, the rest is built at once.
+    /// The row, as it is first built, gets its cards a few at a time, from where it is scrolled,
+    /// instead of all in one frame: a row Home builds ahead, off screen (as focus settles, the
+    /// row three away came in one go, the 60-160 ms frame half a second after a move down), and
+    /// any row but the focused one in a fast run of moves (rows came faster than one frame could
+    /// build them, a 340 ms stall). Read as the row first appears; it then finishes at its pace,
+    /// or at once when focus comes into it.
     var stagesCardBuild = false
     var restrictFocusToCardKey: String? = nil
     var retainFocusAppearanceForCardKey: String? = nil
@@ -445,7 +454,7 @@ struct TVCatalogRow: View {
     @State private var scrollIndex: Int?
     @FocusState private var ownCardFocus: String?
     @State private var stagedCardCount = 0
-    @State private var isCardStagingDone = false
+    @State private var cardStaging = TVRowCardStaging()
     @Environment(\.cardAppearance) private var cardAppearance
     @AppStorage(SettingsKey.homeLayout) private var homeLayout = "Modern"
     @AppStorage(SettingsKey.posterLabels) private var posterLabels = false
@@ -596,21 +605,33 @@ struct TVCatalogRow: View {
                 applyFocusRequest(focusRequest)
             }
         }
-        .task(id: stagesCardBuild) {
-            guard stagesCardBuild, !isCardStagingDone else { return }
+        .task {
+            decideCardStaging()
+            guard cardStaging.isActive else { return }
             while stagedCardCount < Self.stagedCardTarget {
                 try? await Task.sleep(nanoseconds: 40_000_000)
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, cardStaging.isActive else { return }
                 var transaction = Transaction(animation: nil)
                 transaction.disablesAnimations = true
                 withTransaction(transaction) { stagedCardCount += Self.stagedCardStep }
             }
-            isCardStagingDone = true
+            finishCardStaging()
         }
-        .onChange(of: stagesCardBuild) { _, stages in
-            // Close to focus now: everything at once, and never back to empty space.
-            if !stages { isCardStagingDone = true }
-        }
+    }
+
+    /// Decided once, by the row's first build (its first body reads it), as `stagesCardBuild` said
+    /// then.
+    private func decideCardStaging() {
+        guard !cardStaging.isDecided else { return }
+        cardStaging.isDecided = true
+        cardStaging.isActive = stagesCardBuild
+    }
+
+    /// The rest of the row's cards, now.
+    private func finishCardStaging() {
+        guard cardStaging.isActive else { return }
+        cardStaging.isActive = false
+        stagedCardCount = Int.max / 2
     }
 
     /// Cards an off-screen row adds every 40 ms, and how many it is done at (a screen's width).
@@ -620,7 +641,8 @@ struct TVCatalogRow: View {
     /// Whether card `index` waits its turn in an off-screen row built a few cards at a time:
     /// the cards from just before where the row is scrolled come first.
     private func isCardBuildDeferred(_ index: Int) -> Bool {
-        guard stagesCardBuild, !isCardStagingDone else { return false }
+        decideCardStaging()
+        guard cardStaging.isActive else { return false }
         let start = max(0, effectiveScrollIndex - 1)
         return index < start || index >= start + max(2, stagedCardCount)
     }
@@ -670,6 +692,8 @@ struct TVCatalogRow: View {
         let isUpNext: Bool = progressItem?.isUpNextEntry == true || calendarLabel != nil
         let upNextBadgeText: String? = progressLabels?.badge ?? calendarLabel?.badge
         let handleFocus: (NuvioMeta) -> Void = { focused in
+            // Focus came into a row still being built a few cards at a time: the rest now.
+            finishCardStaging()
             let focusStarted = TVHomeDebugTrace.now()
             let targetIndex = items.firstIndex(where: {
                 TVHomeCardIdentity.key(rowID: id, item: $0) == cardKey
@@ -977,7 +1001,6 @@ extension TVCatalogRow: Equatable {
               lhs.initialFocusCardKey == rhs.initialFocusCardKey,
               lhs.ownsCardFocus == rhs.ownsCardFocus,
               lhs.focusRequest == rhs.focusRequest,
-              lhs.stagesCardBuild == rhs.stagesCardBuild,
               lhs.items.count == rhs.items.count,
               lhs.progressByItemId.count == rhs.progressByItemId.count,
               lhs.calendarLabelsByItemId == rhs.calendarLabelsByItemId
