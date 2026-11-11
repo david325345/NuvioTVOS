@@ -28,10 +28,15 @@ final class TopShelfContentProvider: TVTopShelfContentProvider {
             let elapsed = Int(Date().timeIntervalSince(started) * 1_000)
             TopShelfDiagnostics.record(
                 "asked for the shelf (request #\(request) of this extension process, build \(build)): "
-                    + outcome + (Self.webImages ? " · images from the web" : "") + " · \(elapsed) ms"
+                    + outcome + (Self.webImages ? " · images from the web" : "")
+                    + (Self.idPrefix.isEmpty ? "" : " · item IDs of this build")
+                    + " · \(elapsed) ms"
             )
         }
         Self.webImages = TopShelfDiagnostics.usesWebImages
+        Self.idPrefix = TopShelfDiagnostics.usesNewIDs
+            ? "b\(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0")|"
+            : ""
         let configuration = TopShelfConfigurationStore.load()
         let rows = TopShelfComposer.rows(configuration: configuration) { TopShelfFeedStore.read($0) }
         guard !rows.isEmpty else {
@@ -94,10 +99,12 @@ final class TopShelfContentProvider: TVTopShelfContentProvider {
     nonisolated(unsafe) private static var requestCount = 0
     /// Test build (Top Shelf images: Web): this request hands the system web addresses.
     nonisolated(unsafe) private static var webImages = false
+    /// Test build (Top Shelf IDs: Per build): what this request's item identifiers start with.
+    nonisolated(unsafe) private static var idPrefix = ""
 
     private static func sectionedItem(for entry: TopShelfEntry, rowID: String, poster: Bool) -> TVTopShelfSectionedItem {
         // A title can sit on more than one row (e.g. Library and a catalog).
-        let item = TVTopShelfSectionedItem(identifier: "\(rowID):\(entry.contentId)")
+        let item = TVTopShelfSectionedItem(identifier: "\(idPrefix)\(rowID):\(entry.contentId)")
         item.title = entry.title
         item.imageShape = poster ? .poster : .hdtv
 
@@ -142,7 +149,7 @@ final class TopShelfContentProvider: TVTopShelfContentProvider {
         trailer: TopShelfTrailerLink?
     ) -> TVTopShelfCarouselItem {
         let entry = slot.entry
-        let item = TVTopShelfCarouselItem(identifier: "\(slot.rowID):\(entry.contentId)")
+        let item = TVTopShelfCarouselItem(identifier: "\(idPrefix)\(slot.rowID):\(entry.contentId)")
         item.title = entry.title
         // Why it is here: the row, and for a resumable title the episode and time left.
         let rowTitle = slot.rowTitle ?? fallbackTitles[slot.section]

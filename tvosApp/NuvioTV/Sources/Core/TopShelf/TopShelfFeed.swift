@@ -1122,6 +1122,30 @@ public enum TopShelfDiagnostics {
         #endif
     }
 
+    static let newIDsFlagName = "top-shelf-new-ids"
+
+    /// Test build (Top Shelf IDs: Per build): each item's identifier starts with the extension's
+    /// build, so every build hands the system items it has never seen. Kept the same, as they
+    /// are ("row:title"), the system may keep what it holds for those items after an install
+    /// over the app (a grey shelf) until the Apple TV restarts.
+    public static var usesNewIDs: Bool {
+        guard let url = TopShelfFeedStore.containerURL?.appendingPathComponent(newIDsFlagName) else { return false }
+        return FileManager.default.fileExists(atPath: url.path)
+    }
+
+    public static func setUsesNewIDs(_ on: Bool) {
+        guard let url = TopShelfFeedStore.containerURL?.appendingPathComponent(newIDsFlagName) else { return }
+        if on {
+            FileManager.default.createFile(atPath: url.path, contents: Data())
+        } else {
+            try? FileManager.default.removeItem(at: url)
+        }
+        record("item IDs set to \(on ? "per build" : "stable"), asked the system to load the shelf again")
+        #if canImport(TVServices)
+        TVTopShelfContentProvider.topShelfContentDidChange()
+        #endif
+    }
+
     /// "group.x reachable" or "group.x NOT reachable".
     public static var appGroupText: String {
         "\(topShelfAppGroupID) " + (TopShelfFeedStore.isAvailable ? "reachable" : "NOT reachable")

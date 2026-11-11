@@ -6314,6 +6314,7 @@ private struct TestDiagnosticsSheet: View {
     @AppStorage("nuvio.tv.test.cardBuild") private var cardBuild = "nuvio"
     @AppStorage("nuvio.tv.test.focusScope") private var focusScope = "screen"
     @State private var topShelfWebImages = TopShelfDiagnostics.usesWebImages
+    @State private var topShelfNewIDs = TopShelfDiagnostics.usesNewIDs
     @AppStorage(SettingsKey.liquidGlassCards) private var liquidGlassCards = true
 
     var body: some View {
@@ -6413,6 +6414,17 @@ private struct TestDiagnosticsSheet: View {
                         ) {
                             topShelfWebImages.toggle()
                             TopShelfDiagnostics.setUsesWebImages(topShelfWebImages)
+                        }
+                        SettingsActionRow(
+                            title: "Top Shelf IDs",
+                            subtitle: topShelfNewIDs
+                                ? "Per build: the shelf's items get IDs of this build, so after an install over Nuvio the system gets items it has never seen"
+                                : "Stable: the shelf's items keep the same IDs in every build",
+                            value: topShelfNewIDs ? "Per build" : "Stable",
+                            accentColor: accentColor
+                        ) {
+                            topShelfNewIDs.toggle()
+                            TopShelfDiagnostics.setUsesNewIDs(topShelfNewIDs)
                         }
                         SettingsActionRow(
                             title: "Card Focus Effect",
