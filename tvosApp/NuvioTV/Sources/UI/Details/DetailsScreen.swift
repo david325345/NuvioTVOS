@@ -4800,8 +4800,24 @@ struct TvDetailsContent: View {
     }
 
     var body: some View {
-        // Test build: counted in the test log's redraw lines.
+        // Test build: counted in the test log's redraw lines, and what changed since the last.
         let _ = RedrawLog.note("Details")
+        let _ = RedrawCause.note("Details", [
+            ("section", "\(focusedDetailsSection)"),
+            ("episode focused", "\(isEpisodeFocused)"),
+            ("episode restore", "\(restoreEpisodeKey ?? ""):\(restoreGeneration)"),
+            ("episode request", "\(episodeFocusRequest.generation)"),
+            ("scrolled down", "\(isScrolledDown)"),
+            ("revealed", "\(isContentRevealed)"),
+            ("lower sections", "\(builtLowerSectionCount)"),
+            ("watch party", "\(isChoosingWatchPartyEpisode)"),
+            ("focus handoff", "\(detailsFocusMoveGeneration):\(pendingPlayFocusGeneration ?? -1)"),
+            ("trailer", "\(isTrailerParkedForScroll):\(isTrailerPlaying):\(isTrailerRenderReady):\(isFullscreenTrailerPresented):\(didStopTrailerManually)"),
+            ("progress", "\(progressRevision)"),
+            ("calendar focus", "\(calendarFocusPending)"),
+            ("title", uiState.meta?.id ?? ""),
+            ("enabled", "\(isEnabled)"),
+        ])
         if let meta = uiState.meta {
             let episodePresentation = episodeCache.resolve(
                 meta: meta,
@@ -8495,6 +8511,22 @@ private struct TvDetailsEpisodes: View {
     }
 
     var body: some View {
+        // Test build: what changed since the strip's last redraw ("episode strip" also counts
+        // the strip redrawn from its geometry reader alone).
+        let _ = RedrawCause.note("episodes", [
+            ("focused episode", "\(episodeScrollIndex)"),
+            ("settled episode", "\(settledEpisodeIndex)"),
+            ("screen", "\(systemStripFirstWhole ?? -1)"),
+            ("scroll target", "\(systemStripScrollTarget ?? -1):\(systemStripScrollGeneration)"),
+            ("scroll request", "\(systemStripScrollRequest.count)"),
+            ("edge", "\(stripEdgeInset ?? -1)"),
+            ("season", "\(selectedSeason)"),
+            ("watched", "\(watchedEpisodeKeys.count):\(episodeWatchCounts.count):\(seasonIsWatched)"),
+            ("ratings", "\(episodeRatings.count):\(ratingOrderRevision)"),
+            ("restriction", restrictFocusToKey ?? ""),
+            ("entry locked", "\(entryLocked)"),
+            ("focus request", "\(episodeFocusRequest?.generation ?? -1)"),
+        ])
         VStack(alignment: .leading, spacing: 30) {
             if isChoosingWatchPartyEpisode {
                 watchPartySelectionPrompt

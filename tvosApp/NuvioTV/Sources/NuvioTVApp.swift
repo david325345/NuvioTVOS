@@ -7822,7 +7822,11 @@ struct TVHomeView: View {
                     + (homeCardAppearance.usesSystemRowScrolling ? ", the row slides back" : "")
             )
         case .moveToContinueWatchingOrTop(let sectionID, _):
-            TestDiagnosticLog.ui("back on Home: up to row \(sectionID) from row #\(focusedRowIndex + 1)")
+            let targetRow = visibleSections.firstIndex(where: { $0.id == sectionID }) ?? 0
+            TestDiagnosticLog.ui(
+                "back on Home: up to row \(sectionID) from row #\(focusedRowIndex + 1)"
+                    + (abs(focusedRowIndex - targetRow) > 3 ? ", its rows built a step at a time" : "")
+            )
         case .focusGridHero:
             TestDiagnosticLog.ui("back on Home: to the hero")
         case .exitToSidebar:
