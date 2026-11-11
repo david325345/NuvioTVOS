@@ -49,8 +49,12 @@ jobs:
       # the real ffprobe.
       - name: ffprobe through Nuvio (newest version)
         if: always()
+        # A step that hangs ends on its own, so the job keeps its log.
+        timeout-minutes: 12
         run: |
+          echo "ffmpeg…"
           sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg >/dev/null
+          echo "AIOStreams (newest)…"
           home="$RUNNER_TEMP/ffprobe-aio"
           result=$(node aio-node/installer/image-install.mjs --source ghcr.io/viren070/aiostreams --home "$home" --shims "$RUNNER_TEMP/installer/shims" | tail -1)
           name=$(node -e 'console.log(JSON.parse(process.argv[1]).name)' "$result")
@@ -59,4 +63,5 @@ jobs:
           printf '1\n00:00:00,000 --> 00:00:01,500\nAhoj\n' > "$media/subs.srt"
           ffmpeg -loglevel error -y -f lavfi -i testsrc=duration=2:size=320x240:rate=25 -f lavfi -i sine=duration=2 -i "$media/subs.srt" \
             -map 0 -map 1 -map 2 -c:v libx264 -c:a aac -c:s srt -metadata:s:a:0 language=jpn -metadata:s:s:0 language=cze "$media/sample.mkv"
+          echo "the bridge test…"
           node aio-node/aio-package/ffprobe-bridge-test.mjs "$home/$name" "$RUNNER_TEMP/installer" "$media/sample.mkv"
