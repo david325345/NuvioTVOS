@@ -154,8 +154,10 @@ jobs:
         id: zip
         run: |
           set -euo pipefail
-          device=$(find node-tvos-arm64 -path '*Release-appletvos/NodeMobile.framework' -type d | head -1)
-          simulator=$(find node-tvos-arm64-simulator -path '*Release-appletvsimulator/NodeMobile.framework' -type d | head -1)
+          # The frameworks themselves, not the build's EagerLinkingTBDs stubs of the same name.
+          device=$(find node-tvos-arm64 -path '*Release-appletvos/NodeMobile.framework' -not -path '*EagerLinkingTBDs*' -type d | head -1)
+          simulator=$(find node-tvos-arm64-simulator -path '*Release-appletvsimulator/NodeMobile.framework' -not -path '*EagerLinkingTBDs*' -type d | head -1)
+          [ -f "$device/NodeMobile" ] && [ -f "$simulator/NodeMobile" ] || { echo "::error::NodeMobile.framework not found"; exit 1; }
           for framework in "$device" "$simulator"; do
             before=$(du -sh "$framework/NodeMobile" | cut -f1)
             xcrun strip -S -x "$framework/NodeMobile"
