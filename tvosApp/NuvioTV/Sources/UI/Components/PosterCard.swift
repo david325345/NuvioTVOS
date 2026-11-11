@@ -8,6 +8,7 @@
 import CryptoKit
 import ImageIO
 import SwiftUI
+import Observation
 #if os(tvOS)
 import AVFoundation
 import AVKit
@@ -254,6 +255,32 @@ struct PosterCard: View {
 
     var body: some View {
         #if os(tvOS)
+        if cardAppearance.usesLightCards {
+            lightCard
+        } else {
+            nuvioCard
+        }
+        #else
+        Button(action: onClick) {
+            posterContent
+        }
+        .buttonStyle(PosterCardButtonStyle())
+        .titleActionsContextMenu(
+            meta: meta,
+            onOpenDetails: onOpenDetails ?? onClick,
+            continueProgress: continueProgress,
+            continueIsUpNext: continueIsUpNext,
+            onPlayManually: onPlayManually,
+            onStartFromBeginning: onStartFromBeginning,
+            onRemoveFromContinueWatching: onRemoveFromContinueWatching,
+            onRefreshCatalog: onRefreshCatalog
+        )
+        .frame(width: layoutWidth, height: totalCardHeight, alignment: .topLeading)
+        #endif
+    }
+
+    #if os(tvOS)
+    private var nuvioCard: some View {
         // Keep directional input in tvOS's focus engine. Per-card move
         // handlers bypass the clickpad dead zone and can turn a light touch
         // into an immediate focus change.
@@ -361,11 +388,82 @@ struct PosterCard: View {
                 : nil,
             value: effectiveLandscape
         )
-        #else
-        Button(action: onClick) {
-            posterContent
+    }
+
+    /// Test build (Cards: Light): the same card, cheaper to build. Its focus-only work (arming
+    /// the landscape preload, the trailer's delay) is one task instead of two, which returns at
+    /// once for a card that isn't focused. The artwork is the light one (`lightPosterContent`).
+    private var lightCard: some View {
+        ZStack(alignment: .topLeading) {
+            Button(action: onClick) {
+                lightPosterContent
+                    .background {
+                        if cardAppearance.usesSystemFocusEffect {
+                            TVNativeFocusObserver(onFocusChange: reportNativeFocus)
+                        }
+                    }
+            }
+            .modifier(CardFocusButtonStyle(
+                system: cardAppearance.usesSystemFocusEffect,
+                onNativeFocusChange: reportNativeFocus
+            ))
+            .accessibilityIdentifier("poster-card-\(externalFocusValue ?? meta.id)")
+            .disabled(!allowsFocus)
+            .focused($isFocused)
+            .modifier(ExternalFocusBinding(binding: externalFocus, id: externalFocusValue ?? meta.id))
+            .modifier(OptionalMoveCommandHandler(handler: onMove))
+            .titleActionsContextMenu(
+                meta: meta,
+                onOpenDetails: onOpenDetails ?? onClick,
+                continueProgress: continueProgress,
+                continueIsUpNext: continueIsUpNext,
+                onPlayManually: onPlayManually,
+                onStartFromBeginning: onStartFromBeginning,
+                onRemoveFromContinueWatching: onRemoveFromContinueWatching,
+                onRefreshCatalog: onRefreshCatalog,
+                isEnabled: !isEffectivelyAlwaysLandscape
+            )
+            .onChange(of: isFocused) { _, focused in
+                if focused {
+                    didFinishTrailerPreview = false
+                } else {
+                    landscapePreloadArmed = false
+                    cancelTrailerPreview()
+                }
+            }
+            // An unfocused card's key is a constant: its task returns at once as it appears and
+            // doesn't run again until the card is focused.
+            .task(id: isFocused ? trailerActivationIdentity : Self.unfocusedTaskKey) {
+                guard isFocused else { return }
+                await runFocusedCardWork()
+            }
+            .onDisappear(perform: cancelTrailerPreview)
+            .onAppear {
+                guard shouldRequestInitialFocus, !didRequestInitialFocus else {
+                    return
+                }
+
+                didRequestInitialFocus = true
+                onInitialFocusRequested?()
+                DispatchQueue.main.async {
+                    isFocused = true
+                }
+            }
+            .onChange(of: shouldRequestInitialFocus) { _, shouldRequest in
+                if shouldRequest {
+                    guard !didRequestInitialFocus else { return }
+                    didRequestInitialFocus = true
+                    onInitialFocusRequested?()
+                    DispatchQueue.main.async {
+                        isFocused = true
+                    }
+                } else {
+                    didRequestInitialFocus = false
+                }
+            }
+            .frame(width: layoutWidth, height: totalCardHeight, alignment: .topLeading)
         }
-        .buttonStyle(PosterCardButtonStyle())
+        .frame(width: cardWidth, height: totalCardHeight, alignment: .topLeading)
         .titleActionsContextMenu(
             meta: meta,
             onOpenDetails: onOpenDetails ?? onClick,
@@ -374,11 +472,51 @@ struct PosterCard: View {
             onPlayManually: onPlayManually,
             onStartFromBeginning: onStartFromBeginning,
             onRemoveFromContinueWatching: onRemoveFromContinueWatching,
-            onRefreshCatalog: onRefreshCatalog
+            onRefreshCatalog: onRefreshCatalog,
+            isEnabled: isEffectivelyAlwaysLandscape
         )
-        .frame(width: layoutWidth, height: totalCardHeight, alignment: .topLeading)
-        #endif
+        .zIndex(showsFocusedAppearance ? 1 : 0)
+        .animation(
+            effectiveSmoothFocus
+                ? .spring(response: landscapeTransitionDuration, dampingFraction: 1.0)
+                : nil,
+            value: effectiveLandscape
+        )
     }
+
+    private static let unfocusedTaskKey = "unfocused"
+
+    /// The focused card's work, as the two tasks did it: arm the landscape preload once focus has
+    /// rested 350 ms, and start the trailer after its delay.
+    @MainActor
+    private func runFocusedCardWork() async {
+        isTrailerPreviewActive = false
+        isTrailerPreviewReady = false
+        didFinishTrailerPreview = false
+        var waited: Double = 0
+        if !landscapePreloadArmed {
+            do {
+                try await Task.sleep(nanoseconds: 350_000_000)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled, isFocused else { return }
+            landscapePreloadArmed = true
+            waited = 0.35
+        }
+        guard effectiveLandscape, trailersEnabled, !isContinueOrUpcomingCard else { return }
+        // The trailer's delay counts from when this task started (focus landing, or the card
+        // turning landscape), as before.
+        let delay = max(0, Double(min(15, max(0, trailerDelay))) - waited)
+        do {
+            try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+        } catch {
+            return
+        }
+        guard !Task.isCancelled, isFocused, effectiveLandscape, trailersEnabled, !isContinueOrUpcomingCard else { return }
+        isTrailerPreviewActive = true
+    }
+    #endif
 
     private var posterContent: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -490,6 +628,117 @@ struct PosterCard: View {
         }
         .frame(width: layoutWidth, height: totalCardHeight, alignment: .topLeading)
     }
+
+    #if os(tvOS)
+    /// Test build (Cards: Light): `posterContent` with fewer layers. The landscape title, the
+    /// progress bar, the badges and the watched mark are one overlay instead of five; the border
+    /// is drawn without the glass modifier (whose timer every card started, though a card whose
+    /// artwork covers it never shows its glass) and, with the shadow, only on the focused card.
+    private var lightPosterContent: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            CachedPosterArtwork(
+                urlString: imageUrl,
+                preloadURLString: landscapePreloadURL,
+                fallbackURLString: effectiveLandscape ? landscapeArtworkFallbackURL : portraitArtworkFallbackURL,
+                preloadFallbackURLString: landscapePreloadURL == nil ? nil : landscapeArtworkFallbackURL,
+                width: cardWidth,
+                height: cardHeight,
+                maximumWidth: artworkDecodeWidth,
+                preloadMaximumWidth: landscapeArtworkDecodeWidth,
+                minimumSwapDelay: 0,
+                singleTask: true,
+                onPreloadFinished: { succeeded in
+                    landscapeArtworkPrepared = succeeded
+                },
+                onArtworkLoaded: { loadedURL in
+                    if loadedURL == customLandscapeArtworkURL {
+                        loadedCustomLandscapeArtworkURL = loadedURL
+                    } else if loadedURL == landscapeArtworkFallbackURL {
+                        loadedCustomLandscapeArtworkURL = nil
+                    }
+                }
+            ) {
+                placeholderView
+            }
+            .frame(width: cardWidth, height: cardHeight)
+            .opacity(isTrailerPreviewVisible ? 0 : 1)
+            .overlay {
+                if isFocused && effectiveLandscape && trailersEnabled
+                    && !isContinueOrUpcomingCard && !didFinishTrailerPreview {
+                    TrailerPreviewPlayer(
+                        meta: meta,
+                        isActive: isTrailerPreviewActive,
+                        onPlaybackReady: {
+                            guard isTrailerPreviewActive else { return }
+                            isTrailerPreviewReady = true
+                        },
+                        onPlaybackFinished: finishTrailerPreview
+                    )
+                    .transition(.opacity)
+                }
+            }
+            .animation(.easeInOut(duration: 0.32), value: isTrailerPreviewVisible)
+            .animation(.easeInOut(duration: 0.32), value: didFinishTrailerPreview)
+            .overlay {
+                ZStack {
+                    if effectiveLandscape {
+                        landscapeOverlay
+                            .opacity(isTrailerPreviewVisible ? 0 : 1)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                    }
+                    if continueProgress != nil, !continueIsUpNext {
+                        continueProgressOverlay
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                    }
+                    if continueBadgeDisplayText != nil {
+                        continueBadge
+                            .frame(
+                                maxWidth: .infinity,
+                                maxHeight: .infinity,
+                                alignment: effectiveLandscape ? .topTrailing : .top
+                            )
+                    }
+                    if let collectionOrigin, !continueIsUpNext {
+                        CollectionOriginBadge(origin: collectionOrigin)
+                            .padding(.trailing, 22)
+                            .padding(.bottom, continueProgress != nil ? 34 : 16)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    }
+                    if showsWatchedBadge {
+                        WatchedCheckmarkBadge(meta: meta)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    }
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous))
+            .modifier(
+                LightCardSurface(
+                    cornerRadius: cardCornerRadius,
+                    isFocused: showsFocusedAppearance && !cardAppearance.usesSystemFocusEffect,
+                    glass: liquidGlassCards,
+                    amoledSurfaces: cardAppearance.amoled && cardAppearance.amoledSurfaces,
+                    lightFocus: cardAppearance.usesLightFocusEffect
+                )
+            )
+            .overlay {
+                if focusedBorderWidth > 0 {
+                    RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous)
+                        .stroke(AppFocusOutline.color, lineWidth: focusedBorderWidth)
+                }
+            }
+            .shadow(color: .black.opacity(shadowOpacity), radius: shadowRadius)
+
+            if showsPosterTitle {
+                Text(meta.name)
+                    .font(.system(size: effectiveHomeLayout == "Compact" ? 18 : 20, weight: showsFocusedAppearance ? .semibold : .medium))
+                    .foregroundColor(titleColor)
+                    .lineLimit(1)
+                    .frame(width: cardWidth, alignment: .leading)
+            }
+        }
+        .frame(width: layoutWidth, height: totalCardHeight, alignment: .topLeading)
+    }
+    #endif
 
     // MARK: - Helper Views
 
@@ -1867,6 +2116,60 @@ struct LiquidGlassCardModifier: ViewModifier {
     }
 }
 
+/// Test build (Cards: Light): what `LiquidGlassCardModifier` draws on a poster card, whose
+/// artwork covers it (so it never shows its glass): the border, and the black surface for AMOLED
+/// surfaces. Without the modifier's settle task, which every card started as it came on screen,
+/// and with nothing at all when glass is off.
+struct LightCardSurface: ViewModifier {
+    let cornerRadius: CGFloat
+    let isFocused: Bool
+    let glass: Bool
+    let amoledSurfaces: Bool
+    let lightFocus: Bool
+
+    private var shape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+    }
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if amoledSurfaces {
+            content
+                .background(Color.black, in: shape)
+                .overlay {
+                    shape.strokeBorder(
+                        Color.white.opacity(isFocused ? 0.34 : 0.08),
+                        lineWidth: isFocused ? 1.5 : 1
+                    )
+                }
+        } else if glass {
+            content
+                .overlay {
+                    if isFocused, lightFocus {
+                        shape.strokeBorder(Color.white.opacity(0.4), lineWidth: 1.5)
+                    } else if isFocused {
+                        shape.strokeBorder(
+                            LinearGradient(
+                                colors: [
+                                    Color.white.opacity(0.55),
+                                    Color.white.opacity(0.20),
+                                    Color.white.opacity(0.35)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 1.5
+                        )
+                    } else {
+                        shape.strokeBorder(Color.white.opacity(0.16), lineWidth: 1.0)
+                    }
+                }
+        } else {
+            content
+        }
+    }
+}
+
 /// Frosted liquid glass pill/badge modifier for metadata tags, episode chips, and progress overlays.
 struct LiquidGlassBadgeModifier: ViewModifier {
     let cornerRadius: CGFloat
@@ -2026,6 +2329,8 @@ struct CachedPosterArtwork<Placeholder: View>: View {
     var maximumWidth: CGFloat? = nil
     var preloadMaximumWidth: CGFloat? = nil
     var minimumSwapDelay: TimeInterval = 0
+    /// Test build (Cards: Light): the load and the preload in one task instead of two.
+    var singleTask = false
     var onPreloadFinished: (Bool) -> Void = { _ in }
     var onArtworkLoaded: (String?) -> Void = { _ in }
     @ViewBuilder let placeholder: Placeholder
@@ -2040,6 +2345,7 @@ struct CachedPosterArtwork<Placeholder: View>: View {
         maximumWidth: CGFloat? = nil,
         preloadMaximumWidth: CGFloat? = nil,
         minimumSwapDelay: TimeInterval = 0,
+        singleTask: Bool = false,
         onPreloadFinished: @escaping (Bool) -> Void = { _ in },
         onArtworkLoaded: @escaping (String?) -> Void = { _ in },
         @ViewBuilder placeholder: () -> Placeholder
@@ -2053,6 +2359,7 @@ struct CachedPosterArtwork<Placeholder: View>: View {
         self.maximumWidth = maximumWidth
         self.preloadMaximumWidth = preloadMaximumWidth
         self.minimumSwapDelay = minimumSwapDelay
+        self.singleTask = singleTask
         self.onPreloadFinished = onPreloadFinished
         self.onArtworkLoaded = onArtworkLoaded
         self.placeholder = placeholder()
@@ -2093,6 +2400,24 @@ struct CachedPosterArtwork<Placeholder: View>: View {
     }
 
     var body: some View {
+        if singleTask {
+            artwork
+                .task(id: "\(cacheKey)\u{1}\(preloadCacheKey)") {
+                    await load()
+                    await preload()
+                }
+        } else {
+            artwork
+                .task(id: cacheKey) {
+                    await load()
+                }
+                .task(id: preloadCacheKey) {
+                    await preload()
+                }
+        }
+    }
+
+    private var artwork: some View {
         ZStack(alignment: .center) {
             if let image = displayedImage {
                 Image(uiImage: image)
@@ -2103,12 +2428,6 @@ struct CachedPosterArtwork<Placeholder: View>: View {
             } else {
                 placeholder
             }
-        }
-        .task(id: cacheKey) {
-            await load()
-        }
-        .task(id: preloadCacheKey) {
-            await preload()
         }
     }
 
@@ -2998,6 +3317,7 @@ struct WatchedCheckmarkBadge: View {
     @State private var watchCount = 0
     @State private var refreshVersion = 0
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.cardAppearance) private var cardAppearance
 
     init(metaId: String, type: String, size: CGFloat = 38) {
         self.metaId = metaId
@@ -3022,6 +3342,43 @@ struct WatchedCheckmarkBadge: View {
     }
 
     var body: some View {
+        if cardAppearance.usesLightCards {
+            lightBadge
+        } else {
+            nuvioBadge
+        }
+    }
+
+    /// Test build (Cards: Light): the same lookup, re-run by `WatchedBadgeSignals` (one set of
+    /// observers for every badge) instead of eight subscriptions of the badge's own, and the icon
+    /// drawn only for a watched title. An empty frame stays mounted meanwhile, so the badge still
+    /// hears of a change while its title is unwatched.
+    private var lightBadge: some View {
+        let signals = WatchedBadgeSignals.shared
+        let guideVersion = signals.guideVersion(profileId: badgeProfileId) {
+            CatalogWatchedBadgeIdentity.titleIdentityKeys(for: meta ?? NuvioMeta(id: metaId, name: "", type: type))
+        }
+        return ZStack(alignment: .topTrailing) {
+            Color.clear
+                .frame(width: 0, height: 0)
+            if watchCount > 0 {
+                WatchedCheckmarkIcon(size: size, watchCount: watchCount)
+            }
+        }
+        .accessibilityHidden(watchCount <= 0)
+        .task(id: "\(refreshTaskIdentity)\u{1f}\(signals.generation)\u{1f}\(guideVersion)") {
+            await refresh()
+        }
+    }
+
+    private var badgeProfileId: String? {
+        if let libraryWatchedContext {
+            return libraryWatchedContext.profileId
+        }
+        return WatchedStore.activeProfileId
+    }
+
+    private var nuvioBadge: some View {
         // Keep the badge mounted while unwatched. Search remains alive behind
         // the Details overlay, and an EmptyView branch can miss the store
         // notification that should reveal or update the count when Details closes.
@@ -3299,6 +3656,67 @@ struct WatchedCheckmarkBadge: View {
             profileId: profileId,
             titleIdentityKeys: identityKeys
         )
+    }
+}
+
+/// Test build (Cards: Light): what makes a watched badge look its title up again, observed once
+/// for all of them. Each badge subscribed to the same eight notifications itself: a row of 14
+/// cards coming on screen set up 112 observers, and took them down as it left.
+@MainActor
+@Observable
+final class WatchedBadgeSignals {
+    static let shared = WatchedBadgeSignals()
+
+    /// Bumped by any change that can change any badge (watched marks, sign-ins, sync settings).
+    private(set) var generation = 0
+    /// Bumped by each full episode guide that came in; `guideVersion` says whether it was the
+    /// badge's own title.
+    private(set) var guideGeneration = 0
+    @ObservationIgnored private var guideVersions: [String: Int] = [:]
+    @ObservationIgnored private var observers: [NSObjectProtocol] = []
+
+    private init() {
+        let center = NotificationCenter.default
+        let names = [
+            WatchedStore.changedNotification,
+            TraktAuthStore.changedNotification,
+            SimklAuthStore.changedNotification,
+            MdbListAuthStore.changedNotification,
+            WeTrakrAuthStore.changedNotification,
+            TraktSettingsStore.continueWatchingChangedNotification,
+            TraktSettingsStore.libraryChangedNotification,
+        ]
+        for name in names {
+            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.generation &+= 1 }
+            })
+        }
+        observers.append(center.addObserver(
+            forName: CatalogWatchedMetadataCache.fullSeriesGuideResolvedNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let resolution = notification.object as? CatalogWatchedGuideResolution else { return }
+            MainActor.assumeIsolated { self?.noteGuide(resolution) }
+        })
+    }
+
+    private func noteGuide(_ resolution: CatalogWatchedGuideResolution) {
+        guideGeneration &+= 1
+        if guideVersions.count > 4_000 { guideVersions.removeAll() }
+        let profile = resolution.profileId ?? ""
+        for key in resolution.titleIdentityKeys {
+            guideVersions["\(profile)\u{1f}\(key)"] = guideGeneration
+        }
+    }
+
+    /// The last guide that came in for one of `keys` (0 for none). Read in a badge's body, so
+    /// a guide coming in redraws the badges, and only the matching ones look their title up.
+    func guideVersion(profileId: String?, keys: () -> Set<String>) -> Int {
+        _ = guideGeneration
+        guard !guideVersions.isEmpty else { return 0 }
+        let profile = profileId ?? ""
+        return keys().reduce(0) { max($0, guideVersions["\(profile)\u{1f}\($1)"] ?? 0) }
     }
 }
 

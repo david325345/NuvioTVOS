@@ -24,6 +24,8 @@ struct CardAppearance: Equatable {
     var focusEffect = CardExperiment.focusEffectNuvio
     var verticalScrolling = CardExperiment.verticalScrollingNuvio
     var detailsOpening = CardExperiment.detailsOpeningNuvio
+    var cardBuild = CardExperiment.cardBuildNuvio
+    var focusScope = CardExperiment.focusScopeScreen
 
     var usesSystemRowScrolling: Bool { rowScrolling == CardExperiment.rowScrollingSystem }
     var usesSystemFocusEffect: Bool { focusEffect == CardExperiment.focusEffectSystem }
@@ -35,6 +37,8 @@ struct CardAppearance: Equatable {
     }
     var usesSectionSnapping: Bool { verticalScrolling == CardExperiment.verticalScrollingSections }
     var usesSteadyDetailsOpening: Bool { detailsOpening == CardExperiment.detailsOpeningSteady }
+    var usesLightCards: Bool { cardBuild == CardExperiment.cardBuildLight }
+    var usesRowFocusScope: Bool { focusScope == CardExperiment.focusScopeRows }
 
     /// The values saved in `defaults`, for views outside ContentView's tree.
     static func stored(in defaults: UserDefaults) -> CardAppearance {
@@ -54,6 +58,8 @@ struct CardAppearance: Equatable {
         if let value = defaults.string(forKey: CardExperiment.focusEffectKey) { appearance.focusEffect = value }
         if let value = defaults.string(forKey: CardExperiment.verticalScrollingKey) { appearance.verticalScrolling = value }
         if let value = defaults.string(forKey: CardExperiment.detailsOpeningKey) { appearance.detailsOpening = value }
+        if let value = defaults.string(forKey: CardExperiment.cardBuildKey) { appearance.cardBuild = value }
+        if let value = defaults.string(forKey: CardExperiment.focusScopeKey) { appearance.focusScope = value }
         return appearance
     }
 }
@@ -87,6 +93,8 @@ struct CardAppearanceProvider: ViewModifier {
     @AppStorage(CardExperiment.focusEffectKey) private var focusEffect = CardExperiment.focusEffectNuvio
     @AppStorage(CardExperiment.verticalScrollingKey) private var verticalScrolling = CardExperiment.verticalScrollingNuvio
     @AppStorage(CardExperiment.detailsOpeningKey) private var detailsOpening = CardExperiment.detailsOpeningNuvio
+    @AppStorage(CardExperiment.cardBuildKey) private var cardBuild = CardExperiment.cardBuildNuvio
+    @AppStorage(CardExperiment.focusScopeKey) private var focusScope = CardExperiment.focusScopeScreen
 
     func body(content: Content) -> some View {
         content.environment(
@@ -106,7 +114,9 @@ struct CardAppearanceProvider: ViewModifier {
                 rowScrolling: rowScrolling,
                 focusEffect: focusEffect,
                 verticalScrolling: verticalScrolling,
-                detailsOpening: detailsOpening
+                detailsOpening: detailsOpening,
+                cardBuild: cardBuild,
+                focusScope: focusScope
             )
         )
     }
@@ -118,6 +128,8 @@ enum CardExperiment {
     static let focusEffectKey = "nuvio.tv.test.focusEffect"
     static let verticalScrollingKey = "nuvio.tv.test.verticalScrolling"
     static let detailsOpeningKey = "nuvio.tv.test.detailsOpening"
+    static let cardBuildKey = "nuvio.tv.test.cardBuild"
+    static let focusScopeKey = "nuvio.tv.test.focusScope"
 
     /// Rows move by Nuvio's own animated offset (focused card kept at the left).
     static let rowScrollingNuvio = "nuvio"
@@ -146,4 +158,20 @@ enum CardExperiment {
     /// Details' backdrop (the same title art Home shows) is there at once and only its content
     /// fades in, so nothing shows twice and the screen doesn't wash out.
     static let detailsOpeningSteady = "steady"
+
+    /// Poster cards as Nuvio builds them.
+    static let cardBuildNuvio = "nuvio"
+    /// The same cards, cheaper to build: the watched mark shares one set of observers with every
+    /// other card instead of eight of its own and is only drawn for watched titles, the card's
+    /// overlays are one layer, its focus-only work starts once it is focused, its border is drawn
+    /// without the glass modifier's timer, and Continue Watching's texts are worked out once a
+    /// minute instead of each time the row is built.
+    static let cardBuildLight = "light"
+
+    /// Focus held by the whole screen: Home (and Details for its episodes) knows which card is
+    /// focused, so every move from card to card redraws all of it.
+    static let focusScopeScreen = "screen"
+    /// Focus held by each row (and Details' episode strip): a move redraws only the row it happens
+    /// in; Home hears of it, and puts focus back, through the row.
+    static let focusScopeRows = "rows"
 }

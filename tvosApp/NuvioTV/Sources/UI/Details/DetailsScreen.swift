@@ -4120,6 +4120,10 @@ struct TvDetailsContent: View {
     /// Counts episode focus changes, so a delayed "focus left the episodes" can tell whether
     /// focus came back meanwhile. A reference, so counting redraws nothing.
     @State private var episodeFocusMemory = TvDetailsEpisodeFocusMemory()
+    /// Test build (Focus: Rows): the episode strip holds its episodes' focus and Details only
+    /// hears of it, so a move along the strip redraws the strip, not all of Details (a change of
+    /// `episodeFocus` redrew Details on every move, though its body doesn't read it).
+    @State private var episodeFocusRequest = TvEpisodeFocusRequest()
     /// When the last animated scroll between sections ends (test build, Vertical Scrolling: Smooth).
     @State private var sectionScroll = TvDetailsSectionScrollClock()
     @Environment(\.cardAppearance) private var cardAppearance
@@ -4539,6 +4543,12 @@ struct TvDetailsContent: View {
                     },
                     onMoveDownFromEpisode: {
                         handleMoveDownFromEpisodes(using: scrollProxy)
+                    },
+                    ownsEpisodeFocus: usesStripFocus,
+                    episodeFocusRequest: usesStripFocus ? episodeFocusRequest : nil,
+                    onEpisodeFocusChange: { key in
+                        episodeFocusMemory.focusedKey = key
+                        handleEpisodeFocusChange(key, scrollProxy: scrollProxy)
                     }
                 )
                 .detailsSnapshot(TvDetailsEpisodesSnapshotKey(
@@ -4548,7 +4558,9 @@ struct TvDetailsContent: View {
                     choosingWatchPartyEpisode: isChoosingWatchPartyEpisode,
                     restoreEpisodeKey: restoreEpisodeKey,
                     entryLocked: focusedDetailsSection != .episodes,
-                    hasManualPlay: onEpisodePlayManually != nil
+                    hasManualPlay: onEpisodePlayManually != nil,
+                    ownsEpisodeFocus: usesStripFocus,
+                    episodeFocusRequest: usesStripFocus ? episodeFocusRequest : nil
                 ))
                 .padding(.top, 40)
                 .id(TvDetailsScrollID.episodesSection)
@@ -4766,7 +4778,7 @@ struct TvDetailsContent: View {
         let target = TvEpisodeFocus.card(episode.id)
         DispatchQueue.main.asyncAfter(deadline: .now() + TvDetailsScrollTiming.duration) {
             guard isChoosingWatchPartyEpisode else { return }
-            episodeFocus = target
+            setEpisodeFocus(target)
         }
     }
 
@@ -5048,7 +5060,7 @@ struct TvDetailsContent: View {
             .onChange(of: isEnabled) { _, enabled in
                 if !enabled {
                     restoreGeneration &+= 1
-                    restoreEpisodeKey = episodeFocus
+                    restoreEpisodeKey = currentEpisodeFocus
                     stopBackgroundTrailer(manual: false)
                 } else {
                     refreshProgressAfterReturn()
@@ -5123,7 +5135,7 @@ struct TvDetailsContent: View {
         for delay in [0.12, 0.45] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                 if restoreGeneration == generation, restoreEpisodeKey == target {
-                    episodeFocus = target
+                    setEpisodeFocus(target)
                 }
             }
         }
@@ -5233,6 +5245,26 @@ struct TvDetailsContent: View {
     private func setEpisodeFocused(_ focused: Bool) {
         guard isEpisodeFocused != focused else { return }
         isEpisodeFocused = focused
+    }
+
+    /// Test build (Focus: Rows): the strip holds its episodes' focus.
+    private var usesStripFocus: Bool { cardAppearance.usesRowFocusScope }
+
+    /// The episode control holding focus: Details' focus state, or (Focus: Rows) what the strip
+    /// reported.
+    private var currentEpisodeFocus: String? {
+        usesStripFocus ? episodeFocusMemory.focusedKey : episodeFocus
+    }
+
+    /// Puts focus on episode control `key`: through Details' focus state, or (Focus: Rows) by
+    /// asking the strip.
+    private func setEpisodeFocus(_ key: String?) {
+        guard usesStripFocus else {
+            episodeFocus = key
+            return
+        }
+        guard let key, episodeFocusMemory.focusedKey != key else { return }
+        episodeFocusRequest = TvEpisodeFocusRequest(key: key, generation: episodeFocusRequest.generation &+ 1)
     }
 
     /// Test build (Vertical Scrolling: Smooth): a move into another section starts an animated
@@ -5467,6 +5499,8 @@ private struct TvDetailsEpisodesSnapshotKey: Equatable {
     let restoreEpisodeKey: String?
     let entryLocked: Bool
     let hasManualPlay: Bool
+    let ownsEpisodeFocus: Bool
+    let episodeFocusRequest: TvEpisodeFocusRequest?
 }
 
 private struct TvDetailsSeasonSnapshot: Equatable {
@@ -5504,6 +5538,18 @@ private enum TvDetailsFocusActivity {
 
 private final class TvDetailsEpisodeFocusMemory {
     var generation = 0
+    /// Test build (Focus: Rows): the episode control the strip last reported focused.
+    var focusedKey: String?
+}
+
+/// Test build (Focus: Rows): Details asking the episode strip to put focus on an episode
+/// control, a new generation each time.
+private struct TvEpisodeFocusRequest: Equatable {
+    var key: String?
+    var generation = 0
+    var issuedAt = ProcessInfo.processInfo.systemUptime
+
+    var isFresh: Bool { ProcessInfo.processInfo.systemUptime - issuedAt < 1 }
 }
 
 /// When the last animated scroll between Details sections ends. A reference, so noting a scroll
@@ -8276,7 +8322,13 @@ private struct TvDetailsEpisodes: View {
     let entryLocked: Bool
     let onMoveUpFromSeason: () -> Void
     let onMoveDownFromEpisode: () -> Void
+    /// Test build (Focus: Rows): the strip holds its episodes' focus itself (`episodeFocus`,
+    /// Details', goes unused), reports where it is and puts it where Details asks.
+    var ownsEpisodeFocus = false
+    var episodeFocusRequest: TvEpisodeFocusRequest? = nil
+    var onEpisodeFocusChange: ((String?) -> Void)? = nil
 
+    @FocusState private var ownEpisodeFocus: String?
     @State private var selectedSeason: Int
     @State private var seasonEpisodes: [NuvioVideo]
     @State private var seasonEpisodeIndexByID: [String: Int]
@@ -8328,9 +8380,15 @@ private struct TvDetailsEpisodes: View {
         restrictFocusToKey: String?,
         entryLocked: Bool,
         onMoveUpFromSeason: @escaping () -> Void,
-        onMoveDownFromEpisode: @escaping () -> Void
+        onMoveDownFromEpisode: @escaping () -> Void,
+        ownsEpisodeFocus: Bool = false,
+        episodeFocusRequest: TvEpisodeFocusRequest? = nil,
+        onEpisodeFocusChange: ((String?) -> Void)? = nil
     ) {
         self.meta = meta
+        self.ownsEpisodeFocus = ownsEpisodeFocus
+        self.episodeFocusRequest = episodeFocusRequest
+        self.onEpisodeFocusChange = onEpisodeFocusChange
         self.libraryWatchedContext = libraryWatchedContext
         self.episodeGuide = episodeGuide
         self.initialState = initialState
@@ -8427,6 +8485,28 @@ private struct TvDetailsEpisodes: View {
                 episodeScrollIndex = targetIndex
             }
         }
+        .onChange(of: ownEpisodeFocus) { _, key in
+            guard ownsEpisodeFocus else { return }
+            onEpisodeFocusChange?(key)
+        }
+        .onChange(of: episodeFocusRequest) { _, request in
+            applyEpisodeFocusRequest(request)
+        }
+        .onAppear {
+            if let episodeFocusRequest, episodeFocusRequest.isFresh {
+                applyEpisodeFocusRequest(episodeFocusRequest)
+            }
+        }
+    }
+
+    /// What the episode cards bind their focus to: Details', or (Focus: Rows) the strip's own.
+    private var cardFocus: FocusState<String?>.Binding {
+        ownsEpisodeFocus ? $ownEpisodeFocus : episodeFocus
+    }
+
+    private func applyEpisodeFocusRequest(_ request: TvEpisodeFocusRequest?) {
+        guard ownsEpisodeFocus, let key = request?.key, ownEpisodeFocus != key else { return }
+        ownEpisodeFocus = key
     }
 
     private var watchPartySelectionPrompt: some View {
@@ -8892,7 +8972,7 @@ private struct TvDetailsEpisodes: View {
             // and a decode, which every card used to do on every move).
             smartStreamSelection: smartStreamSelection || (reuseLastLink && itemIndex == episodeScrollIndex && LastPlaybackStreamStore.load(metaId: meta.id, season: video.season, episode: video.episode, meta: meta, profileId: ProfileSettings.activeProfileID) != nil),
             onBack: onBack,
-            focus: episodeFocus,
+            focus: cardFocus,
             onMoveDown: onMoveDownFromEpisode,
             onMoveUp: seasons.count <= 1 ? onMoveUpFromSeason : nil
         )
