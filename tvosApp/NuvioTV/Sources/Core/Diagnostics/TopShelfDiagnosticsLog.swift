@@ -43,6 +43,7 @@ enum TopShelfDiagnosticsLog {
             let style = TopShelfFeedStore.containerURL
                 .flatMap { TopShelfConfigurationStore.read(in: $0) }?.style.rawValue ?? "default"
             var line = "topshelf: \(when) · App Group \(TopShelfDiagnostics.appGroupText) · style \(style) · "
+                + "images \(TopShelfDiagnostics.usesWebImages ? "web" : "rendered") · "
                 + "feeds: \(TopShelfDiagnostics.feedsText()) · \(TopShelfDiagnostics.artworkFileCount()) rendered images"
             let asked = unseen.filter { $0.by == "extension" }
             if asked.isEmpty {

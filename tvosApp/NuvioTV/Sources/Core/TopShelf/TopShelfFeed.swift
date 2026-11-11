@@ -1097,6 +1097,31 @@ public enum TopShelfDiagnostics {
         return entries
     }
 
+    static let webImagesFlagName = "top-shelf-web-images"
+
+    /// Test build (Top Shelf images: Web): the extension hands the system the artwork's web
+    /// addresses instead of the images rendered into the App Group, so the system downloads them
+    /// itself. A shelf that stays grey after an install over the app, though the extension answers,
+    /// says this way whether the system can't read the App Group's files or shows nothing at all.
+    public static var usesWebImages: Bool {
+        guard let url = TopShelfFeedStore.containerURL?.appendingPathComponent(webImagesFlagName) else { return false }
+        return FileManager.default.fileExists(atPath: url.path)
+    }
+
+    /// Turns Web images on or off and has the system load the shelf again.
+    public static func setUsesWebImages(_ on: Bool) {
+        guard let url = TopShelfFeedStore.containerURL?.appendingPathComponent(webImagesFlagName) else { return }
+        if on {
+            FileManager.default.createFile(atPath: url.path, contents: Data())
+        } else {
+            try? FileManager.default.removeItem(at: url)
+        }
+        record("images set to \(on ? "web" : "rendered"), asked the system to load the shelf again")
+        #if canImport(TVServices)
+        TVTopShelfContentProvider.topShelfContentDidChange()
+        #endif
+    }
+
     /// "group.x reachable" or "group.x NOT reachable".
     public static var appGroupText: String {
         "\(topShelfAppGroupID) " + (TopShelfFeedStore.isAvailable ? "reachable" : "NOT reachable")

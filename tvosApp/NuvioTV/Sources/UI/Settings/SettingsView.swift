@@ -6313,6 +6313,7 @@ private struct TestDiagnosticsSheet: View {
     @AppStorage("nuvio.tv.test.detailsOpening") private var detailsOpening = "nuvio"
     @AppStorage("nuvio.tv.test.cardBuild") private var cardBuild = "nuvio"
     @AppStorage("nuvio.tv.test.focusScope") private var focusScope = "screen"
+    @State private var topShelfWebImages = TopShelfDiagnostics.usesWebImages
     @AppStorage(SettingsKey.liquidGlassCards) private var liquidGlassCards = true
 
     var body: some View {
@@ -6401,6 +6402,17 @@ private struct TestDiagnosticsSheet: View {
                             accentColor: accentColor
                         ) {
                             focusScope = focusScope == "rows" ? "screen" : "rows"
+                        }
+                        SettingsActionRow(
+                            title: "Top Shelf images",
+                            subtitle: topShelfWebImages
+                                ? "Web: the shelf gets the artwork's web addresses and downloads it itself (no logos, ratings or badges on it)"
+                                : "Rendered: the shelf gets the images Nuvio rendered into the App Group",
+                            value: topShelfWebImages ? "Web" : "Rendered",
+                            accentColor: accentColor
+                        ) {
+                            topShelfWebImages.toggle()
+                            TopShelfDiagnostics.setUsesWebImages(topShelfWebImages)
                         }
                         SettingsActionRow(
                             title: "Card Focus Effect",

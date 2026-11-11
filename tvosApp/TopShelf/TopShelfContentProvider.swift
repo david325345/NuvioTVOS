@@ -28,9 +28,10 @@ final class TopShelfContentProvider: TVTopShelfContentProvider {
             let elapsed = Int(Date().timeIntervalSince(started) * 1_000)
             TopShelfDiagnostics.record(
                 "asked for the shelf (request #\(request) of this extension process, build \(build)): "
-                    + outcome + " · \(elapsed) ms"
+                    + outcome + (Self.webImages ? " · images from the web" : "") + " · \(elapsed) ms"
             )
         }
+        Self.webImages = TopShelfDiagnostics.usesWebImages
         let configuration = TopShelfConfigurationStore.load()
         let rows = TopShelfComposer.rows(configuration: configuration) { TopShelfFeedStore.read($0) }
         guard !rows.isEmpty else {
@@ -91,6 +92,8 @@ final class TopShelfContentProvider: TVTopShelfContentProvider {
 
     /// Test build: requests this extension process has answered.
     nonisolated(unsafe) private static var requestCount = 0
+    /// Test build (Top Shelf images: Web): this request hands the system web addresses.
+    nonisolated(unsafe) private static var webImages = false
 
     private static func sectionedItem(for entry: TopShelfEntry, rowID: String, poster: Bool) -> TVTopShelfSectionedItem {
         // A title can sit on more than one row (e.g. Library and a catalog).
@@ -99,7 +102,9 @@ final class TopShelfContentProvider: TVTopShelfContentProvider {
         item.imageShape = poster ? .poster : .hdtv
 
         // The rendered card or poster; the raw artwork stands in until it exists.
-        let imageURL = poster
+        let imageURL = webImages
+            ? (poster ? entry.posterSourceURL : entry.cardSourceURL).flatMap(URL.init(string:))
+            : poster
             ? TopShelfFeedStore.posterArtworkURL(for: entry) ?? entry.posterSourceURL.flatMap(URL.init(string:))
             : TopShelfFeedStore.artworkURL(for: entry) ?? entry.cardSourceURL.flatMap(URL.init(string:))
         if let url = imageURL {
@@ -161,8 +166,10 @@ final class TopShelfContentProvider: TVTopShelfContentProvider {
 
         // The rendered image carries the logo and the ratings; the raw backdrop
         // stands in until it exists.
-        let imageURL = TopShelfFeedStore.carouselArtworkURL(for: entry, ratings: ratings)
-            ?? entry.artworkSourceURL.flatMap(URL.init(string:))
+        let imageURL = webImages
+            ? entry.artworkSourceURL.flatMap(URL.init(string:))
+            : TopShelfFeedStore.carouselArtworkURL(for: entry, ratings: ratings)
+                ?? entry.artworkSourceURL.flatMap(URL.init(string:))
         if let url = imageURL {
             item.setImageURL(url, for: .screenScale1x)
             item.setImageURL(url, for: .screenScale2x)
