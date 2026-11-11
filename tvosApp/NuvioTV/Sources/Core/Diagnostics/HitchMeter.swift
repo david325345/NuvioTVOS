@@ -310,6 +310,8 @@ final class HitchMeter: NSObject {
         if let focus = defaults.string(forKey: "nuvio.tv.test.focusEffect"), focus != "nuvio" { parts.append("focus \(focus)") }
         if let vertical = defaults.string(forKey: "nuvio.tv.test.verticalScrolling"), vertical != "nuvio" { parts.append("vertical \(vertical)") }
         if let opening = defaults.string(forKey: "nuvio.tv.test.detailsOpening"), opening != "nuvio" { parts.append("opening \(opening)") }
+        if let cards = defaults.string(forKey: "nuvio.tv.test.cardBuild"), cards != "nuvio" { parts.append("cards \(cards)") }
+        if let scope = defaults.string(forKey: "nuvio.tv.test.focusScope"), scope != "screen" { parts.append("focus scope \(scope)") }
         return parts.joined(separator: ", ")
     }
 

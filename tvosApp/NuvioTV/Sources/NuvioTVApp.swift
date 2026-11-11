@@ -6566,6 +6566,7 @@ struct TVHomeView: View {
             ("rows built", "\(rowBuildReach)"),
             ("return animations paused", "\(suppressReturnFocusAnimations)"),
             ("focus moved away", "\(focusWork.focusMovedAwayGeneration)"),
+            ("row focus request", "\(rowFocusRequest.generation):\(rowFocusRequest.cardKey == nil)"),
             ("profile focus", nativeProfileFocusedCardKey ?? "-"),
             ("grid hero focus", "\(isGridHeroFocused)"),
             ("catalog rows", "\(store.sectionsRevision)"),
@@ -7809,6 +7810,20 @@ struct TVHomeView: View {
     private func handleBackCommand() {
         let action = currentBackAction
         TVHomeDebugTrace.log("home.handleBackCommand action=\(action)")
+        // Test build: what Back did on Home, for the stall lines that follow it.
+        switch action {
+        case .returnToRowBeginning(let sectionID, _):
+            TestDiagnosticLog.ui(
+                "back on Home: to the first card of row \(sectionID) from card #\(rowScrollStore.index(for: sectionID) + 1)"
+                    + (homeCardAppearance.usesSystemRowScrolling ? ", the row slides back" : "")
+            )
+        case .moveToContinueWatchingOrTop(let sectionID, _):
+            TestDiagnosticLog.ui("back on Home: up to row \(sectionID) from row #\(focusedRowIndex + 1)")
+        case .focusGridHero:
+            TestDiagnosticLog.ui("back on Home: to the hero")
+        case .exitToSidebar:
+            TestDiagnosticLog.ui("back on Home: to the menu")
+        }
         switch action {
         case .returnToRowBeginning(let sectionID, let cardKey):
             returnFocusToRowBeginning(sectionID: sectionID, cardKey: cardKey)

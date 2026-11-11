@@ -733,11 +733,13 @@ struct PosterCard: View {
             .shadow(color: .black.opacity(shadowOpacity), radius: shadowRadius)
 
             if showsPosterTitle {
-                Text(meta.name)
-                    .font(.system(size: effectiveHomeLayout == "Compact" ? 18 : 20, weight: showsFocusedAppearance ? .semibold : .medium))
-                    .foregroundColor(titleColor)
-                    .lineLimit(1)
-                    .frame(width: cardWidth, alignment: .leading)
+                MarqueeText(
+                    meta.name,
+                    size: effectiveHomeLayout == "Compact" ? 18 : 20, weight: showsFocusedAppearance ? .semibold : .medium,
+                    color: titleColor,
+                    isActive: showsFocusedAppearance && (!expandsToBackdrop || effectiveLandscape)
+                )
+                .frame(width: cardWidth, alignment: .leading)
             }
         }
         .frame(width: layoutWidth, height: totalCardHeight, alignment: .topLeading)

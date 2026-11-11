@@ -6311,6 +6311,8 @@ private struct TestDiagnosticsSheet: View {
     @AppStorage("nuvio.tv.test.focusEffect") private var focusEffect = "nuvio"
     @AppStorage("nuvio.tv.test.verticalScrolling") private var verticalScrolling = "nuvio"
     @AppStorage("nuvio.tv.test.detailsOpening") private var detailsOpening = "nuvio"
+    @AppStorage("nuvio.tv.test.cardBuild") private var cardBuild = "nuvio"
+    @AppStorage("nuvio.tv.test.focusScope") private var focusScope = "screen"
     @AppStorage(SettingsKey.liquidGlassCards) private var liquidGlassCards = true
 
     var body: some View {
@@ -6379,6 +6381,26 @@ private struct TestDiagnosticsSheet: View {
                             accentColor: accentColor
                         ) {
                             detailsOpening = detailsOpening == "steady" ? "nuvio" : "steady"
+                        }
+                        SettingsActionRow(
+                            title: "Cards",
+                            subtitle: cardBuild == "light"
+                                ? "Light: the same poster cards, cheaper to build (one watched-mark observer for all cards, one overlay, fewer timers, Continue Watching texts worked out once a minute)"
+                                : "Nuvio: poster cards as Nuvio builds them",
+                            value: cardBuild == "light" ? "Light" : "Nuvio",
+                            accentColor: accentColor
+                        ) {
+                            cardBuild = cardBuild == "light" ? "nuvio" : "light"
+                        }
+                        SettingsActionRow(
+                            title: "Focus",
+                            subtitle: focusScope == "rows"
+                                ? "Rows: each Home row and Details' episode strip holds its own focus, so a move redraws only that row (not in Grid View)"
+                                : "Screen: Home and Details hold focus, every move redraws all of them",
+                            value: focusScope == "rows" ? "Rows" : "Screen",
+                            accentColor: accentColor
+                        ) {
+                            focusScope = focusScope == "rows" ? "screen" : "rows"
                         }
                         SettingsActionRow(
                             title: "Card Focus Effect",
