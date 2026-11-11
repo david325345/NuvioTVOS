@@ -258,7 +258,9 @@ struct PosterCard: View {
     #endif
 
     var body: some View {
-        let _ = HitchMeter.noteCardBuilt("poster")
+        // Test build: counted in the move lines; a card still waiting its turn (an off-screen
+        // row built a few cards at a time) as "waiting", not as built.
+        let _ = HitchMeter.noteCardBuilt(buildsLater ? "waiting" : "poster")
         #if os(tvOS)
         if buildsLater {
             Color.clear

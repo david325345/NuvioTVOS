@@ -96,14 +96,18 @@ final class HitchMeter: NSObject {
 
         /// "20 cards built (12 episode, 8 person), ", most first; empty when none were.
         private var cardsText: String {
-            let total = cardsBuilt.values.reduce(0, +)
-            guard total > 0 else { return "" }
-            let kinds = cardsBuilt
+            // Cards of an off-screen row still waiting their turn are empty space, not built.
+            let waiting = cardsBuilt["waiting", default: 0]
+            let built = cardsBuilt.filter { $0.key != "waiting" }
+            let total = built.values.reduce(0, +)
+            let waitingText = waiting > 0 ? "\(waiting) waiting, " : ""
+            guard total > 0 else { return waitingText }
+            let kinds = built
                 .filter { $0.value > 0 }
                 .sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
                 .map { "\($0.value) \($0.key)" }
                 .joined(separator: ", ")
-            return "\(total) card\(total == 1 ? "" : "s") built (\(kinds)), "
+            return "\(total) card\(total == 1 ? "" : "s") built (\(kinds)), " + waitingText
         }
     }
 
