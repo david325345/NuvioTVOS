@@ -6360,13 +6360,15 @@ private struct TestDiagnosticsSheet: View {
                         }
                         SettingsActionRow(
                             title: "Vertical Scrolling",
-                            subtitle: verticalScrolling == "smooth"
-                                ? "Smooth: Home and the Details episodes build what comes next after a move; Details lets its scroll finish, fades in a blurred backdrop and pauses a background trailer while scrolled down"
-                                : "Nuvio: up and down as Nuvio does it",
-                            value: verticalScrolling == "smooth" ? "Smooth" : "Nuvio",
+                            subtitle: verticalScrolling == "sections"
+                                ? "Sections: Smooth, and Details' up and down is left to tvOS, which scrolls to where focus goes and settles on section tops"
+                                : verticalScrolling == "smooth"
+                                    ? "Smooth: Home and the Details episodes build what comes next after a move; Details lets its scroll finish, fades in a blurred backdrop and pauses a background trailer while scrolled down"
+                                    : "Nuvio: up and down as Nuvio does it",
+                            value: verticalScrolling == "sections" ? "Sections" : verticalScrolling == "smooth" ? "Smooth" : "Nuvio",
                             accentColor: accentColor
                         ) {
-                            verticalScrolling = verticalScrolling == "smooth" ? "nuvio" : "smooth"
+                            verticalScrolling = verticalScrolling == "nuvio" ? "smooth" : verticalScrolling == "smooth" ? "sections" : "nuvio"
                         }
                         SettingsActionRow(
                             title: "Details Opening",
@@ -6381,7 +6383,7 @@ private struct TestDiagnosticsSheet: View {
                         SettingsActionRow(
                             title: "Card Focus Effect",
                             subtitle: focusEffect == "system"
-                                ? "System: tvOS's own lift and tilt"
+                                ? "System: tvOS's own lift and tilt, on Home and on Details' episode, cast, company and comment cards"
                                 : focusEffect == "light"
                                     ? "Light: the outline without the shadow and glass extras"
                                     : "Nuvio: outline, shadow and glass border",
