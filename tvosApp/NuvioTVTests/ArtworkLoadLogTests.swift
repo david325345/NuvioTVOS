@@ -43,6 +43,11 @@ final class ArtworkLoadLogTests: XCTestCase {
         XCTAssertEqual(line, "art: 1 backdrop in 5 s on details(tt1, movie) — 1 from memory · in memory 3 images, 0 of 96 MB")
     }
 
+    func testARedrawCauseNamesWhatChanged() {
+        XCTAssertEqual(RedrawCause.label("Home", changed: ["focus moved", "hero title"]), "Home because focus moved + hero title")
+        XCTAssertEqual(RedrawCause.label("Home", changed: []), "Home because of nothing it holds")
+    }
+
     func testTheRedrawLineListsTheMostRedrawnFirst() {
         let line = RedrawLog.line(["Home": 3, "Home row": 56, "tabs": 3], screen: "main · home")
         XCTAssertEqual(line, "ui: redrawn in 5 s on main · home: Home row ×56, Home ×3, tabs ×3")

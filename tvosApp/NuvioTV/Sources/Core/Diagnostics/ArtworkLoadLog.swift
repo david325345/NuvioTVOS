@@ -223,3 +223,31 @@ final class RedrawLog: @unchecked Sendable {
         return "ui: redrawn in \(Int(ArtworkLoadLog.interval)) s on \(screen): \(views)"
     }
 }
+
+/// The fork's test build: what changed in a view between two of its redraws, counted in the
+/// redraw lines as "Home because focus moved + hero title". "Of nothing it holds" means it was
+/// redrawn from above, or by its store.
+/// (Main thread only: the views' bodies and Home's focus handler.)
+enum RedrawCause {
+    /// Home's focused card changed (counted where Home handles it, so its body never reads it).
+    nonisolated(unsafe) static var homeFocusMoves = 0
+
+    nonisolated(unsafe) private static var last: [String: [String: String]] = [:]
+
+    static func note(_ view: String, _ fields: [(String, String)]) {
+        var current: [String: String] = [:]
+        var changed: [String] = []
+        let previous = last[view]
+        for (name, value) in fields {
+            current[name] = value
+            if let previous, previous[name] != value { changed.append(name) }
+        }
+        last[view] = current
+        guard previous != nil else { return }
+        RedrawLog.note(Self.label(view, changed: changed))
+    }
+
+    static func label(_ view: String, changed: [String]) -> String {
+        "\(view) because " + (changed.isEmpty ? "of nothing it holds" : changed.joined(separator: " + "))
+    }
+}
