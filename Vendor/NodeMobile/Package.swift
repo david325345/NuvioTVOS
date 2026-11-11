@@ -8,7 +8,7 @@ import PackageDescription
 let package = Package(
     name: "NodeMobile",
     platforms: [
-        .tvOS(.v18),
+        .tvOS("18.0"),
     ],
     products: [
         .library(
