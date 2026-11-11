@@ -7,7 +7,7 @@ name: AIOStreams test build (fork experiment)
 # builds (plugins, AniList).
 on:
   push:
-    branches: [aio-node, aio-anilist, aio-anilist-plugins]
+    branches: [aio-node, aio-anilist, aio-anilist-plugins, aio-final-test]
     paths:
       - tvosApp/**
       - aio-node/installer/**
@@ -244,6 +244,11 @@ jobs:
           esac
           if [ "${GITHUB_REF_NAME}" = aio-anilist-plugins ]; then
             extra+=(-only-testing:NuvioTVTests/PluginRuntimeTests -only-testing:NuvioTVTests/PluginPlatformTests -only-testing:NuvioTVTests/PluginAIOBridgeTests)
+          fi
+          # aio-final-test (the last test before the PR, on the newest tvOS beta): every test of the app.
+          if [ "${GITHUB_REF_NAME}" = aio-final-test ]; then
+            bash scripts/test-tvos.sh
+            exit 0
           fi
           bash scripts/test-tvos.sh -only-testing:NuvioTVTests/AIOExperimentTests "${extra[@]}"
       - name: Why the app stopped

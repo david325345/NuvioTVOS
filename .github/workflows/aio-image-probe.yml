@@ -7,7 +7,7 @@ name: AIOStreams from the official image (fork experiment)
 # newest one (the default source).
 on:
   push:
-    branches: [aio-node, aio-anilist-plugins]
+    branches: [aio-node, aio-anilist-plugins, aio-final-test]
     paths:
       - aio-node/installer/**
       - aio-node/aio-package/smoke.sh
