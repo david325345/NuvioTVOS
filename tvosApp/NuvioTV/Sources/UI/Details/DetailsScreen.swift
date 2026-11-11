@@ -8393,6 +8393,11 @@ private struct TvDetailsEpisodes: View {
     var onEpisodeFocusChange: ((String?) -> Void)? = nil
 
     @FocusState private var ownEpisodeFocus: String?
+    /// Where the strip starts on screen (its distance from the screen's left edge), as last
+    /// measured. Read from the geometry reader's global frame on every pass, it tied the strip to
+    /// the strip's place on screen: each frame of Details scrolling between sections rebuilt the
+    /// strip and its cards (most of the "episode strip" redraws in the test log).
+    @State private var stripEdgeInset: CGFloat?
     @State private var selectedSeason: Int
     @State private var seasonEpisodes: [NuvioVideo]
     @State private var seasonEpisodeIndexByID: [String: Int]
@@ -8733,7 +8738,8 @@ private struct TvDetailsEpisodes: View {
 
     private var episodeCardStrip: some View {
         GeometryReader { geo in
-            let edgeInset = max(0, geo.frame(in: .global).minX)
+            // Measured once and then only when it changes (below); until then, read here.
+            let edgeInset = stripEdgeInset ?? max(0, geo.frame(in: .global).minX)
             let stripWidth = geo.size.width + edgeInset * 2
             if cardAppearance.usesSystemRowScrolling {
                 systemEpisodeStrip(edgeInset: edgeInset, stripWidth: stripWidth)
@@ -8742,6 +8748,13 @@ private struct TvDetailsEpisodes: View {
             }
         }
         .frame(height: TvEpisodeCardLayout.stripHeight)
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            max(0, proxy.frame(in: .global).minX).rounded()
+        } action: { edgeInset in
+            if stripEdgeInset != edgeInset {
+                stripEdgeInset = edgeInset
+            }
+        }
         // Where focus rested keeps cards built around it in the strip Nuvio scrolls itself. The
         // system strip builds by where it is scrolled and never reads it: set there, it only
         // redrew the episodes once more after every run of moves, the longest frame of the run.
