@@ -35,6 +35,7 @@ struct NuvioTVApp: App {
         // Before launch finishes, as BGTaskScheduler requires.
         TopShelfBackgroundRefresh.register()
         TopShelfFeedStore.refreshAfterLaunch()
+        TopShelfDiagnosticsLog.noteLaunch()
         let payloadMigrationKey = "nuvio.tv.migrations.largePayloadPreferences.v1"
         if !UserDefaults.standard.bool(forKey: payloadMigrationKey),
            HomeCatalogPayloadStore.migrateAllKnownPreferences() {
@@ -889,6 +890,7 @@ struct ContentView: View {
             case .active:
                 TopShelfLibraryFeed.prefetchRemoteLibraryIfNeeded()
                 if backgroundedAt != nil {
+                    TopShelfDiagnosticsLog.noteForeground()
                     releaseUpdateService.beginForegroundSession()
                     announcementService.beginForegroundSession()
                     Task(priority: .utility) {

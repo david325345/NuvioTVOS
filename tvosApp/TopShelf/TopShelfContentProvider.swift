@@ -19,9 +19,25 @@ final class TopShelfContentProvider: TVTopShelfContentProvider {
     ]
 
     override func loadTopShelfContent(completionHandler: @escaping (TVTopShelfContent?) -> Void) {
+        // Test build: each request and what it got, for the app's test log.
+        Self.requestCount += 1
+        let request = Self.requestCount
+        let started = Date()
+        func note(_ outcome: String) {
+            let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+            let elapsed = Int(Date().timeIntervalSince(started) * 1_000)
+            TopShelfDiagnostics.record(
+                "asked for the shelf (request #\(request) of this extension process, build \(build)): "
+                    + outcome + " · \(elapsed) ms"
+            )
+        }
         let configuration = TopShelfConfigurationStore.load()
         let rows = TopShelfComposer.rows(configuration: configuration) { TopShelfFeedStore.read($0) }
         guard !rows.isEmpty else {
+            note(
+                "nothing to show, \(configuration.style.rawValue) · App Group \(TopShelfDiagnostics.appGroupText) · "
+                    + "feeds: \(TopShelfDiagnostics.feedsText())"
+            )
             completionHandler(nil)
             return
         }
@@ -29,11 +45,14 @@ final class TopShelfContentProvider: TVTopShelfContentProvider {
         case .carouselDetails, .carouselActions:
             let slots = TopShelfComposer.carousel(from: rows)
             guard !slots.isEmpty else {
+                note("nothing to show, carousel had no titles from \(rows.count) rows")
                 completionHandler(nil)
                 return
             }
             let ratings = TopShelfFeedStore.savedRatings()
+            let rendered = slots.filter { TopShelfFeedStore.carouselArtworkURL(for: $0.entry, ratings: ratings) != nil }.count
             guard configuration.playsTrailers else {
+                note("carousel of \(slots.count) titles, \(rendered) with rendered images, no trailers")
                 completionHandler(Self.carousel(slots, configuration: configuration, ratings: ratings, trailers: [:]))
                 return
             }
@@ -43,6 +62,10 @@ final class TopShelfContentProvider: TVTopShelfContentProvider {
             Task {
                 let trailers = await TopShelfTrailerResolver.trailers(
                     for: slots.map(\.entry), in: TopShelfFeedStore.containerURL)
+                note(
+                    "carousel of \(slots.count) titles, \(rendered) with rendered images, "
+                        + "\(trailers.count) trailers"
+                )
                 completionHandler(Self.carousel(slots, configuration: configuration, ratings: ratings, trailers: trailers))
             }
         case .rows, .posters:
@@ -54,9 +77,20 @@ final class TopShelfContentProvider: TVTopShelfContentProvider {
                 collection.title = row.title ?? Self.fallbackTitles[row.section]
                 return collection
             }
+            let entries = rows.flatMap(\.entries)
+            let rendered = entries.filter {
+                (posters ? TopShelfFeedStore.posterArtworkURL(for: $0) : TopShelfFeedStore.artworkURL(for: $0)) != nil
+            }.count
+            note(
+                "\(posters ? "posters" : "rows"): \(rows.count) rows, \(entries.count) titles, "
+                    + "\(rendered) with rendered images"
+            )
             completionHandler(TVTopShelfSectionedContent(sections: collections))
         }
     }
+
+    /// Test build: requests this extension process has answered.
+    nonisolated(unsafe) private static var requestCount = 0
 
     private static func sectionedItem(for entry: TopShelfEntry, rowID: String, poster: Bool) -> TVTopShelfSectionedItem {
         // A title can sit on more than one row (e.g. Library and a catalog).

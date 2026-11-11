@@ -48,6 +48,15 @@ final class ArtworkLoadLogTests: XCTestCase {
         XCTAssertEqual(RedrawCause.label("Home", changed: []), "Home because of nothing it holds")
     }
 
+    func testTheTopShelfLogSaysHowOldAFeedIsInPlainUnits() {
+        let now = Date(timeIntervalSinceReferenceDate: 1_000_000)
+        XCTAssertEqual(TopShelfDiagnostics.age(of: now.addingTimeInterval(-40), now: now), "40 s")
+        XCTAssertEqual(TopShelfDiagnostics.age(of: now.addingTimeInterval(-600), now: now), "10 min")
+        XCTAssertEqual(TopShelfDiagnostics.age(of: now.addingTimeInterval(-3 * 3600), now: now), "3 h")
+        XCTAssertEqual(TopShelfDiagnostics.age(of: now.addingTimeInterval(-5 * 86_400), now: now), "5 d")
+        XCTAssertEqual(TopShelfDiagnostics.age(of: now.addingTimeInterval(30), now: now), "0 s")
+    }
+
     func testTheRedrawLineListsTheMostRedrawnFirst() {
         let line = RedrawLog.line(["Home": 3, "Home row": 56, "tabs": 3], screen: "main · home")
         XCTAssertEqual(line, "ui: redrawn in 5 s on main · home: Home row ×56, Home ×3, tabs ×3")

@@ -521,6 +521,7 @@ public enum TopShelfFeedStore {
             // A moment after launch, once the system has the newly installed extension.
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             notifyTopShelfContentChanged()
+            TopShelfDiagnostics.record("asked the system to load the shelf again (2 s after launch)")
         }
     }
 
@@ -1049,5 +1050,92 @@ enum TopShelfArtworkPruner {
         let hash = name.dropFirst("top-shelf-".count).dropLast(".jpg".count)
         return (1...16).contains(hash.count)
             && hash.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+    }
+}
+
+/// The fork's test build: what the Top Shelf extension did each time the system asked it for the
+/// shelf, and what the app found at launch, kept in the App Group so the app's test log can show
+/// both. A shelf that stays grey after the app is installed over itself says here whether the
+/// system asked the extension at all, and what it got back.
+public enum TopShelfDiagnostics {
+    public struct Entry: Codable, Sendable {
+        public let at: Date
+        /// "extension" or "app".
+        public let by: String
+        public let text: String
+    }
+
+    static let fileName = "top-shelf-diagnostics.json"
+    static let maximumEntries = 40
+    private static let lock = NSLock()
+
+    static var isExtension: Bool { Bundle.main.bundleURL.pathExtension == "appex" }
+
+    /// Adds a line (both processes write; the newest `maximumEntries` are kept).
+    public static func record(_ text: String) {
+        guard let url = TopShelfFeedStore.containerURL?.appendingPathComponent(fileName) else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        var all = read(url)
+        all.append(Entry(at: Date(), by: isExtension ? "extension" : "app", text: text))
+        if all.count > maximumEntries { all.removeFirst(all.count - maximumEntries) }
+        if let data = try? JSONEncoder().encode(all) {
+            try? data.write(to: url, options: .atomic)
+        }
+    }
+
+    public static func entries() -> [Entry] {
+        guard let url = TopShelfFeedStore.containerURL?.appendingPathComponent(fileName) else { return [] }
+        lock.lock()
+        defer { lock.unlock() }
+        return read(url)
+    }
+
+    private static func read(_ url: URL) -> [Entry] {
+        guard let data = try? Data(contentsOf: url),
+              let entries = try? JSONDecoder().decode([Entry].self, from: data) else { return [] }
+        return entries
+    }
+
+    /// "group.x reachable" or "group.x NOT reachable".
+    public static var appGroupText: String {
+        "\(topShelfAppGroupID) " + (TopShelfFeedStore.isAvailable ? "reachable" : "NOT reachable")
+    }
+
+    /// "continue watching 5 (3 min old), up next 2 (3 min old), library none, catalog 4 rows (1 h old)"
+    public static func feedsText(now: Date = Date()) -> String {
+        TopShelfSection.allCases.map { section in
+            let name = sectionName(section)
+            guard let feed = TopShelfFeedStore.read(section) else { return "\(name) none" }
+            let count = section == .catalog
+                ? "\(feed.catalogRows.count) rows, \(feed.allEntries.count) titles"
+                : "\(feed.entries.count)"
+            return "\(name) \(count) (\(age(of: feed.updatedAt, now: now)) old)"
+        }.joined(separator: ", ")
+    }
+
+    /// The rendered images in the shelf's folder.
+    public static func artworkFileCount() -> Int {
+        guard let directory = TopShelfFeedStore.containerURL,
+              let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else { return 0 }
+        return names.filter { $0.hasPrefix("top-shelf-") && $0.hasSuffix(".jpg") }.count
+    }
+
+    static func sectionName(_ section: TopShelfSection) -> String {
+        switch section {
+        case .continueWatching: return "continue watching"
+        case .upNext: return "up next"
+        case .today: return "today"
+        case .library: return "library"
+        case .catalog: return "catalog"
+        }
+    }
+
+    public static func age(of date: Date, now: Date = Date()) -> String {
+        let seconds = max(0, Int(now.timeIntervalSince(date)))
+        if seconds < 90 { return "\(seconds) s" }
+        if seconds < 90 * 60 { return "\(seconds / 60) min" }
+        if seconds < 48 * 3600 { return "\(seconds / 3600) h" }
+        return "\(seconds / 86_400) d"
     }
 }
