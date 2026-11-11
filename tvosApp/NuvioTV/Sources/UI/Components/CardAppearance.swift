@@ -28,7 +28,12 @@ struct CardAppearance: Equatable {
     var usesSystemRowScrolling: Bool { rowScrolling == CardExperiment.rowScrollingSystem }
     var usesSystemFocusEffect: Bool { focusEffect == CardExperiment.focusEffectSystem }
     var usesLightFocusEffect: Bool { focusEffect == CardExperiment.focusEffectLight }
-    var usesSmoothVerticalScrolling: Bool { verticalScrolling == CardExperiment.verticalScrollingSmooth }
+    /// Smooth, and Sections (which is Smooth too).
+    var usesSmoothVerticalScrolling: Bool {
+        verticalScrolling == CardExperiment.verticalScrollingSmooth
+            || verticalScrolling == CardExperiment.verticalScrollingSections
+    }
+    var usesSectionSnapping: Bool { verticalScrolling == CardExperiment.verticalScrollingSections }
     var usesSteadyDetailsOpening: Bool { detailsOpening == CardExperiment.detailsOpeningSteady }
 
     /// The values saved in `defaults`, for views outside ContentView's tree.
@@ -131,6 +136,10 @@ enum CardExperiment {
     /// Home keeps one more row ready on each side and builds the farthest only once a move has
     /// finished; Details fades in a backdrop blurred once instead of animating the blur.
     static let verticalScrollingSmooth = "smooth"
+    /// Smooth, and Details' up and down left to its scroll view: tvOS scrolls to what focus goes
+    /// to and the scroll settles on section tops, instead of Details scrolling there itself with
+    /// its own animation.
+    static let verticalScrollingSections = "sections"
 
     /// Details fades in over Home as a whole: for a moment both screens show through each other.
     static let detailsOpeningNuvio = "nuvio"

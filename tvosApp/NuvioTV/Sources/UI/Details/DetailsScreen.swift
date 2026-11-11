@@ -4471,16 +4471,9 @@ struct TvDetailsContent: View {
             onFocus: {
                 if focusedDetailsSection != .actions {
                     focusedDetailsSection = .actions
-                    sectionScroll.noteAnimatedScroll()
-                    withAnimation(.easeOut(duration: TvDetailsScrollTiming.duration)) {
-                        scrollProxy.scrollTo(TvDetailsScrollID.topSection, anchor: .top)
-                    }
+                    scrollToDetailsSection(TvDetailsScrollID.topSection, using: scrollProxy, animated: true)
                 } else {
-                    var transaction = Transaction(animation: nil)
-                    transaction.disablesAnimations = true
-                    withTransaction(transaction) {
-                        scrollProxy.scrollTo(TvDetailsScrollID.topSection, anchor: .top)
-                    }
+                    scrollToDetailsSection(TvDetailsScrollID.topSection, using: scrollProxy, animated: false)
                 }
             }
         )
@@ -4520,10 +4513,7 @@ struct TvDetailsContent: View {
                         cancelPendingFocusHandoff()
                         if focusedDetailsSection != .episodes {
                             focusedDetailsSection = .episodes
-                            sectionScroll.noteAnimatedScroll()
-                            withAnimation(.easeOut(duration: TvDetailsScrollTiming.duration)) {
-                                scrollProxy.scrollTo(TvDetailsScrollID.episodesSection, anchor: .top)
-                            }
+                            scrollToDetailsSection(TvDetailsScrollID.episodesSection, using: scrollProxy, animated: true)
                         }
                     },
                     onSelect: { video in
@@ -4584,16 +4574,9 @@ struct TvDetailsContent: View {
                     onFocus: {
                         if focusedDetailsSection != .cast {
                             focusedDetailsSection = .cast
-                            sectionScroll.noteAnimatedScroll()
-                            withAnimation(.easeOut(duration: TvDetailsScrollTiming.duration)) {
-                                scrollProxy.scrollTo(TvDetailsScrollID.castSection, anchor: .top)
-                            }
+                            scrollToDetailsSection(TvDetailsScrollID.castSection, using: scrollProxy, animated: true)
                         } else {
-                            var transaction = Transaction(animation: nil)
-                            transaction.disablesAnimations = true
-                            withTransaction(transaction) {
-                                scrollProxy.scrollTo(TvDetailsScrollID.castSection, anchor: .top)
-                            }
+                            scrollToDetailsSection(TvDetailsScrollID.castSection, using: scrollProxy, animated: false)
                         }
                     }
                 )
@@ -4629,16 +4612,9 @@ struct TvDetailsContent: View {
                     onFocus: {
                         if focusedDetailsSection != .related {
                             focusedDetailsSection = .related
-                            sectionScroll.noteAnimatedScroll()
-                            withAnimation(.easeOut(duration: TvDetailsScrollTiming.duration)) {
-                                scrollProxy.scrollTo(TvDetailsScrollID.moreLikeThisSection, anchor: .top)
-                            }
+                            scrollToDetailsSection(TvDetailsScrollID.moreLikeThisSection, using: scrollProxy, animated: true)
                         } else {
-                            var transaction = Transaction(animation: nil)
-                            transaction.disablesAnimations = true
-                            withTransaction(transaction) {
-                                scrollProxy.scrollTo(TvDetailsScrollID.moreLikeThisSection, anchor: .top)
-                            }
+                            scrollToDetailsSection(TvDetailsScrollID.moreLikeThisSection, using: scrollProxy, animated: false)
                         }
                     }
                 )
@@ -4666,16 +4642,9 @@ struct TvDetailsContent: View {
                     onFocus: {
                         if focusedDetailsSection != .network {
                             focusedDetailsSection = .network
-                            sectionScroll.noteAnimatedScroll()
-                            withAnimation(.easeOut(duration: TvDetailsScrollTiming.duration)) {
-                                scrollProxy.scrollTo(TvDetailsScrollID.networkSection, anchor: .top)
-                            }
+                            scrollToDetailsSection(TvDetailsScrollID.networkSection, using: scrollProxy, animated: true)
                         } else {
-                            var transaction = Transaction(animation: nil)
-                            transaction.disablesAnimations = true
-                            withTransaction(transaction) {
-                                scrollProxy.scrollTo(TvDetailsScrollID.networkSection, anchor: .top)
-                            }
+                            scrollToDetailsSection(TvDetailsScrollID.networkSection, using: scrollProxy, animated: false)
                         }
                     }
                 )
@@ -4703,16 +4672,9 @@ struct TvDetailsContent: View {
                     onFocus: {
                         if focusedDetailsSection != .production {
                             focusedDetailsSection = .production
-                            sectionScroll.noteAnimatedScroll()
-                            withAnimation(.easeOut(duration: TvDetailsScrollTiming.duration)) {
-                                scrollProxy.scrollTo(TvDetailsScrollID.productionSection, anchor: .top)
-                            }
+                            scrollToDetailsSection(TvDetailsScrollID.productionSection, using: scrollProxy, animated: true)
                         } else {
-                            var transaction = Transaction(animation: nil)
-                            transaction.disablesAnimations = true
-                            withTransaction(transaction) {
-                                scrollProxy.scrollTo(TvDetailsScrollID.productionSection, anchor: .top)
-                            }
+                            scrollToDetailsSection(TvDetailsScrollID.productionSection, using: scrollProxy, animated: false)
                         }
                     }
                 )
@@ -4739,16 +4701,9 @@ struct TvDetailsContent: View {
                     onFocus: {
                         if focusedDetailsSection != .comments {
                             focusedDetailsSection = .comments
-                            sectionScroll.noteAnimatedScroll()
-                            withAnimation(.easeOut(duration: TvDetailsScrollTiming.duration)) {
-                                scrollProxy.scrollTo(TvDetailsScrollID.commentsSection, anchor: .top)
-                            }
+                            scrollToDetailsSection(TvDetailsScrollID.commentsSection, using: scrollProxy, animated: true)
                         } else {
-                            var transaction = Transaction(animation: nil)
-                            transaction.disablesAnimations = true
-                            withTransaction(transaction) {
-                                scrollProxy.scrollTo(TvDetailsScrollID.commentsSection, anchor: .top)
-                            }
+                            scrollToDetailsSection(TvDetailsScrollID.commentsSection, using: scrollProxy, animated: false)
                         }
                     }
                 )
@@ -4807,10 +4762,7 @@ struct TvDetailsContent: View {
         isChoosingWatchPartyEpisode = true
         cancelPendingFocusHandoff()
         focusedDetailsSection = .episodes
-        sectionScroll.noteAnimatedScroll()
-        withAnimation(.easeOut(duration: TvDetailsScrollTiming.duration)) {
-            scrollProxy.scrollTo(TvDetailsScrollID.episodesSection, anchor: .top)
-        }
+        scrollToDetailsSection(TvDetailsScrollID.episodesSection, using: scrollProxy, animated: true)
         let target = TvEpisodeFocus.card(episode.id)
         DispatchQueue.main.asyncAfter(deadline: .now() + TvDetailsScrollTiming.duration) {
             guard isChoosingWatchPartyEpisode else { return }
@@ -4907,6 +4859,9 @@ struct TvDetailsContent: View {
                                 }
                             }
                             }
+                            // Vertical: Sections. The hero and each section are where the scroll
+                            // can settle.
+                            .scrollTargetLayout(isEnabled: cardAppearance.usesSectionSnapping)
                             .task {
                                 guard builtLowerSectionCount == 0 else { return }
                                 TvDetailsFocusActivity.start()
@@ -4933,24 +4888,17 @@ struct TvDetailsContent: View {
                             .frame(maxWidth: .infinity, minHeight: proxy.size.height, alignment: .topLeading)
                         }
                         .scrollClipDisabledIfAvailable()
+                        .modifier(TvDetailsSectionSnapping(isActive: cardAppearance.usesSectionSnapping))
                         .coordinateSpace(name: "tv-details-scroll")
                         .onChange(of: actionFocus) { _, newFocus in
                             guard newFocus != nil else { return }
                             guard !isSectionScrollAnimating else { return }
-                            var transaction = Transaction(animation: nil)
-                            transaction.disablesAnimations = true
-                            withTransaction(transaction) {
-                                scrollProxy.scrollTo(TvDetailsScrollID.topSection, anchor: .top)
-                            }
+                            scrollToDetailsSection(TvDetailsScrollID.topSection, using: scrollProxy, animated: false)
                         }
                         .onChange(of: castHeaderFocus) { _, newFocus in
                             guard newFocus != nil else { return }
                             guard !isSectionScrollAnimating else { return }
-                            var transaction = Transaction(animation: nil)
-                            transaction.disablesAnimations = true
-                            withTransaction(transaction) {
-                                scrollProxy.scrollTo(TvDetailsScrollID.castSection, anchor: .top)
-                            }
+                            scrollToDetailsSection(TvDetailsScrollID.castSection, using: scrollProxy, animated: false)
                         }
                         .background(
                             TvDetailsEpisodeFocusObserver(
@@ -5238,6 +5186,25 @@ struct TvDetailsContent: View {
         try? await Task.sleep(nanoseconds: Self.lowerSectionsAfterFocus)
     }
 
+    /// Scrolls Details to a section as focus comes into it (animated) or moves within it (at
+    /// once). Vertical: Sections leaves that to the scroll view: tvOS scrolls to what focus goes
+    /// to, and the scroll settles on section tops (`TvDetailsSectionSnapping`).
+    private func scrollToDetailsSection(_ id: String, using proxy: ScrollViewProxy, animated: Bool) {
+        guard !cardAppearance.usesSectionSnapping else { return }
+        if animated {
+            sectionScroll.noteAnimatedScroll()
+            withAnimation(.easeOut(duration: TvDetailsScrollTiming.duration)) {
+                proxy.scrollTo(id, anchor: .top)
+            }
+        } else {
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                proxy.scrollTo(id, anchor: .top)
+            }
+        }
+    }
+
     private func handleEpisodeFocusChange(_ newFocus: String?, scrollProxy: ScrollViewProxy) {
         episodeFocusMemory.generation &+= 1
         // Focus already in the strip: a move along it. Details is already in place there, and
@@ -5260,11 +5227,7 @@ struct TvDetailsContent: View {
         }
         guard newFocus != nil, focusedDetailsSection == .episodes, !movesAlongStrip else { return }
         guard !isSectionScrollAnimating else { return }
-        var transaction = Transaction(animation: nil)
-        transaction.disablesAnimations = true
-        withTransaction(transaction) {
-            scrollProxy.scrollTo(TvDetailsScrollID.episodesSection, anchor: .top)
-        }
+        scrollToDetailsSection(TvDetailsScrollID.episodesSection, using: scrollProxy, animated: false)
     }
 
     private func setEpisodeFocused(_ focused: Bool) {
@@ -5294,10 +5257,7 @@ struct TvDetailsContent: View {
         pendingPlayFocusGeneration = nil
         focusedDetailsSection = .actions
         actionFocus = .play
-        sectionScroll.noteAnimatedScroll()
-        withAnimation(.easeOut(duration: TvDetailsScrollTiming.duration)) {
-            scrollProxy.scrollTo(TvDetailsScrollID.topSection, anchor: .top)
-        }
+        scrollToDetailsSection(TvDetailsScrollID.topSection, using: scrollProxy, animated: true)
 
         // tvOS may reassert its spatial choice on the next run-loop turn.
         DispatchQueue.main.async {
@@ -5346,18 +5306,12 @@ struct TvDetailsContent: View {
             focusPlayFromEpisodes(using: scrollProxy)
         case .cast:
             focusCastHeaderFromEpisodes()
-            sectionScroll.noteAnimatedScroll()
-            withAnimation(.easeOut(duration: TvDetailsScrollTiming.duration)) {
-                scrollProxy.scrollTo(TvDetailsScrollID.castSection, anchor: .top)
-            }
+            scrollToDetailsSection(TvDetailsScrollID.castSection, using: scrollProxy, animated: true)
         default:
             detailsFocusMoveGeneration &+= 1
             pendingPlayFocusGeneration = nil
             focusedDetailsSection = targetSection
-            sectionScroll.noteAnimatedScroll()
-            withAnimation(.easeOut(duration: TvDetailsScrollTiming.duration)) {
-                scrollProxy.scrollTo(scrollID(for: targetSection), anchor: .top)
-            }
+            scrollToDetailsSection(scrollID(for: targetSection), using: scrollProxy, animated: true)
         }
     }
 
@@ -5370,20 +5324,14 @@ struct TvDetailsContent: View {
         switch targetSection {
         case .cast:
             focusCastHeaderFromEpisodes()
-            sectionScroll.noteAnimatedScroll()
-            withAnimation(.easeOut(duration: TvDetailsScrollTiming.duration)) {
-                scrollProxy.scrollTo(TvDetailsScrollID.castSection, anchor: .top)
-            }
+            scrollToDetailsSection(TvDetailsScrollID.castSection, using: scrollProxy, animated: true)
         case .actions:
             focusPlayFromEpisodes(using: scrollProxy)
         default:
             detailsFocusMoveGeneration &+= 1
             pendingPlayFocusGeneration = nil
             focusedDetailsSection = targetSection
-            sectionScroll.noteAnimatedScroll()
-            withAnimation(.easeOut(duration: TvDetailsScrollTiming.duration)) {
-                scrollProxy.scrollTo(scrollID(for: targetSection), anchor: .top)
-            }
+            scrollToDetailsSection(scrollID(for: targetSection), using: scrollProxy, animated: true)
         }
     }
 
@@ -5586,6 +5534,21 @@ private struct TvDetailsEpisodeFocusObserver: View {
             .onChange(of: focus.wrappedValue) { _, newValue in
                 onChange(newValue)
             }
+    }
+}
+
+/// Vertical: Sections. Details' scroll settles with a section's top at the top of the screen, as
+/// tvOS scrolls it to where focus went (instead of Details scrolling there with its own
+/// animation).
+private struct TvDetailsSectionSnapping: ViewModifier {
+    let isActive: Bool
+
+    func body(content: Content) -> some View {
+        if isActive {
+            content.scrollTargetBehavior(.viewAligned)
+        } else {
+            content
+        }
     }
 }
 
@@ -6597,6 +6560,7 @@ private struct TvDetailsCompanyCard: View {
     var onBack: (() -> Void)? = nil
 
     @FocusState private var isFocused: Bool
+    @Environment(\.cardAppearance) private var cardAppearance
     @AppStorage(SettingsKey.cardCornerRadius) private var cardCornerRadiusSetting = AppCardStyle.defaultCornerRadiusRaw
     @AppStorage(SettingsKey.liquidGlassCards) private var liquidGlassCards = true
 
@@ -6663,15 +6627,16 @@ private struct TvDetailsCompanyCard: View {
                     .frame(width: 200, height: 52, alignment: .top)
                     .multilineTextAlignment(.center)
             }
+            .background {
+                TvDetailsSystemFocusReporter(isActive: cardAppearance.usesSystemFocusEffect, onFocus: onFocus)
+            }
         }
-        .buttonStyle(PosterCardButtonStyle())
-        .focused($isFocused)
-        .focusEffectDisabledIfAvailable()
-        .scaleEffect(isFocused ? 1.05 : 1)
-        .animation(.easeOut(duration: 0.14), value: isFocused)
-        .onChange(of: isFocused) { _, focused in
-            if focused { onFocus() }
-        }
+        .modifier(TvDetailsCardFocusStyle(
+            system: cardAppearance.usesSystemFocusEffect,
+            isFocused: $isFocused,
+            scale: 1.05,
+            onFocus: onFocus
+        ))
         .onExitCommand {
             onBack?()
         }
@@ -6743,6 +6708,7 @@ private struct TvDetailsCommentCard: View {
     var onBack: (() -> Void)? = nil
 
     @FocusState private var isFocused: Bool
+    @Environment(\.cardAppearance) private var cardAppearance
 
     var body: some View {
         Button(action: onSelect) {
@@ -6786,15 +6752,16 @@ private struct TvDetailsCommentCard: View {
                         lineWidth: isFocused ? AppFocusOutline.width : 1
                     )
             )
+            .background {
+                TvDetailsSystemFocusReporter(isActive: cardAppearance.usesSystemFocusEffect, onFocus: onFocus)
+            }
         }
-        .buttonStyle(PosterCardButtonStyle())
-        .focused($isFocused)
-        .focusEffectDisabledIfAvailable()
-        .scaleEffect(isFocused ? 1.03 : 1)
-        .animation(.easeOut(duration: 0.14), value: isFocused)
-        .onChange(of: isFocused) { _, focused in
-            if focused { onFocus() }
-        }
+        .modifier(TvDetailsCardFocusStyle(
+            system: cardAppearance.usesSystemFocusEffect,
+            isFocused: $isFocused,
+            scale: 1.03,
+            onFocus: onFocus
+        ))
         .onExitCommand {
             onBack?()
         }
@@ -7718,6 +7685,76 @@ actor PersonProfileImageCache {
     }
 }
 
+/// A Details card's focus, by the Card Focus setting. Nuvio's look: an outline, a shadow and a
+/// little growth, drawn by the card from its own focus, so the two cards focus passes between
+/// are redrawn. System: tvOS draws the focus itself (the card effect's lift and tilt, or the
+/// highlight of what the card marks with `TvDetailsSystemHighlight`); the card no longer follows
+/// its focus (`isFocused` stays false) and isn't redrawn as focus passes over it, and hears of
+/// focus from a `TvDetailsSystemFocusReporter` in its label.
+private struct TvDetailsCardFocusStyle: ViewModifier {
+    enum SystemStyle {
+        /// The whole card lifts and tilts (posters, episode stills, logos, comments).
+        case card
+        /// The card stays put and what it marks is highlighted (a cast photo with names below).
+        case highlightedContent
+    }
+
+    let system: Bool
+    var systemStyle: SystemStyle = .card
+    let isFocused: FocusState<Bool>.Binding
+    let scale: CGFloat
+    let onFocus: () -> Void
+
+    func body(content: Content) -> some View {
+        if system {
+            switch systemStyle {
+            case .card:
+                content.buttonStyle(.card)
+            case .highlightedContent:
+                content.buttonStyle(.plain)
+            }
+        } else {
+            content
+                .buttonStyle(PosterCardButtonStyle())
+                .focused(isFocused)
+                .focusEffectDisabledIfAvailable()
+                .scaleEffect(isFocused.wrappedValue ? scale : 1)
+                .animation(.easeOut(duration: 0.14), value: isFocused.wrappedValue)
+                .onChange(of: isFocused.wrappedValue) { _, focused in
+                    if focused { onFocus() }
+                }
+        }
+    }
+}
+
+/// With Card Focus: System, tells a Details card that focus came to it (it doesn't follow its
+/// focus then). Placed in the button's label, where tvOS says whether the button is focused.
+private struct TvDetailsSystemFocusReporter: View {
+    let isActive: Bool
+    let onFocus: () -> Void
+
+    var body: some View {
+        if isActive {
+            TVNativeFocusObserver { focused in
+                if focused { onFocus() }
+            }
+        }
+    }
+}
+
+/// With Card Focus: System, tvOS's highlight on part of a card (a cast photo) as it's focused.
+private struct TvDetailsSystemHighlight: ViewModifier {
+    let isActive: Bool
+
+    func body(content: Content) -> some View {
+        if isActive {
+            content.hoverEffect(.highlight)
+        } else {
+            content
+        }
+    }
+}
+
 private struct TvDetailsPersonCard: View {
     let person: TmdbPersonMetadata
     let onSelect: () -> Void
@@ -7726,6 +7763,7 @@ private struct TvDetailsPersonCard: View {
 
     @FocusState private var isFocused: Bool
     @State private var profileImage: UIImage?
+    @Environment(\.cardAppearance) private var cardAppearance
 
     var body: some View {
         Button(action: onSelect) {
@@ -7750,6 +7788,8 @@ private struct TvDetailsPersonCard: View {
                                 .foregroundColor(isFocused ? .black : .white)
                         }
                     }
+                    // Card Focus: System: the photo lifts with tvOS's own highlight.
+                    .modifier(TvDetailsSystemHighlight(isActive: cardAppearance.usesSystemFocusEffect))
 
                 Text(person.name)
                     .font(.system(size: 24, weight: .medium))
@@ -7767,17 +7807,17 @@ private struct TvDetailsPersonCard: View {
                 }
             }
             .frame(width: 220)
-        }
-        .buttonStyle(PosterCardButtonStyle())
-        .focused($isFocused)
-        .focusEffectDisabledIfAvailable()
-        .scaleEffect(isFocused ? 1.08 : 1)
-        .animation(.easeOut(duration: 0.14), value: isFocused)
-        .onChange(of: isFocused) { _, focused in
-            if focused {
-                onFocus()
+            .background {
+                TvDetailsSystemFocusReporter(isActive: cardAppearance.usesSystemFocusEffect, onFocus: onFocus)
             }
         }
+        .modifier(TvDetailsCardFocusStyle(
+            system: cardAppearance.usesSystemFocusEffect,
+            systemStyle: .highlightedContent,
+            isFocused: $isFocused,
+            scale: 1.08,
+            onFocus: onFocus
+        ))
         .onExitCommand {
             onBack?()
         }
@@ -9268,182 +9308,54 @@ private struct TvEpisodeCard: View {
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            Button(action: action) {
-                ZStack(alignment: .bottomLeading) {
-                episodeArtwork
-
-                LinearGradient(
-                    gradient: Gradient(stops: [
-                        .init(color: .black.opacity(0.0), location: 0.12),
-                        .init(color: .black.opacity(0.28), location: 0.46),
-                        .init(color: .black.opacity(0.78), location: 0.78),
-                        .init(color: .black.opacity(0.94), location: 1.0)
-                    ]),
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-
-                VStack(alignment: .leading, spacing: 14) {
-                    Text(L10n.format("details_episode_number", fallback: "EPISODE %d", video.episode))
-                        .font(.system(size: 20, weight: .bold))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
+            if cardAppearance.usesSystemFocusEffect {
+                // Card Focus: System. tvOS's card effect (lift, tilt, shadow) is drawn by the
+                // system, and the card never reads its focus: focus passing over it doesn't
+                // redraw it (with Nuvio's look the two cards it passes between are redrawn,
+                // two to three cards a move).
+                Button(action: action) {
+                    cardLabel(focused: false)
                         .background {
-                            if liquidGlassCards {
-                                // No live glass, and no thin gradient border either: inside the
-                                // card's scale effect, as the strip moved, both shimmered and
-                                // swam. A translucent fill, a little brighter on focus.
-                                Capsule()
-                                    .fill(Color.white.opacity(isFocused ? 0.22 : 0.14))
-                            } else {
-                                Capsule()
-                                    .fill(Color.black.opacity(0.52))
+                            TVNativeFocusObserver { focused in
+                                if focused { onFocus() }
                             }
                         }
-
-                    Text(video.title)
-                        .font(.system(size: 30, weight: .bold))
-                        .foregroundColor(.white)
-                        .lineLimit(1)
-
-                    if let overview = video.overview, !overview.isEmpty {
-                        Text(overview)
-                            .font(.system(size: 22, weight: .regular))
-                            .foregroundColor(.white.opacity(0.78))
-                            .lineSpacing(4)
-                            .lineLimit(3)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-
-                    HStack(spacing: 16) {
-                        ForEach(episodeRatingItems) { item in
-                            HStack(spacing: 6) {
-                                if let iconUrl = item.iconUrl {
-                                    CachedRatingIcon(url: iconUrl, fallbackColor: item.color)
-                                        .frame(width: 22, height: 22)
-                                } else if let assetName = item.assetName {
-                                    Image(assetName)
-                                        .resizable()
-                                        .scaledToFit()
-                                        .frame(height: 20)
-                                } else {
-                                    Text(item.displayName)
-                                        .font(.system(size: 20, weight: .bold))
-                                        .foregroundColor(.white.opacity(0.78))
-                                }
-
-                                Text(item.valueText)
-                                    .font(.system(size: 20, weight: .bold))
-                                    .foregroundColor(item.color)
-                            }
-                        }
-
-                        Spacer(minLength: 12)
-
-                        if let dateText {
-                            Text(dateText)
-                                .font(.system(size: 20, weight: .medium))
-                                .foregroundColor(.white.opacity(0.62))
-                        }
-                    }
                 }
-                .padding(EdgeInsets(top: 24, leading: 24, bottom: continueProgress == nil ? 24 : 44, trailing: 24))
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-
-                    continueProgressOverlay
+                .buttonStyle(.card)
+                .focused(focus, equals: cardKey)
+                .onExitCommand {
+                    onBack?()
                 }
-                .frame(width: cardWidth, height: cardHeight)
-                // No live glass behind the card: the still covers it.
-                .background {
-                    shape
-                        .fill(isFocused ? Color.white.opacity(0.18) : Color.white.opacity(0.08))
-                }
-                .clipShape(shape)
-                // Without glass's thin gradient border on the focused card (`isEnabled: false`):
-                // drawn beside the focus outline, it swam as the card grew and the strip moved.
-                // Only the AMOLED surfaces style applies.
-                .modifier(
-                    LiquidGlassCardModifier(
-                        cornerRadius: episodeCornerRadius,
-                        isFocused: isFocused,
-                        isEnabled: false,
-                        coveredByArtwork: true
-                    )
-                )
-                .overlay(alignment: .topTrailing) {
-                    if watchCount > 0 {
-                        WatchedCheckmarkIcon(watchCount: watchCount)
-                    }
-                }
-                .overlay(
-                    shape.stroke(
-                        isFocused ? AppFocusOutline.color : Color.clear,
-                        lineWidth: isFocused ? AppFocusOutline.width : 0
-                    )
-                )
-                // Only the focused card casts a shadow (see PosterCard).
-                .shadow(
-                    color: Color.black.opacity(isFocused ? 0.45 : 0),
-                    radius: isFocused ? 20 : 0,
-                    y: isFocused ? 14 : 0
-                )
-            }
-            .buttonStyle(PosterCardButtonStyle())
-            .focused($isFocused)
-            .focused(focus, equals: cardKey)
-            .focusEffectDisabledIfAvailable()
-            .scaleEffect(isFocused ? 1.05 : 1)
-            .animation(.easeOut(duration: 0.14), value: isFocused)
-            .onChange(of: isFocused) { _, focused in
-                if focused { onFocus() }
-            }
-            .onExitCommand {
-                onBack?()
-            }
-            .contextMenu {
-                if smartStreamSelection, let onPlayManually {
-                    Button {
-                        performAfterMenuDismissal(onPlayManually)
-                    } label: {
-                        Label(
-                            L10n.string("action_select_stream_manually", fallback: "Choose Source Manually"),
-                            systemImage: "list.bullet"
+                .contextMenu { episodeMenu }
+            } else {
+                Button(action: action) {
+                    cardLabel(focused: isFocused)
+                        .overlay(
+                        shape.stroke(
+                            isFocused ? AppFocusOutline.color : Color.clear,
+                            lineWidth: isFocused ? AppFocusOutline.width : 0
                         )
-                    }
-                }
-
-                Button {
-                    performAfterMenuDismissal(onToggleWatched)
-                } label: {
-                    Label(
-                        isWatched
-                            ? L10n.string("details_mark_as_unwatched", fallback: "Mark as unwatched")
-                            : L10n.string("details_mark_as_watched", fallback: "Mark as watched"),
-                        systemImage: isWatched ? "eye.slash.fill" : "eye.fill"
+                    )
+                    // Only the focused card casts a shadow (see PosterCard).
+                    .shadow(
+                        color: Color.black.opacity(isFocused ? 0.45 : 0),
+                        radius: isFocused ? 20 : 0,
+                        y: isFocused ? 14 : 0
                     )
                 }
-
-                Button {
-                    performAfterMenuDismissal(onMarkWatchedUpTo)
-                } label: {
-                    Label(
-                        L10n.string("details_mark_up_to_this_point_as_watched", fallback: "Mark up to this point as watched"),
-                        systemImage: "checklist.checked"
-                    )
+                .buttonStyle(PosterCardButtonStyle())
+                .focused($isFocused)
+                .focused(focus, equals: cardKey)
+                .focusEffectDisabledIfAvailable()
+                .scaleEffect(isFocused ? 1.05 : 1)
+                .animation(.easeOut(duration: 0.14), value: isFocused)
+                .onChange(of: isFocused) { _, focused in
+                    if focused { onFocus() }
                 }
-
-                Button {
-                    performAfterMenuDismissal(onToggleSeasonWatched)
-                } label: {
-                    Label(
-                        isSeasonWatched
-                            ? L10n.string("details_mark_season_as_unwatched", fallback: "Mark season as unwatched")
-                            : L10n.string("details_mark_season_as_watched", fallback: "Mark season as watched"),
-                        systemImage: isSeasonWatched ? "eye.slash" : "eye"
-                    )
+                .onExitCommand {
+                    onBack?()
                 }
+                .contextMenu { episodeMenu }
             }
         }
         .onMoveCommand { direction in
@@ -9452,6 +9364,163 @@ private struct TvEpisodeCard: View {
             } else if direction == .up {
                 onMoveUp?()
             }
+        }
+    }
+
+    /// The card's still, text and badges; `focused` brightens its badge and background.
+    private func cardLabel(focused isFocused: Bool) -> some View {
+        ZStack(alignment: .bottomLeading) {
+        episodeArtwork
+
+        LinearGradient(
+            gradient: Gradient(stops: [
+                .init(color: .black.opacity(0.0), location: 0.12),
+                .init(color: .black.opacity(0.28), location: 0.46),
+                .init(color: .black.opacity(0.78), location: 0.78),
+                .init(color: .black.opacity(0.94), location: 1.0)
+            ]),
+            startPoint: .top,
+            endPoint: .bottom
+        )
+
+        VStack(alignment: .leading, spacing: 14) {
+            Text(L10n.format("details_episode_number", fallback: "EPISODE %d", video.episode))
+                .font(.system(size: 20, weight: .bold))
+                .foregroundColor(.white)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background {
+                    if liquidGlassCards {
+                        // No live glass, and no thin gradient border either: inside the
+                        // card's scale effect, as the strip moved, both shimmered and
+                        // swam. A translucent fill, a little brighter on focus.
+                        Capsule()
+                            .fill(Color.white.opacity(isFocused ? 0.22 : 0.14))
+                    } else {
+                        Capsule()
+                            .fill(Color.black.opacity(0.52))
+                    }
+                }
+
+            Text(video.title)
+                .font(.system(size: 30, weight: .bold))
+                .foregroundColor(.white)
+                .lineLimit(1)
+
+            if let overview = video.overview, !overview.isEmpty {
+                Text(overview)
+                    .font(.system(size: 22, weight: .regular))
+                    .foregroundColor(.white.opacity(0.78))
+                    .lineSpacing(4)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            HStack(spacing: 16) {
+                ForEach(episodeRatingItems) { item in
+                    HStack(spacing: 6) {
+                        if let iconUrl = item.iconUrl {
+                            CachedRatingIcon(url: iconUrl, fallbackColor: item.color)
+                                .frame(width: 22, height: 22)
+                        } else if let assetName = item.assetName {
+                            Image(assetName)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(height: 20)
+                        } else {
+                            Text(item.displayName)
+                                .font(.system(size: 20, weight: .bold))
+                                .foregroundColor(.white.opacity(0.78))
+                        }
+
+                        Text(item.valueText)
+                            .font(.system(size: 20, weight: .bold))
+                            .foregroundColor(item.color)
+                    }
+                }
+
+                Spacer(minLength: 12)
+
+                if let dateText {
+                    Text(dateText)
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundColor(.white.opacity(0.62))
+                }
+            }
+        }
+        .padding(EdgeInsets(top: 24, leading: 24, bottom: continueProgress == nil ? 24 : 44, trailing: 24))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+
+            continueProgressOverlay
+        }
+        .frame(width: cardWidth, height: cardHeight)
+        // No live glass behind the card: the still covers it.
+        .background {
+            shape
+                .fill(isFocused ? Color.white.opacity(0.18) : Color.white.opacity(0.08))
+        }
+        .clipShape(shape)
+        // Without glass's thin gradient border on the focused card (`isEnabled: false`):
+        // drawn beside the focus outline, it swam as the card grew and the strip moved.
+        // Only the AMOLED surfaces style applies.
+        .modifier(
+            LiquidGlassCardModifier(
+                cornerRadius: episodeCornerRadius,
+                isFocused: isFocused,
+                isEnabled: false,
+                coveredByArtwork: true
+            )
+        )
+        .overlay(alignment: .topTrailing) {
+            if watchCount > 0 {
+                WatchedCheckmarkIcon(watchCount: watchCount)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var episodeMenu: some View {
+        if smartStreamSelection, let onPlayManually {
+            Button {
+                performAfterMenuDismissal(onPlayManually)
+            } label: {
+                Label(
+                    L10n.string("action_select_stream_manually", fallback: "Choose Source Manually"),
+                    systemImage: "list.bullet"
+                )
+            }
+        }
+
+        Button {
+            performAfterMenuDismissal(onToggleWatched)
+        } label: {
+            Label(
+                isWatched
+                    ? L10n.string("details_mark_as_unwatched", fallback: "Mark as unwatched")
+                    : L10n.string("details_mark_as_watched", fallback: "Mark as watched"),
+                systemImage: isWatched ? "eye.slash.fill" : "eye.fill"
+            )
+        }
+
+        Button {
+            performAfterMenuDismissal(onMarkWatchedUpTo)
+        } label: {
+            Label(
+                L10n.string("details_mark_up_to_this_point_as_watched", fallback: "Mark up to this point as watched"),
+                systemImage: "checklist.checked"
+            )
+        }
+
+        Button {
+            performAfterMenuDismissal(onToggleSeasonWatched)
+        } label: {
+            Label(
+                isSeasonWatched
+                    ? L10n.string("details_mark_season_as_unwatched", fallback: "Mark season as unwatched")
+                    : L10n.string("details_mark_season_as_watched", fallback: "Mark season as watched"),
+                systemImage: isSeasonWatched ? "eye.slash" : "eye"
+            )
         }
     }
 
