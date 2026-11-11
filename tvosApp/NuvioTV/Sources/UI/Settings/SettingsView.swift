@@ -22459,7 +22459,7 @@ private struct AIOExperimentSummaryCard: View {
 
     var body: some View {
         SettingsFeatureSummaryCard(
-            featureName: "AIOStreams (experiment)",
+            featureName: "AIOStreams",
             status: status,
             actionSubtitle: "The original AIOStreams in Node.js on this Apple TV: start it, open its configuration page, update it and see how it runs",
             accentColor: accentColor
@@ -22494,7 +22494,7 @@ private struct AIOExperimentSheet: View {
 
     var body: some View {
         SettingsFeatureSettingsSheet(
-            title: "AIOStreams (experiment)",
+            title: "AIOStreams",
             subtitle: "Node.js \(aio.packageVersion.isEmpty ? "" : "· AIOStreams \(aio.packageVersion)")"
         ) {
             VStack(alignment: .leading, spacing: 22) {
