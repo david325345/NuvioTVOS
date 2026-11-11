@@ -8142,7 +8142,8 @@ struct TVHomeView: View {
                             externalFocus: cardFocusBinding,
                             ownsCardFocus: usesRowFocus,
                             focusRequest: rowFocusRequest.forRow(section.id),
-                            stagesCardBuild: abs(index - focusedRowIndex) > 2,
+                            stagesCardBuild: abs(index - focusedRowIndex) > 2
+                                || (index != focusedRowIndex && (isFastScrolling || focusWork.isStagingRowsAfterJump)),
                             restrictFocusToCardKey: rowFocusRestriction(section.id),
                             retainFocusAppearanceForCardKey: activeFocusRestrictionCardID,
                 suppressFocusAnimations: rowSuppressesReturnFocusAnimations(section.id),

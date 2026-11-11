@@ -1445,7 +1445,9 @@ enum EpisodeReleasePolicy {
         }
 
         let parsed: Date?
-        if !raw.contains("T"), let day = isoDay(raw) {
+        if let date = fastUTCDate(raw) {
+            parsed = date
+        } else if !raw.contains("T"), let day = isoDay(raw) {
             let parts = day.split(separator: "-").compactMap { Int($0) }
             if parts.count == 3 {
                 var calendar = Calendar(identifier: .gregorian)
@@ -1482,6 +1484,58 @@ enum EpisodeReleasePolicy {
 
         cacheReleaseDate(parsed, for: raw)
         return parsed
+    }
+
+    /// "2008-01-20", "2008-01-20T19:00:00Z" and "2008-01-20T19:00:00.000Z", the shapes addons
+    /// send, read by hand (a day alone is midnight UTC, as below). Through the system's date
+    /// formatters, a long series' episodes, each looked at for the first time, held the main
+    /// thread for 400 ms as Details opened. Any other shape (an offset, a space instead of "T")
+    /// is nil here and left to the formatters.
+    static func fastUTCDate(_ raw: String) -> Date? {
+        let bytes = Array(raw.utf8)
+        func number(_ start: Int, _ count: Int) -> Int? {
+            guard start + count <= bytes.count else { return nil }
+            var value = 0
+            for index in start..<(start + count) {
+                let byte = bytes[index]
+                guard byte >= 48, byte <= 57 else { return nil }
+                value = value * 10 + Int(byte - 48)
+            }
+            return value
+        }
+        guard bytes.count >= 10, bytes[4] == 45, bytes[7] == 45,
+              let year = number(0, 4), let month = number(5, 2), let day = number(8, 2),
+              (1...12).contains(month), (1...31).contains(day) else { return nil }
+        var seconds = 0
+        var fraction = 0.0
+        if bytes.count > 10 {
+            // "T", ":" twice, then the seconds, an optional fraction, and "Z".
+            guard bytes.count >= 20, bytes[10] == 84, bytes[13] == 58, bytes[16] == 58,
+                  let hour = number(11, 2), let minute = number(14, 2), let second = number(17, 2),
+                  hour < 24, minute < 60, second < 60 else { return nil }
+            var index = 19
+            if bytes[index] == 46 {
+                index += 1
+                let digitsStart = index
+                var scale = 0.1
+                while index < bytes.count, bytes[index] >= 48, bytes[index] <= 57 {
+                    fraction += Double(bytes[index] - 48) * scale
+                    scale /= 10
+                    index += 1
+                }
+                guard index > digitsStart else { return nil }
+            }
+            guard index == bytes.count - 1, bytes[index] == 90 else { return nil }
+            seconds = hour * 3_600 + minute * 60 + second
+        }
+        // Days since 1970-01-01 (Howard Hinnant's days_from_civil).
+        let shiftedYear = month <= 2 ? year - 1 : year
+        let era = (shiftedYear >= 0 ? shiftedYear : shiftedYear - 399) / 400
+        let yearOfEra = shiftedYear - era * 400
+        let dayOfYear = (153 * ((month + 9) % 12) + 2) / 5 + day - 1
+        let dayOfEra = yearOfEra * 365 + yearOfEra / 4 - yearOfEra / 100 + dayOfYear
+        let days = era * 146_097 + dayOfEra - 719_468
+        return Date(timeIntervalSince1970: Double(days * 86_400 + seconds) + fraction)
     }
 
     private static func cacheReleaseDate(_ value: Date?, for raw: String) {
