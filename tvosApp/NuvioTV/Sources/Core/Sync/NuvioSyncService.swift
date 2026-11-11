@@ -51,6 +51,11 @@ enum ProfileSettingsSnapshot {
                 snapshot[key] = value
             }
         }
+        // Fork (AIOStreams in Nuvio): the Apple TV's own keys; synced only when
+        // chosen, which the export decides (AIOSettingsSync).
+        for (key, value) in AIOSettingsSync.observedValues() {
+            snapshot[key] = value
+        }
         return snapshot
     }
 
@@ -3649,8 +3654,9 @@ final class NuvioAPIClient {
         let themeFeature = (mobileFeatures[Self.themeSettingsFeature] as? [String: Any])
             ?? (features[Self.themeSettingsFeature] as? [String: Any])
         let usenetFeature = features[UsenetSettingsSync.featureKey] as? [String: Any]
+        let aioFeature = features[AIOSettingsSync.featureKey] as? [String: Any]
 
-        guard tvosFeature != nil || layoutSettingsFeature != nil || debridFeature != nil || tmdbFeature != nil || streamBadgeFeature != nil || posterCardStyleFeature != nil || playerFeature != nil || continueWatchingFeature != nil || androidTraktFeature != nil || mdbListFeature != nil || themeFeature != nil || usenetFeature != nil else {
+        guard tvosFeature != nil || layoutSettingsFeature != nil || debridFeature != nil || tmdbFeature != nil || streamBadgeFeature != nil || posterCardStyleFeature != nil || playerFeature != nil || continueWatchingFeature != nil || androidTraktFeature != nil || mdbListFeature != nil || themeFeature != nil || usenetFeature != nil || aioFeature != nil else {
             return false
         }
 
@@ -3677,6 +3683,19 @@ final class NuvioAPIClient {
             savePassword: { UsenetCredentialStore.save($0, forServerID: $1, profileScope: localProfileId) },
             removePassword: { UsenetCredentialStore.remove(forServerID: $0, profileScope: localProfileId) }
         )
+        // Fork (AIOStreams in Nuvio): its settings and configuration, when chosen.
+        if let imported = AIOSettingsSync.importPayload(
+            aioFeature,
+            localBackup: AIOExperiment.loadBackup(),
+            saveBackup: { backup in
+                if let data = try? JSONSerialization.data(withJSONObject: backup) { AIOExperiment.saveBackup(data) }
+            }
+        ) {
+            // AIOExperiment lives on the main thread; the pull runs off it.
+            Task { @MainActor in
+                AIOExperiment.shared.syncedFromAccount(imported)
+            }
+        }
         AddonCatalogRemovalStore.reconcile(in: ProfileSettings.store(for: localProfileId), profileID: localProfileId)
         return true
     }
@@ -3828,6 +3847,11 @@ final class NuvioAPIClient {
             store: profileDefaults,
             existing: features[UsenetSettingsSync.featureKey] as? [String: Any],
             password: { UsenetCredentialStore.password(forServerID: $0, profileScope: localProfileId) }
+        )
+        // Fork (AIOStreams in Nuvio): only when this Apple TV chose it (password included).
+        features[AIOSettingsSync.featureKey] = AIOSettingsSync.export(
+            existing: features[AIOSettingsSync.featureKey] as? [String: Any],
+            backup: AIOExperiment.loadBackup()
         )
 
         settingsJSON["features"] = features

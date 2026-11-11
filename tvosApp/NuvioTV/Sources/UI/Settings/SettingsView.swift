@@ -22633,6 +22633,15 @@ private struct AIOExperimentSheet: View {
                     accentColor: accentColor
                 )
 
+                // Written only from here: an Apple TV that never chose leaves the
+                // account's copy alone (see AIOSettingsSync).
+                SettingsToggleRow(
+                    title: "Save to Nuvio Account",
+                    subtitle: "Keep these settings and your configuration with its password in this profile of your Nuvio account, so a reinstall or another Apple TV gets them back (each runs its own AIOStreams). Stored like debrid keys. Turning it off removes them from the account.",
+                    isOn: Binding(get: { aio.syncToAccount }, set: { aio.setSyncToAccount($0) }),
+                    accentColor: accentColor
+                )
+
                 SettingsActionRow(
                     title: "Anime searches",
                     subtitle: "With the AniList integration, an AniList title: \(aio.animeRequest.explanation)"

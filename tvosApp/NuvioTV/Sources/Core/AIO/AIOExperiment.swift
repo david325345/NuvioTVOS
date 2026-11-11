@@ -41,17 +41,17 @@ final class AIOExperiment: ObservableObject {
 
     nonisolated static let aioPort = 8770
     nonisolated static let lanPort = 8767
-    private nonisolated static let autoStartKey = "aio.experiment.autoStart"
-    private nonisolated static let addonKey = "aio.experiment.addonEnabled"
+    nonisolated static let autoStartKey = "aio.experiment.autoStart"
+    nonisolated static let addonKey = "aio.experiment.addonEnabled"
     private nonisolated static let secretKey = "aio.experiment.secret"
     private nonisolated static let runRecordKey = "aio.experiment.lastRun"
     private nonisolated static let manifestKey = "aio.experiment.manifest"
-    private nonisolated static let detailedLogKey = "aio.experiment.detailedLog"
+    nonisolated static let detailedLogKey = "aio.experiment.detailedLog"
     private nonisolated static let backupDefaultsKey = "aio.experiment.backup"
-    private nonisolated static let sourceKey = "aio.experiment.source"
+    nonisolated static let sourceKey = "aio.experiment.source"
     private nonisolated static let usePreviousKey = "aio.experiment.usePrevious"
     private nonisolated static let versionKey = "aio.experiment.version"
-    private nonisolated static let animeRequestKey = "aio.experiment.animeRequest"
+    nonisolated static let animeRequestKey = "aio.experiment.animeRequest"
     /// AIOStreams' official image.
     nonisolated static let defaultSource = "ghcr.io/viren070/aiostreams"
     /// Nuvio's own port in nuvio-main.mjs (versions), 127.0.0.1 only.
@@ -121,6 +121,8 @@ final class AIOExperiment: ObservableObject {
     @Published private(set) var notice: String?
     @Published private(set) var lastWarmUp: String?
     @Published private(set) var hasBackup = false
+    /// AIOStreams in the Nuvio account (Save to Nuvio Account, `AIOSettingsSync`).
+    @Published private(set) var syncToAccount: Bool
     @Published private(set) var autoStart: Bool
     @Published private(set) var addonEnabled: Bool
     @Published private(set) var detailedLog: Bool
@@ -169,6 +171,7 @@ final class AIOExperiment: ObservableObject {
         usePreviousAtNextStart = UserDefaults.standard.bool(forKey: Self.usePreviousKey)
         animeRequest = Self.animeRequestSetting
         hasBackup = Self.loadBackup() != nil
+        syncToAccount = AIOSettingsSync.syncChoice() ?? false
         loadPreviousRun()
         let center = NotificationCenter.default
         _ = center.addObserver(forName: Notification.Name("UIApplicationDidReceiveMemoryWarningNotification"), object: nil, queue: nil) { _ in
@@ -371,6 +374,13 @@ final class AIOExperiment: ObservableObject {
     func setDetailedLog(_ enabled: Bool) {
         detailedLog = enabled
         UserDefaults.standard.set(enabled, forKey: Self.detailedLogKey)
+    }
+
+    /// AIOStreams' settings here and its configuration (with the password) in
+    /// this profile of the Nuvio account; off removes them from the account.
+    func setSyncToAccount(_ enabled: Bool) {
+        syncToAccount = enabled
+        AIOSettingsSync.setSyncChoice(enabled)
     }
 
     /// The configuration page from a computer on the same network.
@@ -677,6 +687,10 @@ final class AIOExperiment: ObservableObject {
     /// same settings and password), or Nuvio says so.
     func checkConfiguration() async {
         guard phase == .running, !checkingConfiguration else { return }
+        // A newer configuration from the Nuvio account comes first.
+        if UserDefaults.standard.bool(forKey: AIOSettingsSync.pendingBackupKey), await applySyncedBackup() {
+            return
+        }
         checkingConfiguration = true
         defer {
             checkingConfiguration = false
@@ -735,7 +749,92 @@ final class AIOExperiment: ObservableObject {
         try? FileManager.default.removeItem(at: file)
         if Self.saveBackup(data) {
             hasBackup = true
+            // The account sync notices it (when this Apple TV keeps AIOStreams there).
+            AIOSettingsSync.noteNewBackup()
         }
+    }
+
+    // MARK: - From the Nuvio account (AIOSettingsSync)
+
+    /// An account pull brought AIOStreams' settings or a newer configuration.
+    func syncedFromAccount(_ imported: AIOSettingsSync.Imported) {
+        let defaults = UserDefaults.standard
+        syncToAccount = AIOSettingsSync.syncChoice() ?? false
+        autoStart = defaults.bool(forKey: Self.autoStartKey)
+        addonEnabled = defaults.object(forKey: Self.addonKey) as? Bool ?? true
+        detailedLog = defaults.bool(forKey: Self.detailedLogKey)
+        source = defaults.string(forKey: Self.sourceKey) ?? Self.defaultSource
+        animeRequest = Self.animeRequestSetting
+        hasBackup = Self.loadBackup() != nil
+        if imported.settings { Self.note("settings from the Nuvio account") }
+        publishAddon()
+        if imported.backup {
+            Self.note("a newer configuration in the Nuvio account")
+            Task { await applySyncedBackup() }
+        }
+        // Start with Nuvio came from the account (a reinstall, another Apple TV): now.
+        if phase == .stopped { startIfWanted() }
+    }
+
+    /// The configuration from the account into AIOStreams: into the one here
+    /// when it has the same password (the addon keeps its address), else as a
+    /// new configuration, whose addon takes the old one's place. Runs once
+    /// AIOStreams answers (`checkConfiguration` after a start); true when the
+    /// configuration is in.
+    @discardableResult
+    func applySyncedBackup() async -> Bool {
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: AIOSettingsSync.pendingBackupKey), phase == .running, !checkingConfiguration else { return false }
+        defaults.removeObject(forKey: AIOSettingsSync.pendingBackupKey)
+        guard let backup = Self.loadBackup(), let config = backup["config"],
+              let password = backup["password"] as? String else { return false }
+        checkingConfiguration = true
+        publishAddon()
+        defer {
+            checkingConfiguration = false
+            publishAddon()
+        }
+        if let uuid = backup["uuid"] as? String, let manifest = manifestURL, Self.uuid(fromManifest: manifest) == uuid,
+           await Self.updateConfiguration(uuid: uuid, password: password, config: config) {
+            Self.note("configuration \(uuid.prefix(8))… updated from the Nuvio account")
+        } else {
+            guard let created = await Self.createConfiguration(config: config, password: password) else {
+                notice = "The configuration from your Nuvio account could not be loaded into AIOStreams (see the log)."
+                return false
+            }
+            Self.note("configuration from the Nuvio account loaded as \(created.uuid.prefix(8))…")
+            var updated = backup
+            updated["uuid"] = created.uuid
+            if let data = try? JSONSerialization.data(withJSONObject: updated) { Self.saveBackup(data) }
+            manifestURL = created.manifest
+            defaults.set(created.manifest, forKey: Self.manifestKey)
+        }
+        configurationVerified = true
+        notice = nil
+        publishAddon()
+        await warmUp(unlessSearchSince: startDate)
+        return true
+    }
+
+    /// Changes into an existing configuration (PUT, as the page saves them).
+    private nonisolated static func updateConfiguration(uuid: String, password: String, config: Any) async -> Bool {
+        guard let url = URL(string: "http://127.0.0.1:\(aioPort)/api/v1/user"),
+              let body = try? JSONSerialization.data(withJSONObject: ["config": config]) else { return false }
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Basic " + Data("\(uuid):\(password)".utf8).base64EncodedString(), forHTTPHeaderField: "Authorization")
+        request.httpBody = body
+        request.timeoutInterval = 60
+        guard let (data, response) = try? await URLSession.shared.data(for: request) else {
+            note("account configuration: AIOStreams did not answer")
+            return false
+        }
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if !(200..<300).contains(status) {
+            note("account configuration: HTTP \(status) \(String(decoding: data.prefix(300), as: UTF8.self))")
+        }
+        return (200..<300).contains(status)
     }
 
     /// true / false, or nil when AIOStreams did not answer.
@@ -791,7 +890,7 @@ final class AIOExperiment: ObservableObject {
     }
 
     @discardableResult
-    private nonisolated static func saveBackup(_ data: Data) -> Bool {
+    nonisolated static func saveBackup(_ data: Data) -> Bool {
         let stored = (try? (data as NSData).compressed(using: .zlib) as Data) ?? data
         SecItemDelete(backupQuery as CFDictionary)
         var item = backupQuery
@@ -805,7 +904,7 @@ final class AIOExperiment: ObservableObject {
         return true
     }
 
-    private nonisolated static func loadBackup() -> [String: Any]? {
+    nonisolated static func loadBackup() -> [String: Any]? {
         var query = backupQuery
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
