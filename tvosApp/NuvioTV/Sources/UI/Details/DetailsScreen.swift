@@ -8245,9 +8245,12 @@ private struct TvDetailsEpisodes: View {
     /// keeps the cards a few further from it built, so a move builds none while it animates; the
     /// next ones are built once it has finished.
     @State private var settledEpisodeIndex: Int
-    /// The episodes wholly on screen in the system strip, from where it is scrolled; nil until
-    /// it has reported, or after another season was picked.
-    @State private var systemStripScreen: ClosedRange<Int>?
+    /// The first episode wholly on screen in the system strip, from where it is scrolled; nil
+    /// until it has reported, or after another season was picked. Details redraws when it
+    /// changes, once a card has gone past, and not for the last one on screen too.
+    @State private var systemStripFirstWhole: Int?
+    /// The episodes wholly on screen, as the strip last reported, to look at, never redrawn for.
+    @State private var systemStripScreenBox = TvEpisodeStripScreenBox()
     /// The episode the system strip still has to be scrolled to (put on screen as Details opens,
     /// or focus put back on it), checked again until it is on screen.
     @State private var systemStripScrollTarget: Int?
@@ -8634,7 +8637,10 @@ private struct TvDetailsEpisodes: View {
             onScreenChange: { screen in
                 // A report from the season shown before is no longer where this one is.
                 guard screen.season == (seasonEpisodes.first?.id ?? "") else { return }
-                if systemStripScreen != screen.cards { systemStripScreen = screen.cards }
+                systemStripScreenBox.cards = screen.cards
+                if systemStripFirstWhole != screen.cards.lowerBound {
+                    systemStripFirstWhole = screen.cards.lowerBound
+                }
             }
         ) {
             HStack(alignment: .bottom, spacing: TvEpisodeCardLayout.spacing) {
@@ -8676,7 +8682,8 @@ private struct TvDetailsEpisodes: View {
         }
         .onChange(of: seasonEpisodes.first?.id) { _, _ in
             // Another season: start where its index points (the first episode after a pick).
-            systemStripScreen = nil
+            systemStripScreenBox.cards = nil
+            systemStripFirstWhole = nil
             DispatchQueue.main.async {
                 requestStripScroll(to: episodeScrollIndex)
             }
@@ -8703,9 +8710,9 @@ private struct TvDetailsEpisodes: View {
         // way to an episode, it is where it is going: where it reports being (its start, before
         // the scroll lands) built every card between there and that episode at once, a stall
         // of 277-315 ms as Details opened at a later episode.
-        let reportedStart = systemStripScreen.flatMap { screen -> Int? in
-            if let target = systemStripScrollTarget, !screen.contains(target) { return nil }
-            return screen.lowerBound - 1
+        let reportedStart = systemStripFirstWhole.flatMap { first -> Int? in
+            if let target = systemStripScrollTarget, !isOnSystemStripScreen(target) { return nil }
+            return first - 1
         }
         let screenStart = min(
             max(reportedStart ?? systemStripScrollTarget ?? appearStart, 0),
@@ -8733,7 +8740,7 @@ private struct TvDetailsEpisodes: View {
 
     /// Cards wholly on screen in the system strip (from its start until it has reported).
     private var systemStripScreenRange: ClosedRange<Int> {
-        systemStripScreen ?? TvEpisodeStripScreen.cards(offset: 0, edgeInset: 0, viewportWidth: 1920)
+        systemStripScreenBox.cards ?? TvEpisodeStripScreen.cards(offset: 0, edgeInset: 0, viewportWidth: 1920)
     }
 
     private func isOnSystemStripScreen(_ index: Int) -> Bool {
@@ -9036,6 +9043,12 @@ private struct TvEpisodeStripScrollRequest: Equatable {
     var count = 0
 }
 
+/// Where the system strip last reported being, kept where Details can look at it without
+/// redrawing for it.
+private final class TvEpisodeStripScreenBox {
+    var cards: ClosedRange<Int>?
+}
+
 /// The episodes wholly on screen in the system strip, and the season they belong to.
 private struct TvEpisodeStripScreen: Equatable {
     var cards: ClosedRange<Int>
@@ -9065,8 +9078,6 @@ private struct TvSystemEpisodeStripScroller<Content: View>: View {
     let onScreenChange: (TvEpisodeStripScreen) -> Void
     @ViewBuilder let content: Content
 
-    @State private var position = ScrollPosition(edge: .leading)
-
     var body: some View {
         let edgeInset = edgeInset
         let viewportWidth = viewportWidth
@@ -9085,20 +9096,61 @@ private struct TvSystemEpisodeStripScroller<Content: View>: View {
                 } action: { screen in
                     onScreenChange(screen)
                 }
+                .background(alignment: .topLeading) {
+                    TvStripOffsetSetter(request: request)
+                        .frame(width: 1, height: 1)
+                }
         }
         .coordinateSpace(.named("tvEpisodeStrip"))
-        .scrollPosition($position)
         .scrollClipDisabledIfAvailable()
-        .onChange(of: request, initial: true) { _, request in
-            var transaction = Transaction(animation: nil)
-            transaction.disablesAnimations = true
-            // Half a point on every other request: the same place asked for again (the first
-            // try didn't take) is then still a change, and is scrolled to.
-            let x = CGFloat(request.index) * TvEpisodeCardLayout.step + (request.count % 2 == 0 ? 0 : 0.5)
-            withTransaction(transaction) {
-                position.scrollTo(x: x)
-            }
+    }
+}
+
+/// Puts the strip's scroll where a request asks, on the UIKit scroll view SwiftUI draws the
+/// strip in: once for each request, and nothing while focus moves along the strip. (A SwiftUI
+/// scroll position is state the strip is redrawn for as focus scrolls it; with one, moving along
+/// the episodes dropped 9-10% of frames, 6% before.)
+private struct TvStripOffsetSetter: UIViewRepresentable {
+    let request: TvEpisodeStripScrollRequest
+
+    final class Coordinator {
+        var appliedCount: Int?
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.isUserInteractionEnabled = false
+        view.backgroundColor = .clear
+        return view
+    }
+
+    func updateUIView(_ view: UIView, context: Context) {
+        // Count 0: nothing asked for yet (the strip starts at its start).
+        guard request.count > 0, context.coordinator.appliedCount != request.count else { return }
+        context.coordinator.appliedCount = request.count
+        let x = CGFloat(request.index) * TvEpisodeCardLayout.step
+        // Once this update is laid out, when the scroll view knows how wide its content is. If
+        // it doesn't yet, the strip's next check asks again.
+        DispatchQueue.main.async { [weak view] in
+            guard let scrollView = view?.nearestEnclosingScrollView else { return }
+            let maxX = max(0, scrollView.contentSize.width - scrollView.bounds.width)
+            let target = min(x, maxX)
+            guard abs(scrollView.contentOffset.x - target) > 0.5 else { return }
+            scrollView.setContentOffset(CGPoint(x: target, y: scrollView.contentOffset.y), animated: false)
         }
+    }
+}
+
+private extension UIView {
+    var nearestEnclosingScrollView: UIScrollView? {
+        var current = superview
+        while let view = current {
+            if let scrollView = view as? UIScrollView { return scrollView }
+            current = view.superview
+        }
+        return nil
     }
 }
 
