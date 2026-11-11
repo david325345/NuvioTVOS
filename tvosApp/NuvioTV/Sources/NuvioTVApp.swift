@@ -34,6 +34,7 @@ struct NuvioTVApp: App {
         SubtitleFontLibrary.prepareAtLaunch()
         // Before launch finishes, as BGTaskScheduler requires.
         TopShelfBackgroundRefresh.register()
+        TopShelfFeedStore.refreshAfterLaunch()
         let payloadMigrationKey = "nuvio.tv.migrations.largePayloadPreferences.v1"
         if !UserDefaults.standard.bool(forKey: payloadMigrationKey),
            HomeCatalogPayloadStore.migrateAllKnownPreferences() {

@@ -511,6 +511,21 @@ public enum TopShelfFeedStore {
     /// Redraws the shelf for the current setting: renders the artwork the
     /// chosen layout shows, removes what it no longer shows, and asks the
     /// system to reload the shelf.
+    /// Asks the system, once a launch, to load the shelf again. Reinstalled with the same version
+    /// (a sideload, a test build), the Apple TV showed the shelf grey until it was restarted: its
+    /// content hadn't changed, so nothing asked the new extension for it.
+    public static func refreshAfterLaunch() {
+        guard isAvailable, !didRefreshAfterLaunch else { return }
+        didRefreshAfterLaunch = true
+        Task.detached(priority: .utility) {
+            // A moment after launch, once the system has the newly installed extension.
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            notifyTopShelfContentChanged()
+        }
+    }
+
+    nonisolated(unsafe) private static var didRefreshAfterLaunch = false
+
     public static func refreshArtwork() {
         guard isAvailable else { return }
         Task.detached(priority: .utility) {
