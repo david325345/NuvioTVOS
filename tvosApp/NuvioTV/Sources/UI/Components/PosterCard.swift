@@ -227,6 +227,9 @@ struct PosterCard: View {
     /// Optional upward-focus fallback for Home's lazy vertical rows. The
     /// handler deliberately stays off the default path for other directions.
     var onMove: ((MoveCommandDirection) -> Void)? = nil
+    /// An off-screen row being built a few cards at a time (see `TVCatalogRow.stagesCardBuild`):
+    /// until its turn, the card is empty space of its own size.
+    var buildsLater: Bool = false
     var isWatched: Bool? = nil
     let onClick: () -> Void
 
@@ -255,7 +258,10 @@ struct PosterCard: View {
 
     var body: some View {
         #if os(tvOS)
-        if cardAppearance.usesLightCards {
+        if buildsLater {
+            Color.clear
+                .frame(width: cardWidth, height: totalCardHeight, alignment: .topLeading)
+        } else if cardAppearance.usesLightCards {
             lightCard
         } else {
             nuvioCard
@@ -1364,6 +1370,7 @@ extension PosterCard: Equatable {
             && lhs.retainFocusAppearance == rhs.retainFocusAppearance
             && lhs.allowsFocus == rhs.allowsFocus
             && lhs.focusCallbackContext == rhs.focusCallbackContext
+            && lhs.buildsLater == rhs.buildsLater
             && lhs.isWatched == rhs.isWatched
     }
 }
