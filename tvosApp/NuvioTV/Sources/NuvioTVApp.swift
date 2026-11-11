@@ -6495,7 +6495,7 @@ struct TVHomeView: View {
             ("fast scrolling", "\(isFastScrolling)"),
             ("rows built", "\(rowBuildReach)"),
             ("return animations paused", "\(suppressReturnFocusAnimations)"),
-            ("focus moved away", "\(focusMovedAwayGeneration)"),
+            ("focus moved away", "\(focusWork.focusMovedAwayGeneration)"),
             ("profile focus", nativeProfileFocusedCardKey ?? "-"),
             ("grid hero focus", "\(isGridHeroFocused)"),
             ("catalog rows", "\(store.sectionsRevision)"),
