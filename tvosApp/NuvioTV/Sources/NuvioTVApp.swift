@@ -5050,6 +5050,10 @@ private final class TVHomeFocusWork {
     /// Deferred fallback for the one direction the outer vertical ScrollView
     /// can consume before the previous lazy row is materialized.
     var upwardFocusTask: Task<Void, Never>?
+    /// The rows coming back a step at a time after Back jumped Home to the top; meanwhile the
+    /// rows around where focus was stay built (not all taken down in the jump's frame either).
+    var rowStageTask: Task<Void, Never>?
+    var isStagingRowsAfterJump = false
     var focusedRowIndex: Int = 0
 
     func cancelAll() {
@@ -5897,10 +5901,10 @@ struct TVHomeView: View {
                                         }
 
                                         ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
-                                            let isNearFocusedRow = (index >= focusedRowIndex - min(2, rowBuildReach)
+                                            let isNearFocusedRow = (index >= focusedRowIndex - min(2, max(0, rowBuildReach))
                                                     && index <= focusedRowIndex + min(2, rowBuildReach + 1))
                                                 || (homeCardAppearance.usesSmoothVerticalScrolling
-                                                    && rowBuildReach >= 3
+                                                    && (rowBuildReach >= 3 || focusWork.isStagingRowsAfterJump)
                                                     && abs(index - settledRowIndex) <= 3)
                                             if isNearFocusedRow {
                                                 homeSectionRow(
@@ -7786,11 +7790,13 @@ struct TVHomeView: View {
         targetScrollToTopSectionId = sectionID
         scrollToTopGeneration &+= 1
 
+        let previousRowIndex = focusedRowIndex
         if let rowIndex = visibleSections.firstIndex(where: { $0.id == sectionID }) {
             focusedRowIndex = rowIndex
         } else {
             focusedRowIndex = 0
         }
+        stageRowBuildsAfterJump(from: previousRowIndex, to: focusedRowIndex)
         focusedSectionId = sectionID
 
         store.lastFocusedCardID = cardKey
@@ -7810,6 +7816,28 @@ struct TVHomeView: View {
             let item = section.items[itemIndex]
             settleCatalogFocus(on: item, in: sectionID)
             scheduleLandscapeFocus(cardKey: cardKey)
+        }
+    }
+
+    /// Back from a row far down jumps Home to the top, where none of the rows near it is built.
+    /// Built at once (the focused row and up to three more), they held the main thread for 350 ms;
+    /// now the focused row comes first and a row more every 120 ms, as when Home comes up.
+    private func stageRowBuildsAfterJump(from oldIndex: Int, to newIndex: Int) {
+        guard abs(oldIndex - newIndex) > 3 else { return }
+        focusWork.rowStageTask?.cancel()
+        focusWork.isStagingRowsAfterJump = true
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { rowBuildReach = -1 }
+        focusWork.rowStageTask = Task { @MainActor in
+            for reach in 0...3 {
+                try? await Task.sleep(nanoseconds: 120_000_000)
+                guard !Task.isCancelled else { return }
+                var transaction = Transaction(animation: nil)
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { rowBuildReach = reach }
+            }
+            focusWork.isStagingRowsAfterJump = false
         }
     }
 
