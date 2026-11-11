@@ -465,6 +465,9 @@ final class AIOExperiment: ObservableObject {
             "DISK_CACHE_DIR": cache.path,
             "SECRET_KEY": Self.secret(),
             "ANIME_DB_LEVEL_OF_DETAIL": "required",
+            // Everything Nuvio asks comes from 127.0.0.1, one address for AIOStreams' limits
+            // (15 metadata requests in 5 s, …): a busy search would answer "rate limit exceeded".
+            "DISABLE_RATE_LIMITS": "true",
             // Every request in the log costs work on the TV: warnings and errors unless asked.
             "LOG_LEVEL": detailedLog ? "info" : "warn",
             // process.exit() would close Nuvio: nuvio-main.mjs turns it into a stop.

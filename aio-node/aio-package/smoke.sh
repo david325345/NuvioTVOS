@@ -83,6 +83,8 @@ JS
 node "$RUN/plugins.mjs" &
 PLUGINS_PID=$!
 export NUVIO_PLUGINS_URL="http://127.0.0.1:18766/smoke/stremio/"
+# As Nuvio starts it: everything comes from 127.0.0.1, one address for AIOStreams' limits.
+export DISABLE_RATE_LIMITS=true
 
 started=$(date +%s)
 node --jitless --max-old-space-size=1024 --import "$RUN/wasm/preload.mjs" "$INSTALLER/bootstrap.mjs" > "$RUN/aio.log" 2>&1 &
@@ -130,6 +132,14 @@ MANIFEST=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync(proces
 if [ -n "$MANIFEST" ]; then
   echo "addon address written: ${MANIFEST%%/stremio/*}/stremio/…"
   check "manifest" 200 "$MANIFEST"
+  # More manifests in a row than AIOStreams' 5 in 5 s: none refused with the limits off.
+  limited=0
+  for _ in $(seq 1 12); do
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$MANIFEST")
+    [ "$code" = 429 ] && limited=$((limited + 1))
+  done
+  [ "$limited" = 0 ] && echo "ok   no rate limits: 12 manifests in a row, none refused" \
+    || { echo "FAIL $limited of 12 manifests refused (rate limit)"; failed=1; }
   t0=$(date +%s%N)
   check "stream request" 200 "${MANIFEST%/manifest.json}/stream/movie/tt0133093.json"
   grep -q '127.0.0.1:18766/smoke/resolve/smokeplugin/' "$RUN/body" \
