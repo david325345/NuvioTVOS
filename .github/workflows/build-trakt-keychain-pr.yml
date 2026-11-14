@@ -60,6 +60,12 @@ jobs:
             -only-testing:NuvioTVTests/TraktKeychainMissingStringTests \
             -only-testing:NuvioTVTests/TraktPkceAuthTests \
             -only-testing:NuvioTVTests/SignOutIntegrationLoginTests
+      - name: Why tests failed
+        if: failure()
+        run: |
+          xcrun xcresulttool get test-results summary \
+            --path "${{ runner.temp }}/nuvio-tests/Tests.xcresult" --format json \
+            | ruby -rjson -e 'JSON.parse(STDIN.read).fetch("testFailures", []).each { |f| puts "::error::#{f["testName"]}: #{f["failureText"]}" }' || true
 
   all-tests:
     runs-on: xcode-27
