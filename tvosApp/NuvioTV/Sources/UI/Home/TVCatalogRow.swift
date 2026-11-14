@@ -1012,14 +1012,15 @@ struct TVCatalogRow: View {
                     let inset = scrollView.adjustedContentInset
                     let minX = -inset.left
                     let maxX = max(scrollView.contentSize.width + inset.right - scrollView.bounds.width, minX)
-                    // The end of the row: the card can't come under the title, so tvOS shows the
-                    // last cards itself, as in Aligned (tvOS).
-                    guard target <= maxX else {
-                        debug.move(head + " end: tvOS scrolls (max=\(Int(maxX)))")
+                    let before = scrollView.contentOffset.x
+                    // The end of the row: the card can't come under the title, so the row goes
+                    // to its end once and stays there while focus walks the last cards (as
+                    // Nuvio's rows did).
+                    if target > maxX, before >= maxX - 0.5 {
+                        debug.move(head + " end: at max=\(Int(maxX))")
                         return
                     }
-                    let x = max(target, minX)
-                    let before = scrollView.contentOffset.x
+                    let x = max(min(target, maxX), minX)
                     let offset = CGPoint(x: x, y: scrollView.contentOffset.y)
                     if animation != nil {
                         // Core Animation moves the row (as tvOS's own scroll does), off the
