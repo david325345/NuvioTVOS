@@ -794,12 +794,14 @@ struct ContentView: View {
             }
         }
         .onChange(of: selectedTab) { _, tab in
+            CrashRecorder.noteScreen("main · \(tab)") // test build
             partySourceNavigationRevision &+= 1
             if isPreparingProfile, tab != .home {
                 liftProfileGate(generation: profileGateGeneration)
             }
         }
         .onChange(of: activeScreen) { oldScreen, newScreen in
+            CrashRecorder.noteScreen(newScreen.description) // test build
             TVHomeDebugTrace.log("app.activeScreen changed from \(oldScreen) to \(newScreen)")
             if oldScreen.isPlayer, !newScreen.isPlayer,
                let transitionID = watchPartyOwner.incomingMediaTransition?.id {
@@ -961,12 +963,6 @@ struct ContentView: View {
                 await SMBSessionManager.shared.connectAll()
                 await JellyfinSessionManager.shared.connectAll()
             }
-        }
-        .onChange(of: activeScreen) { _, screen in
-            CrashRecorder.noteScreen(screen.description)
-        }
-        .onChange(of: selectedTab) { _, tab in
-            CrashRecorder.noteScreen("main · \(tab)")
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
