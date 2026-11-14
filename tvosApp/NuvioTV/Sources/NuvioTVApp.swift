@@ -6609,6 +6609,13 @@ struct TVHomeView: View {
 
     @ViewBuilder private var bodyWithModifiersFirstHalf: some View {
         homeBodySecondHalf
+        // TEST BUILD ONLY: what the row alignment test is doing, for a video of it.
+        .overlay(alignment: .topTrailing) {
+            TVRowAlignmentDebugBadge()
+                .padding(.top, 24)
+                .padding(.trailing, 24)
+                .allowsHitTesting(false)
+        }
         .onChange(of: isLoading) { _, loading in
             TVHomeDebugTrace.log("home.onChange(isLoading) loading=\(loading) showsLoading=\(showsLoading)")
             if loading && showsLoading {

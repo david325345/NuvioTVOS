@@ -49,11 +49,15 @@ enum TVRowAlignmentTest {
     static let key = "nuvio.tv.test.rowAlignment"
     static let system = "system"
     static let aligned = "aligned"
+    static let alignedOffset = "alignedOffset"
+    static let alignedUIKit = "alignedUIKit"
     static let alignedByTVOS = "alignedTVOS"
 
     static func label(_ value: String) -> String {
         switch value {
         case aligned: return "Aligned"
+        case alignedOffset: return "Aligned (offset)"
+        case alignedUIKit: return "Aligned (UIKit)"
         case alignedByTVOS: return "Aligned (tvOS)"
         default: return "System"
         }
@@ -62,8 +66,104 @@ enum TVRowAlignmentTest {
     static func next(after value: String) -> String {
         switch value {
         case system: return aligned
-        case aligned: return alignedByTVOS
+        case aligned: return alignedOffset
+        case alignedOffset: return alignedUIKit
+        case alignedUIKit: return alignedByTVOS
         default: return system
+        }
+    }
+}
+
+/// TEST: what the alignment test last did, shown in a corner of Home (only the badge redraws).
+@MainActor
+final class TVRowAlignmentDebug: ObservableObject {
+    static let shared = TVRowAlignmentDebug()
+    @Published private(set) var moveLine = ""
+    @Published private(set) var restLine = ""
+    private var moves = 0
+
+    func move(_ text: String) {
+        moves += 1
+        moveLine = "#\(moves) \(text)"
+    }
+
+    func rest(_ text: String) {
+        restLine = text
+    }
+}
+
+struct TVRowAlignmentDebugBadge: View {
+    @ObservedObject private var debug = TVRowAlignmentDebug.shared
+    @AppStorage(TVRowAlignmentTest.key) private var rowAlignment = TVRowAlignmentTest.system
+
+    var body: some View {
+        if rowAlignment != TVRowAlignmentTest.system {
+            VStack(alignment: .trailing, spacing: 4) {
+                Text("Row Alignment: \(TVRowAlignmentTest.label(rowAlignment))")
+                Text(debug.moveLine.isEmpty ? "move: –" : debug.moveLine)
+                Text(debug.restLine.isEmpty ? "rest: –" : debug.restLine)
+            }
+            .font(.system(size: 20, weight: .semibold, design: .monospaced))
+            .foregroundStyle(.yellow)
+            .padding(10)
+            .background(Color.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 8))
+        }
+    }
+}
+
+/// TEST: the UIKit scroll view under a row's SwiftUI ScrollView, for "Aligned (UIKit)".
+final class TVRowScrollViewBox {
+    weak var scrollView: UIScrollView?
+    var lastOffsetX: CGFloat = 0
+}
+
+struct TVRowScrollViewFinder: UIViewRepresentable {
+    let box: TVRowScrollViewBox
+
+    func makeUIView(context: Context) -> FinderView {
+        let view = FinderView()
+        view.box = box
+        view.isUserInteractionEnabled = false
+        return view
+    }
+
+    func updateUIView(_ uiView: FinderView, context: Context) {
+        uiView.box = box
+        uiView.findScrollView()
+    }
+
+    final class FinderView: UIView {
+        weak var box: TVRowScrollViewBox?
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            findScrollView()
+        }
+
+        func findScrollView() {
+            guard let box, box.scrollView == nil else { return }
+            var view = superview
+            while let current = view {
+                if let scrollView = current as? UIScrollView {
+                    box.scrollView = scrollView
+                    return
+                }
+                view = current.superview
+            }
+        }
+    }
+}
+
+/// TEST: the row's scroll position as a binding, only for "Aligned (offset)".
+struct TVRowAlignmentTestPositionModifier: ViewModifier {
+    let isEnabled: Bool
+    @Binding var position: ScrollPosition
+
+    func body(content: Content) -> some View {
+        if isEnabled {
+            content.scrollPosition($position)
+        } else {
+            content
         }
     }
 }
@@ -502,6 +602,9 @@ struct TVCatalogRow: View {
     @AppStorage(SettingsKey.landscapePosters) private var landscapePosters = false
     @AppStorage(SettingsKey.continueWatchingLandscape) private var continueWatchingLandscape = false
     @AppStorage(TVRowAlignmentTest.key) private var rowAlignment = TVRowAlignmentTest.system
+    // TEST: the row's position for "Aligned (offset)" and its UIKit scroll view for "Aligned (UIKit)".
+    @State private var alignTestPosition = ScrollPosition(idType: String.self)
+    @State private var scrollBox = TVRowScrollViewBox()
 
     var rowTileShape: CollectionTileShape {
         if let explicitTileShape {
@@ -523,14 +626,26 @@ struct TVCatalogRow: View {
 
     /// TEST: a card's width as laid out now (a focused poster in Modern opens as landscape).
     private func cardWidth(for card: TVCatalogMaterializedCard) -> CGFloat {
+        if homeLayout == "Modern" && landscapeFocusedId == card.id {
+            return TVCollectionFolderCardLayout.cardWidth(shape: .landscape, layoutMode: homeLayout)
+        }
+        return restingCardWidth(for: card)
+    }
+
+    /// TEST: a card's width while it is not focused.
+    private func restingCardWidth(for card: TVCatalogMaterializedCard) -> CGFloat {
         let shape: CollectionTileShape
-        if rowTileShape == .landscape || card.item.tileShape == .landscape
-            || (homeLayout == "Modern" && landscapeFocusedId == card.id) {
+        if rowTileShape == .landscape || card.item.tileShape == .landscape {
             shape = .landscape
         } else {
             shape = card.item.tileShape != .poster ? card.item.tileShape : rowTileShape
         }
         return TVCollectionFolderCardLayout.cardWidth(shape: shape, layoutMode: homeLayout)
+    }
+
+    /// TEST: the row's id, short enough for the debug badge.
+    private var debugRowName: String {
+        id.count > 16 ? String(id.suffix(16)) : id
     }
 
     private var rowSpacing: CGFloat {
@@ -817,6 +932,31 @@ struct TVCatalogRow: View {
                         ? TVHomeLayout.scrollAnimation : nil,
                     value: landscapeFocusedId
                 )
+                // TEST (Aligned (UIKit)): finds the UIScrollView under this ScrollView.
+                .background {
+                    if rowAlignment == TVRowAlignmentTest.alignedUIKit {
+                        TVRowScrollViewFinder(box: scrollBox)
+                            .frame(width: 1, height: 1)
+                            .allowsHitTesting(false)
+                    }
+                }
+            }
+            .modifier(TVRowAlignmentTestPositionModifier(
+                isEnabled: rowAlignment == TVRowAlignmentTest.alignedOffset,
+                position: $alignTestPosition
+            ))
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                geometry.contentOffset.x
+            } action: { _, x in
+                scrollBox.lastOffsetX = x
+            }
+            .onScrollPhaseChange { oldPhase, newPhase, context in
+                // TEST: where the row came to rest, for the debug badge.
+                guard newPhase == .idle, rowAlignment != TVRowAlignmentTest.system else { return }
+                TVRowAlignmentDebug.shared.rest(
+                    "rest row=\(debugRowName) idx=\(scrollIndex ?? -1) "
+                        + "x=\(Int(context.geometry.contentOffset.x)) after \(oldPhase)"
+                )
             }
             // TEST (Aligned (tvOS)): the room for the focused card is one card wide, under the
             // title, and scrolling stops with a card's leading edge there.
@@ -831,17 +971,64 @@ struct TVCatalogRow: View {
             .frame(width: stripWidth, height: stripHeight, alignment: .topLeading)
             .offset(x: -horizontalEdgeInset)
             .onChange(of: scrollIndex) { _, index in
-                // TEST (Aligned): each move scrolls the row so the focused card stands under
-                // the title, as the old rows did.
-                guard rowAlignment == TVRowAlignmentTest.aligned,
-                      restrictFocusToCardKey == nil,
-                      let index, cards.indices.contains(index) else { return }
+                // TEST (Aligned, Aligned (offset), Aligned (UIKit)): each move scrolls the row
+                // so the focused card stands under the title, as the old rows did.
+                let mode = rowAlignment
+                guard mode == TVRowAlignmentTest.aligned
+                        || mode == TVRowAlignmentTest.alignedOffset
+                        || mode == TVRowAlignmentTest.alignedUIKit
+                else { return }
+                let debug = TVRowAlignmentDebug.shared
+                guard restrictFocusToCardKey == nil else {
+                    debug.move("row=\(debugRowName) skipped: focus restricted")
+                    return
+                }
+                guard let index, cards.indices.contains(index) else {
+                    debug.move("row=\(debugRowName) skipped: idx \(index ?? -1) of \(cards.count)")
+                    return
+                }
                 let card = cards[index]
-                let room = stripWidth - cardWidth(for: card)
-                guard room > 0 else { return }
-                let anchor = UnitPoint(x: min(max(titleLeading / room, 0), 1), y: 0.5)
-                withAnimation(rowCardFocusAnimations ? TVHomeLayout.scrollAnimation : nil) {
-                    proxy.scrollTo(card.id, anchor: anchor)
+                // The cards before this one at rest; the strip starts its cards at titleLeading,
+                // so this offset puts the card's leading edge under the title.
+                let target = cards[..<index].reduce(CGFloat(0)) {
+                    $0 + restingCardWidth(for: $1) + rowCardSpacing
+                }
+                let animation = rowCardFocusAnimations ? TVHomeLayout.scrollAnimation : nil
+                let head = "row=\(debugRowName) idx=\(index) aim=\(Int(target)) "
+                    + "from=\(Int(scrollBox.lastOffsetX)) anim=\(animation != nil ? "on" : "off")"
+                switch mode {
+                case TVRowAlignmentTest.alignedOffset:
+                    withAnimation(animation) {
+                        alignTestPosition.scrollTo(x: target)
+                    }
+                    debug.move(head + " scrollTo(x:)")
+                case TVRowAlignmentTest.alignedUIKit:
+                    guard let scrollView = scrollBox.scrollView else {
+                        debug.move(head + " no UIScrollView")
+                        return
+                    }
+                    let inset = scrollView.adjustedContentInset
+                    let maxX = max(
+                        scrollView.contentSize.width + inset.right - scrollView.bounds.width,
+                        -inset.left
+                    )
+                    let x = min(max(target, -inset.left), maxX)
+                    scrollView.setContentOffset(
+                        CGPoint(x: x, y: scrollView.contentOffset.y),
+                        animated: animation != nil
+                    )
+                    debug.move(head + " setContentOffset x=\(Int(x)) max=\(Int(maxX)) uikit=\(Int(scrollView.contentOffset.x))")
+                default:
+                    let room = stripWidth - cardWidth(for: card)
+                    guard room > 0 else {
+                        debug.move(head + " no room")
+                        return
+                    }
+                    let anchor = UnitPoint(x: min(max(titleLeading / room, 0), 1), y: 0.5)
+                    withAnimation(animation) {
+                        proxy.scrollTo(card.id, anchor: anchor)
+                    }
+                    debug.move(head + " scrollTo(id) anchor=\(String(format: "%.3f", anchor.x))")
                 }
             }
             .onAppear {

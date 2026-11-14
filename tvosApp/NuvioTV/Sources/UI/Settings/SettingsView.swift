@@ -13384,7 +13384,11 @@ private struct AdvancedSettingsView: View {
     private var rowAlignmentTestSubtitle: String {
         switch rowAlignmentTest {
         case TVRowAlignmentTest.aligned:
-            return "The focused card stays under the row title; the row scrolls on every move"
+            return "Under the row title: the row scrolls to the card on every move (scrollTo id)"
+        case TVRowAlignmentTest.alignedOffset:
+            return "Under the row title: the row scrolls to an exact point (ScrollPosition)"
+        case TVRowAlignmentTest.alignedUIKit:
+            return "Under the row title: UIKit scrolls the row (setContentOffset)"
         case TVRowAlignmentTest.alignedByTVOS:
             return "Under the row title too, left to tvOS (content margins, view-aligned)"
         default:
