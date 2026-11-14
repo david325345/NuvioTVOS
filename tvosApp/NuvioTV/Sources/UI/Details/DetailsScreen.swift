@@ -4478,6 +4478,7 @@ struct TvDetailsContent: View {
             && isTrailerPlaying
             && !isFullscreenTrailerPresented
         guard shouldPark != isTrailerParkedForScroll else { return }
+        TVDetailsMoveTrace.note(shouldPark ? "trailer paused" : "trailer resumed") // test build
         isTrailerParkedForScroll = shouldPark
         if shouldPark {
             trailerPlayer.pause()
@@ -4917,6 +4918,7 @@ struct TvDetailsContent: View {
     }
 
     var body: some View {
+        let _ = TVDetailsMoveTrace.body("content") // test build
         if let meta = uiState.meta {
             let episodePresentation = episodeCache.resolve(
                 meta: meta,
@@ -5028,7 +5030,8 @@ struct TvDetailsContent: View {
                                 guard !Task.isCancelled else { return }
                                 buildLowerSections(upTo: .max)
                             }
-                            .onChange(of: focusedDetailsSection) { _, section in
+                            .onChange(of: focusedDetailsSection) { old, section in
+                                TVDetailsMoveTrace.begin("focus \(old) → \(section)") // test build
                                 buildSectionBelow(section)
                             }
                             // Inset and layout metrics matching Android TV.
@@ -5200,7 +5203,8 @@ struct TvDetailsContent: View {
             // episode on the way out, and while that capture stands every other
             // control here is unfocusable, so the engine can only put focus back
             // where it was.
-            .onChange(of: isScrolledDown) { _, _ in
+            .onChange(of: isScrolledDown) { _, down in
+                TVDetailsMoveTrace.note(down ? "scrolled down" : "back at the top") // test build
                 updateTrailerParkingForScroll()
             }
             .onChange(of: isTrailerPlaying) { _, _ in
@@ -5458,6 +5462,7 @@ struct TvDetailsContent: View {
     /// indicates that the user changed direction.
     private func buildLowerSections(upTo count: Int) {
         guard builtLowerSectionCount < count else { return }
+        TVDetailsMoveTrace.note("sections \(builtLowerSectionCount) → \(count == .max ? "all" : String(count))") // test build
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) { builtLowerSectionCount = count }
@@ -5890,6 +5895,7 @@ private struct TvDetailsScrolledBackdropDimmer: View {
     var isScrolledDown: Bool = false
 
     var body: some View {
+        let _ = TVDetailsMoveTrace.body("dimmer") // test build
         ZStack {
             Color.black
                 .opacity(isScrolledDown ? 0.45 : 0)
@@ -5977,6 +5983,7 @@ private struct TvDetailsBackdrop: View {
     }
 
     var body: some View {
+        let _ = TVDetailsMoveTrace.body("backdrop") // test build
         let backdropColor = Color.nuvioBackground(amoled: amoled, body: bodyColor)
 
         ZStack {
@@ -6194,6 +6201,7 @@ private struct TvDetailsActionRow: View {
     let onFocus: () -> Void
 
     var body: some View {
+        let _ = TVDetailsMoveTrace.body("actions") // test build
         HStack(spacing: 26) {
             TvDetailsActionButton(
                 title: playTitle,
@@ -6680,6 +6688,7 @@ private struct TvDetailsSummary: View {
     }
 
     var body: some View {
+        let _ = TVDetailsMoveTrace.body("summary") // test build
         VStack(alignment: .leading, spacing: 0) {
             if let creatorLine {
                 Text(creatorLine)
@@ -6895,6 +6904,7 @@ private struct TvDetailsCastAndTrailer: View {
     private static let cardsPerStep = 3
 
     var body: some View {
+        let _ = TVDetailsMoveTrace.body("cast") // test build
         let items = displayPeople
         if !items.isEmpty {
             VStack(alignment: .leading, spacing: 28) {
@@ -7073,6 +7083,7 @@ private struct TvDetailsRelatedRow: View {
     }
 
     var body: some View {
+        let _ = TVDetailsMoveTrace.body("related") // test build
         VStack(alignment: .leading, spacing: 22) {
             Text(title)
                 .font(.system(size: 34, weight: .semibold))
@@ -8364,6 +8375,7 @@ private struct TvDetailsPersonCard: View {
     @State private var profileImage: UIImage?
 
     var body: some View {
+        let _ = TVDetailsMoveTrace.body("person") // test build
         Button(action: onSelect) {
             VStack(spacing: 18) {
                 Circle()
@@ -8970,6 +8982,7 @@ private struct TvDetailsEpisodes: View {
     }
 
     var body: some View {
+        let _ = TVDetailsMoveTrace.body("episodes") // test build
         VStack(alignment: .leading, spacing: 30) {
             if isChoosingWatchPartyEpisode {
                 watchPartySelectionPrompt
@@ -9289,6 +9302,7 @@ private struct TvDetailsEpisodes: View {
         .frame(width: stripWidth, height: TvEpisodeCardLayout.stripHeight, alignment: .leading)
         .offset(x: -edgeInset)
         .onChange(of: episodeScrollIndex) { _, index in
+            TVDetailsMoveTrace.note("episodes to \(index)") // test build
             // Episode i starts `i * step` in.
             guard let scrollView = episodeScrollBox.scrollView else { return }
             TVScrollMove.move(
@@ -9955,6 +9969,7 @@ private struct TvEpisodeCard: View {
     }
 
     var body: some View {
+        let _ = TVDetailsMoveTrace.body("episodeCard") // test build
         ZStack(alignment: .topTrailing) {
             Button(action: action) {
                 ZStack(alignment: .bottomLeading) {
