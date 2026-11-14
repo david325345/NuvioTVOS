@@ -8167,6 +8167,316 @@ private struct CustomSubtitleFontRow: View {
     }
 }
 
+/// Test build: crash reports and the test log (Usenet, Back, smoothness), readable here and sent to a phone by QR code.
+private struct TestDiagnosticsSheet: View {
+    let accentColor: Color
+
+    private enum Export: Equatable {
+        case crashes, usenet
+    }
+
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage(SettingsKey.amoled) private var amoled = false
+    @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
+    @State private var reports: [CrashRecorder.Report] = []
+    @State private var selectedReportID: String?
+    @State private var usenetLines: [String] = []
+    @State private var server = PlaybackDiagnosticExportServer()
+    @State private var exporting: Export?
+    @State private var exportURL: URL?
+    @State private var exportMessage: String?
+    @State private var githubRepository = TestLogUploader.repository
+    @State private var githubToken = ""
+    @State private var hasGitHubToken = TestLogUploader.hasToken
+    @State private var isSendingToGitHub = false
+    @State private var githubMessage: String?
+    @State private var githubSent = false
+
+    var body: some View {
+        ZStack {
+            Color.nuvioBackground(amoled: amoled, body: bodyColor)
+                .ignoresSafeArea()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("Crash Reports & Test Log")
+                            .font(.system(size: 36, weight: .bold))
+                            .foregroundColor(.white)
+                        Text("Test build only. Kept on this Apple TV and sent nowhere, unless you send it to GitHub or scan a code below with a phone on the same network.")
+                            .font(.system(size: 20, weight: .medium))
+                            .foregroundColor(.white.opacity(0.62))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    if let exportURL {
+                        HStack(alignment: .center, spacing: 28) {
+                            SettingsQRCodeCard(title: "Scan with your phone", link: exportURL.absoluteString)
+                            Text(exportMessage ?? "")
+                                .font(.system(size: 19, weight: .medium))
+                                .foregroundColor(.white.opacity(0.7))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    } else if let exportMessage {
+                        Text(exportMessage)
+                            .font(.system(size: 19, weight: .medium))
+                            .foregroundColor(.orange.opacity(0.9))
+                    }
+
+                    SettingsGroup(
+                        title: "Send to GitHub",
+                        subtitle: hasGitHubToken
+                            ? "Sends the crash reports and the whole test log as one file to \(githubRepository)."
+                            : "Set a GitHub token first: a fine-grained token for this repository only, with Contents: Read and write. Select the field and type it, or paste it on your iPhone when it offers its keyboard."
+                    ) {
+                        SettingsNativeTextFieldRow(
+                            title: "Repository",
+                            subtitle: "Where the files go (owner/name). A private repository keeps the logs to you.",
+                            placeholder: TestLogUploader.defaultRepository,
+                            text: $githubRepository,
+                            fieldWidth: 380,
+                            status: TestLogUploader.isValidRepository(githubRepository) ? nil : "Should look like owner/name",
+                            statusColor: .orange.opacity(0.9),
+                            onCommit: {
+                                TestLogUploader.repository = githubRepository
+                            }
+                        )
+                        SettingsNativeTextFieldRow(
+                            title: "Token",
+                            subtitle: "Kept in this Apple TV's Keychain, never in the app",
+                            placeholder: hasGitHubToken ? "Set" : "Not set",
+                            text: $githubToken,
+                            isSecure: true,
+                            fieldWidth: 380,
+                            status: hasGitHubToken ? "Set" : "Not set",
+                            onCommit: {
+                                if TestLogUploader.saveToken(githubToken) {
+                                    hasGitHubToken = true
+                                    githubMessage = "Token saved."
+                                }
+                                githubToken = ""
+                            }
+                        )
+                        if hasGitHubToken {
+                            SettingsActionRow(
+                                title: "Send to GitHub",
+                                subtitle: githubMessage ?? "Crash reports and the whole test log",
+                                value: isSendingToGitHub ? "Sending…" : (githubSent ? "Sent" : ""),
+                                accentColor: accentColor
+                            ) {
+                                sendToGitHub()
+                            }
+                            SettingsActionRow(
+                                title: "Forget Token",
+                                subtitle: "Removes it from this Apple TV",
+                                value: "",
+                                accentColor: accentColor
+                            ) {
+                                TestLogUploader.forgetToken()
+                                hasGitHubToken = false
+                                githubSent = false
+                                githubMessage = nil
+                            }
+                        }
+                    }
+
+                    SettingsGroup(
+                        title: "Crash Reports",
+                        subtitle: reports.isEmpty
+                            ? "No crash recorded. When Nuvio closes on its own, the reason is shown here at the next launch."
+                            : "\(reports.count) recorded, newest first. Select one to read it."
+                    ) {
+                        ForEach(reports) { report in
+                            SettingsActionRow(
+                                title: report.summary,
+                                subtitle: report.date.formatted(date: .abbreviated, time: .standard),
+                                value: selectedReportID == report.id ? "Hide" : "Read",
+                                accentColor: accentColor
+                            ) {
+                                selectedReportID = selectedReportID == report.id ? nil : report.id
+                            }
+                            if selectedReportID == report.id {
+                                Text(Self.preview(report.details, lines: 40))
+                                    .font(.system(size: 15, weight: .regular, design: .monospaced))
+                                    .foregroundColor(.white.opacity(0.8))
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .padding(.horizontal, 20)
+                            }
+                        }
+                        if !reports.isEmpty {
+                            SettingsActionRow(
+                                title: "Send Crash Reports to Phone",
+                                subtitle: "A file with every report, in full",
+                                value: exporting == .crashes ? "Ready" : "",
+                                accentColor: accentColor
+                            ) {
+                                startExport(.crashes)
+                            }
+                            SettingsActionRow(
+                                title: "Delete Crash Reports",
+                                subtitle: "Removes them from this Apple TV",
+                                value: "",
+                                accentColor: accentColor
+                            ) {
+                                CrashRecorder.deleteAll()
+                                reports = []
+                            }
+                        }
+                    }
+
+                    SettingsGroup(
+                        title: "Test Log",
+                        subtitle: usenetLines.isEmpty
+                            ? "Nothing yet. Move around Home and come back."
+                            : "The last \(usenetLines.count) lines; the newest are at the bottom."
+                    ) {
+                        if !usenetLines.isEmpty {
+                            Text(usenetLines.suffix(14).joined(separator: "\n"))
+                                .font(.system(size: 14, weight: .regular, design: .monospaced))
+                                .foregroundColor(.white.opacity(0.8))
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(.horizontal, 20)
+                            SettingsActionRow(
+                                title: "Send Test Log to Phone",
+                                subtitle: "A file with the whole log",
+                                value: exporting == .usenet ? "Ready" : "",
+                                accentColor: accentColor
+                            ) {
+                                startExport(.usenet)
+                            }
+                            SettingsActionRow(
+                                title: "Clear Test Log",
+                                subtitle: "Starts it empty",
+                                value: "",
+                                accentColor: accentColor
+                            ) {
+                                TestDiagnosticLog.clear()
+                                usenetLines = []
+                            }
+                        }
+                    }
+                }
+                .frame(width: 1_000, alignment: .leading)
+                .padding(.horizontal, 52)
+                .padding(.vertical, 38)
+            }
+            .focusSection()
+        }
+        .onAppear(perform: reload)
+        .onDisappear { server.stop() }
+        .onExitCommand { dismiss() }
+    }
+
+    private func reload() {
+        reports = CrashRecorder.reports()
+        CrashRecorder.markSeen()
+        TestDiagnosticLog.snapshot { lines in
+            Task { @MainActor in usenetLines = lines }
+        }
+    }
+
+    private func sendToGitHub() {
+        guard !isSendingToGitHub else { return }
+        TestLogUploader.repository = githubRepository
+        isSendingToGitHub = true
+        githubSent = false
+        githubMessage = "Sending…"
+        let object: [String: Any] = [
+            "app": CrashRecorder.appVersion,
+            "sentAt": Date().formatted(.iso8601),
+            "crashReports": reports.map { report in
+                ["date": report.date.formatted(.iso8601), "kind": report.kind.rawValue,
+                 "summary": report.summary, "details": report.details]
+            },
+            "usenetLog": usenetLines
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted]) else {
+            isSendingToGitHub = false
+            githubMessage = "The file could not be prepared."
+            return
+        }
+        Task { @MainActor in
+            let outcome = await TestLogUploader.upload(data)
+            isSendingToGitHub = false
+            switch outcome {
+            case let .sent(path):
+                githubSent = true
+                githubMessage = "Sent as \(path)"
+            case let .failed(message):
+                githubMessage = message
+            }
+        }
+    }
+
+    private func startExport(_ kind: Export) {
+        guard let data = exportData(kind) else {
+            exportMessage = "The file could not be prepared."
+            return
+        }
+        exporting = kind
+        exportURL = nil
+        exportMessage = "Preparing…"
+        server.start(report: data) { state in
+            Task { @MainActor in
+                switch state {
+                case let .ready(url):
+                    exportURL = url
+                    exportMessage = "Open it on a phone on the same network and send me the file. The link works for five minutes."
+                case .failed:
+                    exportURL = nil
+                    exportMessage = "The download could not start. Check this Apple TV's network connection."
+                case .stopped:
+                    exportURL = nil
+                    exporting = nil
+                    exportMessage = nil
+                case .starting:
+                    break
+                }
+            }
+        }
+    }
+
+    /// The export as JSON, trimmed to the size the local download takes.
+    private func exportData(_ kind: Export) -> Data? {
+        let limit = PlaybackDiagnosticTimeline.maximumBytes - 2_048
+        func encode(_ object: [String: Any]) -> Data? {
+            try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted])
+        }
+        switch kind {
+        case .crashes:
+            func object(_ items: [CrashRecorder.Report], detailLimit: Int? = nil) -> [String: Any] {
+                let list: [[String: Any]] = items.map { report in
+                    let details = detailLimit.map { String(report.details.prefix($0)) } ?? report.details
+                    return ["date": report.date.formatted(.iso8601), "kind": report.kind.rawValue,
+                            "summary": report.summary, "details": details]
+                }
+                return ["app": CrashRecorder.appVersion, "crashReports": list]
+            }
+            var kept = reports
+            while !kept.isEmpty {
+                if let data = encode(object(kept)), data.count <= limit { return data }
+                kept.removeLast()
+            }
+            // One report larger than the download takes: its details shortened.
+            if let first = reports.first { return encode(object([first], detailLimit: limit / 2)) }
+            return encode(object([]))
+        case .usenet:
+            var lines = usenetLines
+            while let data = encode(["app": CrashRecorder.appVersion, "usenetLog": lines]) {
+                if data.count <= limit || lines.isEmpty { return data }
+                lines.removeFirst(min(lines.count, 50))
+            }
+            return nil
+        }
+    }
+
+    private static func preview(_ text: String, lines: Int) -> String {
+        let all = text.components(separatedBy: "\n")
+        guard all.count > lines else { return text }
+        return all.prefix(lines).joined(separator: "\n") + "\n… \(all.count - lines) more lines in the file"
+    }
+}
+
 private struct AISubtitleOptionsSheet: View {
     let accentColor: Color
 
@@ -13375,6 +13685,7 @@ private struct AdvancedSettingsView: View {
 
     @AppStorage(PlaybackTimelineRecorder.enabledKey) private var timelineEnabled = false
     @State private var showingPlaybackHistory = false
+    @State private var showingTestDiagnostics = false
     @AppStorage(SettingsKey.fastNavigation) private var fastNavigation = false
     @AppStorage(TVRowAlignmentTest.key) private var rowAlignmentTest = TVRowAlignmentTest.system
     @AppStorage(SettingsKey.playbackDiagnostics) private var playbackDiagnostics = false
@@ -13389,6 +13700,10 @@ private struct AdvancedSettingsView: View {
             return "Under the row title: the row scrolls to an exact point (ScrollPosition)"
         case TVRowAlignmentTest.alignedUIKit:
             return "Under the row title: UIKit scrolls the row (setContentOffset)"
+        case TVRowAlignmentTest.alignedCA:
+            return "Under the row title: Core Animation moves the row; at its end tvOS does"
+        case TVRowAlignmentTest.alignedNarrow:
+            return "Under the row title: the row's scroll area is one card wide, tvOS scrolls it"
         case TVRowAlignmentTest.alignedByTVOS:
             return "Under the row title too, left to tvOS (content margins, view-aligned)"
         default:
@@ -13458,6 +13773,13 @@ private struct AdvancedSettingsView: View {
                     value: L10n.string("action_open", fallback: "Open"),
                     accentColor: accentColor,
                     action: { showingPlaybackHistory = true }
+                )
+                SettingsActionRow(
+                    title: "Crash Reports & Test Log",
+                    subtitle: "Test build: why Nuvio closed, and how smooth each move was; send them to GitHub or a phone",
+                    value: CrashRecorder.hasNewReport ? "New" : L10n.string("action_open", fallback: "Open"),
+                    accentColor: accentColor,
+                    action: { showingTestDiagnostics = true }
                 )
                 #endif
 
@@ -13588,6 +13910,9 @@ private struct AdvancedSettingsView: View {
         #if os(tvOS)
         .fullScreenCover(isPresented: $showingPlaybackHistory) {
             PlaybackDiagnosticHistoryView(accentColor: accentColor)
+        }
+        .fullScreenCover(isPresented: $showingTestDiagnostics) {
+            TestDiagnosticsSheet(accentColor: accentColor)
         }
         #endif
     }
