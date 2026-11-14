@@ -13701,7 +13701,7 @@ private struct AdvancedSettingsView: View {
         case TVRowAlignmentTest.alignedUIKit:
             return "Under the row title: UIKit scrolls the row (setContentOffset)"
         case TVRowAlignmentTest.alignedCA:
-            return "Under the row title: Core Animation moves the row; at its end the row stops"
+            return "Under the row title: Core Animation moves the row, to its last card"
         case TVRowAlignmentTest.alignedNarrow:
             return "Under the row title: the row's scroll area is one card wide, tvOS scrolls it"
         case TVRowAlignmentTest.alignedByTVOS:

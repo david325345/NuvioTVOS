@@ -928,11 +928,16 @@ struct TVCatalogRow: View {
         let narrow = rowAlignment == TVRowAlignmentTest.alignedNarrow
         let findsScrollView = rowAlignment == TVRowAlignmentTest.alignedUIKit
             || rowAlignment == TVRowAlignmentTest.alignedCA
+        // TEST (Aligned (CA)): room after the last card, so it too can come under the title (as
+        // in Nuvio's rows, which moved by the focused card's index alone).
+        let trailingRoom = rowAlignment == TVRowAlignmentTest.alignedCA
+            ? max(titleLeading, stripWidth - titleLeading - rowPosterWidth)
+            : titleLeading
         return ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 rowStack(cards, spacing: rowCardSpacing, narrow: narrow, targets: alignsByTVOS)
                     .padding(.leading, alignsByTVOS || narrow ? 0 : titleLeading)
-                    .padding(.trailing, alignsByTVOS || narrow ? 0 : titleLeading)
+                    .padding(.trailing, alignsByTVOS || narrow ? 0 : trailingRoom)
                     .padding(.vertical, TVHomeLayout.stripVerticalPadding)
                     .animation(
                         rowCardFocusAnimations && restrictFocusToCardKey == nil
@@ -1013,9 +1018,8 @@ struct TVCatalogRow: View {
                     let minX = -inset.left
                     let maxX = max(scrollView.contentSize.width + inset.right - scrollView.bounds.width, minX)
                     let before = scrollView.contentOffset.x
-                    // The end of the row: the card can't come under the title, so the row goes
-                    // to its end once and stays there while focus walks the last cards (as
-                    // Nuvio's rows did).
+                    // The end of the row, should the card still not come under the title (the
+                    // row has room after its last card): the row goes to its end once.
                     if target > maxX, before >= maxX - 0.5 {
                         debug.move(head + " end: at max=\(Int(maxX))")
                         return
