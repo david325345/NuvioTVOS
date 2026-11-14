@@ -30,6 +30,44 @@ enum TVHomeLayout {
     static let fastVerticalScrollAnimation = Animation.interactiveSpring(response: 0.18, dampingFraction: 1.0, blendDuration: 0.12)
 }
 
+/// TEST: view-aligned scrolling for the "Aligned (tvOS)" rows, none for the others.
+struct TVRowAlignmentTestTargetBehavior: ScrollTargetBehavior {
+    let isEnabled: Bool
+
+    func updateTarget(_ target: inout ScrollTarget, context: TargetContext) {
+        guard isEnabled else { return }
+        ViewAlignedScrollTargetBehavior(limitBehavior: .never).updateTarget(&target, context: context)
+    }
+}
+
+/// TEST BUILD ONLY (not for the PR): where a row's focused card sits as focus moves along it.
+/// System: tvOS scrolls the row only as far as it must (the PR's behavior). Aligned: the row
+/// scrolls on each move so the focused card stays under the row's title (the old rows), by
+/// an animated scroll to it. tvOS: the same place, left to tvOS through content margins and
+/// view-aligned scrolling (if tvOS keeps to them).
+enum TVRowAlignmentTest {
+    static let key = "nuvio.tv.test.rowAlignment"
+    static let system = "system"
+    static let aligned = "aligned"
+    static let alignedByTVOS = "alignedTVOS"
+
+    static func label(_ value: String) -> String {
+        switch value {
+        case aligned: return "Aligned"
+        case alignedByTVOS: return "Aligned (tvOS)"
+        default: return "System"
+        }
+    }
+
+    static func next(after value: String) -> String {
+        switch value {
+        case system: return aligned
+        case aligned: return alignedByTVOS
+        default: return system
+        }
+    }
+}
+
 enum TVLayout {
     static let contentLeading: CGFloat = 150
     static let rowLeading: CGFloat = 48
@@ -463,6 +501,7 @@ struct TVCatalogRow: View {
     @AppStorage(SettingsKey.fastNavigation) private var fastNavigation = false
     @AppStorage(SettingsKey.landscapePosters) private var landscapePosters = false
     @AppStorage(SettingsKey.continueWatchingLandscape) private var continueWatchingLandscape = false
+    @AppStorage(TVRowAlignmentTest.key) private var rowAlignment = TVRowAlignmentTest.system
 
     var rowTileShape: CollectionTileShape {
         if let explicitTileShape {
@@ -480,6 +519,18 @@ struct TVCatalogRow: View {
 
     private var rowPosterWidth: CGFloat {
         TVCollectionFolderCardLayout.cardWidth(shape: rowTileShape, layoutMode: homeLayout)
+    }
+
+    /// TEST: a card's width as laid out now (a focused poster in Modern opens as landscape).
+    private func cardWidth(for card: TVCatalogMaterializedCard) -> CGFloat {
+        let shape: CollectionTileShape
+        if rowTileShape == .landscape || card.item.tileShape == .landscape
+            || (homeLayout == "Modern" && landscapeFocusedId == card.id) {
+            shape = .landscape
+        } else {
+            shape = card.item.tileShape != .poster ? card.item.tileShape : rowTileShape
+        }
+        return TVCollectionFolderCardLayout.cardWidth(shape: shape, layoutMode: homeLayout)
     }
 
     private var rowSpacing: CGFloat {
@@ -746,6 +797,9 @@ struct TVCatalogRow: View {
         let rowCardFocusAnimations = smoothFocus && !suppressFocusAnimations && !fastNavigation
         let rowCardSpacing: CGFloat = rowHomeLayout == "Compact" ? 22 : 28
         let cards = TVHomeCardIdentity.materializedTitles(rowID: id, items: items, indices: Array(items.indices))
+        // TEST: where the cards start, under the row's title, in the strip's own coordinates.
+        let titleLeading = horizontalEdgeInset + TVLayout.rowLeading
+        let alignsByTVOS = rowAlignment == TVRowAlignmentTest.alignedByTVOS
         return ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(alignment: .top, spacing: rowCardSpacing) {
@@ -754,8 +808,9 @@ struct TVCatalogRow: View {
                             .id(card.id)
                     }
                 }
-                .padding(.leading, horizontalEdgeInset + TVLayout.rowLeading)
-                .padding(.trailing, horizontalEdgeInset + TVLayout.rowLeading)
+                .scrollTargetLayout(isEnabled: alignsByTVOS)
+                .padding(.leading, alignsByTVOS ? 0 : titleLeading)
+                .padding(.trailing, alignsByTVOS ? 0 : titleLeading)
                 .padding(.vertical, TVHomeLayout.stripVerticalPadding)
                 .animation(
                     rowCardFocusAnimations && restrictFocusToCardKey == nil
@@ -763,9 +818,32 @@ struct TVCatalogRow: View {
                     value: landscapeFocusedId
                 )
             }
+            // TEST (Aligned (tvOS)): the room for the focused card is one card wide, under the
+            // title, and scrolling stops with a card's leading edge there.
+            .contentMargins(.leading, alignsByTVOS ? titleLeading : 0, for: .scrollContent)
+            .contentMargins(
+                .trailing,
+                alignsByTVOS ? max(titleLeading, stripWidth - titleLeading - rowPosterWidth) : 0,
+                for: .scrollContent
+            )
+            .scrollTargetBehavior(TVRowAlignmentTestTargetBehavior(isEnabled: alignsByTVOS))
             .scrollClipDisabled()
             .frame(width: stripWidth, height: stripHeight, alignment: .topLeading)
             .offset(x: -horizontalEdgeInset)
+            .onChange(of: scrollIndex) { _, index in
+                // TEST (Aligned): each move scrolls the row so the focused card stands under
+                // the title, as the old rows did.
+                guard rowAlignment == TVRowAlignmentTest.aligned,
+                      restrictFocusToCardKey == nil,
+                      let index, cards.indices.contains(index) else { return }
+                let card = cards[index]
+                let room = stripWidth - cardWidth(for: card)
+                guard room > 0 else { return }
+                let anchor = UnitPoint(x: min(max(titleLeading / room, 0), 1), y: 0.5)
+                withAnimation(rowCardFocusAnimations ? TVHomeLayout.scrollAnimation : nil) {
+                    proxy.scrollTo(card.id, anchor: anchor)
+                }
+            }
             .onAppear {
                 // Where the row was left (or the card focus goes back to), without animation.
                 let index = effectiveScrollIndex

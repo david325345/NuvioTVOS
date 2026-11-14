@@ -13376,9 +13376,21 @@ private struct AdvancedSettingsView: View {
     @AppStorage(PlaybackTimelineRecorder.enabledKey) private var timelineEnabled = false
     @State private var showingPlaybackHistory = false
     @AppStorage(SettingsKey.fastNavigation) private var fastNavigation = false
+    @AppStorage(TVRowAlignmentTest.key) private var rowAlignmentTest = TVRowAlignmentTest.system
     @AppStorage(SettingsKey.playbackDiagnostics) private var playbackDiagnostics = false
     @AppStorage(SettingsKey.playbackDebug) private var playbackDebug = false
     @State private var isClearingTestHistory = false
+
+    private var rowAlignmentTestSubtitle: String {
+        switch rowAlignmentTest {
+        case TVRowAlignmentTest.aligned:
+            return "The focused card stays under the row title; the row scrolls on every move"
+        case TVRowAlignmentTest.alignedByTVOS:
+            return "Under the row title too, left to tvOS (content margins, view-aligned)"
+        default:
+            return "tvOS scrolls the row only when focus reaches its edge (the PR)"
+        }
+    }
     @State private var testHistoryStatus = ContinueWatchingTestData.status
     @State private var isClearingCache = false
     @State private var clearedCacheStatus: String?
@@ -13401,6 +13413,15 @@ private struct AdvancedSettingsView: View {
                     accentColor: accentColor
                 )
                 .settingsEntryAnchor()
+
+                // TEST BUILD ONLY: compare where a row's focused card sits.
+                SettingsActionRow(
+                    title: "Row Alignment (Test)",
+                    subtitle: rowAlignmentTestSubtitle,
+                    value: TVRowAlignmentTest.label(rowAlignmentTest),
+                    accentColor: accentColor,
+                    action: { rowAlignmentTest = TVRowAlignmentTest.next(after: rowAlignmentTest) }
+                )
             }
 
             SettingsGroup(
