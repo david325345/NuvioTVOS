@@ -13686,6 +13686,7 @@ private struct AdvancedSettingsView: View {
     @AppStorage(PlaybackTimelineRecorder.enabledKey) private var timelineEnabled = false
     @State private var showingPlaybackHistory = false
     @State private var showingTestDiagnostics = false
+    @AppStorage(TVDetailsMoveTest.key) private var detailsMoveTest = TVDetailsMoveTest.nuvio
     @AppStorage(SettingsKey.fastNavigation) private var fastNavigation = false
     @AppStorage(SettingsKey.playbackDiagnostics) private var playbackDiagnostics = false
     @AppStorage(SettingsKey.playbackDebug) private var playbackDebug = false
@@ -13751,6 +13752,15 @@ private struct AdvancedSettingsView: View {
                     value: CrashRecorder.hasNewReport ? "New" : L10n.string("action_open", fallback: "Open"),
                     accentColor: accentColor,
                     action: { showingTestDiagnostics = true }
+                )
+                SettingsActionRow(
+                    title: "Details Move (Test)",
+                    subtitle: detailsMoveTest == TVDetailsMoveTest.ca
+                        ? "Details goes to a section by Core Animation, tvOS's scroll stopped"
+                        : "Details goes to a section by tvOS's scroll (as now)",
+                    value: TVDetailsMoveTest.label(detailsMoveTest),
+                    accentColor: accentColor,
+                    action: { detailsMoveTest = TVDetailsMoveTest.next(after: detailsMoveTest) }
                 )
                 #endif
 

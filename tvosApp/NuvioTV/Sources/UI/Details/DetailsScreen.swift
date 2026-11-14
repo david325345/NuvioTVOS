@@ -4227,6 +4227,9 @@ struct TvDetailsContent: View {
     /// The section that currently owns focus. Other sections expose only their
     /// remembered entry anchor, matching Settings' pre-spatial focus lock.
     @State private var focusedDetailsSection: TvDetailsFocusSection = .actions
+    // TEST (Details Move): tvOS's scroll, or a Core Animation move to the section's top.
+    @AppStorage(TVDetailsMoveTest.key) private var detailsMoveTest = TVDetailsMoveTest.nuvio
+    @State private var detailsSectionTops = TVDetailsSectionTops()
     @State private var isChoosingWatchPartyEpisode = false
     /// Settings → Integrations → AniList: which AniList entry and episode the play target is.
     @State private var aniListTarget: AniListScrobbler.Target?
@@ -4985,6 +4988,7 @@ struct TvDetailsContent: View {
                                 }
                             .padding(.bottom, 52)
                             .frame(height: max(proxy.size.height, 800), alignment: .bottomLeading)
+                            .modifier(TVDetailsSectionTopReader(key: "actions", box: detailsSectionTops, space: "tv-details-scroll"))
 
                             let productionCompanies = uiState.companies.filter { $0.kind == .production && $0.tmdbId != nil }
                             let networks = uiState.companies.filter { $0.kind == .network && $0.tmdbId != nil }
@@ -5004,11 +5008,21 @@ struct TvDetailsContent: View {
                                         productionCompanies: productionCompanies,
                                         scrollProxy: scrollProxy
                                     )
+                                    .modifier(TVDetailsSectionTopReader(
+                                        key: String(describing: section),
+                                        box: detailsSectionTops,
+                                        space: "tv-details-scroll"
+                                    ))
                                 }
                             }
                             }
                             // The hero and each section are where the scroll can settle.
                             .scrollTargetLayout()
+                            .background {
+                                TVScrollViewFinder(box: detailsSectionTops.scrollBox)
+                                    .frame(width: 1, height: 1)
+                                    .allowsHitTesting(false)
+                            }
                             .task {
                                 guard builtLowerSectionCount == 0 else { return }
                                 TvDetailsFocusActivity.start()
@@ -5032,6 +5046,7 @@ struct TvDetailsContent: View {
                             }
                             .onChange(of: focusedDetailsSection) { old, section in
                                 TVDetailsMoveTrace.begin("focus \(old) → \(section)") // test build
+                                moveDetailsByCA(to: section) // test build
                                 buildSectionBelow(section)
                             }
                             // Inset and layout metrics matching Android TV.
@@ -5466,6 +5481,40 @@ struct TvDetailsContent: View {
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) { builtLowerSectionCount = count }
+    }
+
+    /// TEST (Details Move CA): stops tvOS's scroll for the move, which goes frame by frame on the
+    /// main thread, and moves Details to the section's top by Core Animation in its place.
+    private func moveDetailsByCA(to section: TvDetailsFocusSection) {
+        guard detailsMoveTest == TVDetailsMoveTest.ca else { return }
+        let key: String
+        if section == .actions {
+            key = "actions"
+        } else if let below = Self.lowerSection(for: section) {
+            key = String(describing: below)
+        } else {
+            TVDetailsMoveTrace.note("CA: no section for \(section)")
+            return
+        }
+        guard let scrollView = detailsSectionTops.scrollBox.scrollView else {
+            TVDetailsMoveTrace.note("CA: no UIScrollView")
+            return
+        }
+        guard let top = detailsSectionTops.tops[key] else {
+            TVDetailsMoveTrace.note("CA: top of \(key) not known")
+            return
+        }
+        let current = scrollView.contentOffset
+        // Stops the scroll tvOS started for the focus move.
+        scrollView.setContentOffset(current, animated: false)
+        let target = top - scrollView.adjustedContentInset.top
+        TVScrollMove.move(scrollView, to: CGPoint(x: current.x, y: target), animated: true)
+        TVDetailsMoveTrace.note("CA to \(key) y=\(Int(target)) from=\(Int(current.y))")
+        Task { @MainActor [weak scrollView] in
+            try? await Task.sleep(for: .milliseconds(700))
+            guard let scrollView else { return }
+            TestDiagnosticLog.ui("details: CA rest \(key) y=\(Int(scrollView.contentOffset.y)) aim=\(Int(target))")
+        }
     }
 
     /// The section below the one focus moved into, built now if it isn't yet.

@@ -230,7 +230,10 @@ final class MainThreadSampler: @unchecked Sendable {
                     library = (image as NSString).lastPathComponent
                 }
                 if isApp {
-                    let raw = info.dli_sname.map { String(cString: $0) } ?? "?"
+                    // The app's own symbol table first: dladdr knows exported symbols only.
+                    let raw = info.dli_fbase.flatMap {
+                        AppSymbolTable.shared.name(for: base[index], imageBase: $0, imagePath: image)
+                    } ?? info.dli_sname.map { String(cString: $0) } ?? "?"
                     let name = Self.shortSymbol(CrashRecorder.demangle(raw) ?? raw)
                     // Compiler helpers and `main` say nothing about which code it was: look
                     // further down the stack for the app function that called them.

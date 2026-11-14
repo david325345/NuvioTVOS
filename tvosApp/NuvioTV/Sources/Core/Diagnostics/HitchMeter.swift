@@ -302,8 +302,10 @@ final class HitchMeter: NSObject {
         windowStart = now
     }
 
-    /// Test switches in this build that change how the interface moves: none.
-    private static var experiments: String { "" }
+    /// Test switches in this build that change how the interface moves.
+    private static var experiments: String {
+        ProfileSettings.current.string(forKey: TVDetailsMoveTest.key) == TVDetailsMoveTest.ca ? "details CA" : ""
+    }
 
     private static var glassCardsOn: Bool {
         ProfileSettings.current.object(forKey: SettingsKey.liquidGlassCards) as? Bool ?? true
