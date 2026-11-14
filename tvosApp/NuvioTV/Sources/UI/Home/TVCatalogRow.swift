@@ -979,6 +979,9 @@ struct TVCatalogRow: View {
                 for: .scrollContent
             )
             .scrollTargetBehavior(TVRowAlignmentTestTargetBehavior(isEnabled: alignsByTVOS || narrow))
+            // TEST (Aligned (CA)): only the app moves the row. tvOS's own scroll for focus took the
+            // row a card past its end when focus reached the last card.
+            .scrollDisabled(rowAlignment == TVRowAlignmentTest.alignedCA)
             .scrollClipDisabled()
             .frame(width: narrow ? rowPosterWidth : stripWidth, height: stripHeight, alignment: .topLeading)
             .offset(x: narrow ? TVLayout.rowLeading : -horizontalEdgeInset)
@@ -1041,7 +1044,10 @@ struct TVCatalogRow: View {
                     } else {
                         scrollView.contentOffset = offset
                     }
-                    debug.move(head + " CA x=\(Int(x)) uikit=\(Int(before)) max=\(Int(maxX))")
+                    debug.move(
+                        head + " CA x=\(Int(x)) uikit=\(Int(before)) max=\(Int(maxX)) "
+                            + "scroll=\(scrollView.isScrollEnabled ? "on" : "off")"
+                    )
                     let rowName = debugRowName
                     Task { @MainActor [weak scrollView] in
                         try? await Task.sleep(for: .milliseconds(600))
