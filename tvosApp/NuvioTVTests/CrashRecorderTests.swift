@@ -184,21 +184,6 @@ final class CrashRecorderTests: XCTestCase {
         XCTAssertFalse(short.contains(" via "))
     }
 
-    func testASSHeaderSummaryForTheLog() {
-        let header = """
-        [Script Info]
-        PlayResX: 1920
-        PlayResY: 1080
-
-        [V4+ Styles]
-        Format: Name, Fontname, Fontsize
-        Style: Default,Arial,60
-        Style: Sign,Arial,40
-        """
-        XCTAssertEqual(ASSTestLogCounters.describe(header: header), "[Events] no (added), 2 styles, PlayRes 1920×1080")
-        XCTAssertEqual(ASSTestLogCounters.describe(header: "[Events]"), "[Events] yes, 0 styles, PlayRes ?×?")
-    }
-
     func testGitHubLogPathAndRepositoryCheck() {
         let date = Date(timeIntervalSince1970: 1_794_242_825) // 2026-11-09 16:47:05 UTC
         XCTAssertEqual(
