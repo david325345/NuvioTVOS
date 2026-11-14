@@ -1,11 +1,12 @@
-name: Smoothness Details scroll test (fork)
+name: Smoothness Details CA full test (fork)
 
 # Fork only, never part of the PR: the smoothness PR (rows, Home and episodes moved by Core
-# Animation) with the test log, crash reports and a log of Details' first move down, as a
-# separate app (Nuvio Test), and the PR's tests.
+# Animation) with the test log, crash reports, a log of Details' moves and Details Move (Test)
+# with Details moved by Core Animation alone (CA full), as a separate app (Nuvio Test), and the
+# PR's tests.
 on:
   push:
-    branches: [details-scroll-test]
+    branches: [details-ca-full-test]
   workflow_dispatch:
 
 jobs:
@@ -45,7 +46,7 @@ jobs:
           bash scripts/build-ipa.sh 2>&1 | tee build.log
       - uses: actions/upload-artifact@v4
         with:
-          name: NuvioTV-Test-details-scroll-unsigned-ipa
+          name: NuvioTV-Test-details-ca-full-unsigned-ipa
           path: build-ipa/NuvioTV-unsigned.ipa
           retention-days: 7
 

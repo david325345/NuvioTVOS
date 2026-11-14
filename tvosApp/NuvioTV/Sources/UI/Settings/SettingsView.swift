@@ -13757,7 +13757,9 @@ private struct AdvancedSettingsView: View {
                     title: "Details Move (Test)",
                     subtitle: detailsMoveTest == TVDetailsMoveTest.ca
                         ? "Details goes to a section by Core Animation, tvOS's scroll stopped"
-                        : "Details goes to a section by tvOS's scroll (as now)",
+                        : detailsMoveTest == TVDetailsMoveTest.caFull
+                            ? "Details goes to a section by Core Animation only, tvOS never scrolls it"
+                            : "Details goes to a section by tvOS's scroll (as now)",
                     value: TVDetailsMoveTest.label(detailsMoveTest),
                     accentColor: accentColor,
                     action: { detailsMoveTest = TVDetailsMoveTest.next(after: detailsMoveTest) }

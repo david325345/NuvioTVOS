@@ -304,7 +304,11 @@ final class HitchMeter: NSObject {
 
     /// Test switches in this build that change how the interface moves.
     private static var experiments: String {
-        ProfileSettings.current.string(forKey: TVDetailsMoveTest.key) == TVDetailsMoveTest.ca ? "details CA" : ""
+        switch ProfileSettings.current.string(forKey: TVDetailsMoveTest.key) ?? "" {
+        case TVDetailsMoveTest.ca: return "details CA"
+        case TVDetailsMoveTest.caFull: return "details CA full"
+        default: return ""
+        }
     }
 
     private static var glassCardsOn: Bool {
