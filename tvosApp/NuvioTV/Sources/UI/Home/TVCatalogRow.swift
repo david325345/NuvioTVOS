@@ -80,6 +80,46 @@ enum TVRowAlignmentTest {
     }
 }
 
+/// TEST: how Home moves between rows: SwiftUI's scroll animation (Nuvio) or a Core Animation
+/// move of its UIKit scroll view (CA).
+enum TVVerticalScrollTest {
+    static let key = "nuvio.tv.test.verticalScroll"
+    static let nuvio = "nuvio"
+    static let ca = "ca"
+    /// The rows' space in Home's scroll content.
+    static let space = "tvHomeRowsContent"
+    /// Home's UIKit scroll view (Home turns its own scrolling off).
+    static weak var scrollView: UIScrollView?
+
+    static var isCA: Bool {
+        ProfileSettings.current.string(forKey: key) == ca
+    }
+
+    static func label(_ value: String) -> String {
+        value == ca ? "CA" : "Nuvio"
+    }
+
+    static func next(after value: String) -> String {
+        value == ca ? nuvio : ca
+    }
+}
+
+/// TEST: Details' episode strip: tvOS scrolls it as focus moves (System), or each move puts the
+/// focused episode at the column's start with a Core Animation move (Aligned (CA)).
+enum TVEpisodeAlignmentTest {
+    static let key = "nuvio.tv.test.episodeAlignment"
+    static let system = "system"
+    static let alignedCA = "alignedCA"
+
+    static func label(_ value: String) -> String {
+        value == alignedCA ? "Aligned (CA)" : "System"
+    }
+
+    static func next(after value: String) -> String {
+        value == alignedCA ? system : alignedCA
+    }
+}
+
 /// TEST: what the alignment test last did, shown in a corner of Home (only the badge redraws).
 @MainActor
 final class TVRowAlignmentDebug: ObservableObject {
@@ -1095,6 +1135,18 @@ struct TVCatalogRow: View {
                 // Where the row was left (or the card focus goes back to), without animation.
                 let index = effectiveScrollIndex
                 guard index > 0, cards.indices.contains(index) else { return }
+                if rowAlignment == TVRowAlignmentTest.alignedCA {
+                    // TEST (Aligned (CA)): under the title. (The UIKit scroll view is found once
+                    // the strip is in the window, so this waits a turn.)
+                    let target = alignTestTarget(index, in: cards)
+                    Task { @MainActor in
+                        for _ in 0..<6 where scrollBox.scrollView == nil {
+                            try? await Task.sleep(for: .milliseconds(30))
+                        }
+                        alignTestMove(to: target, animated: false, note: "restore idx=\(index)")
+                    }
+                    return
+                }
                 proxy.scrollTo(cards[index].id, anchor: .leading)
             }
             .onChange(of: restrictedFocusIndex) { _, index in
@@ -1104,7 +1156,17 @@ struct TVCatalogRow: View {
                 // time. Jumped there at once, all of them were built in one frame (a 250 ms stall
                 // after Back). Focus waits for the first card meanwhile (the restore lock).
                 let from = scrollIndex ?? initialScrollIndex
-                if index == 0, (1...Self.backSlideLimit).contains(from) {
+                if rowAlignment == TVRowAlignmentTest.alignedCA {
+                    // TEST (Aligned (CA)): the card comes under the title, by Core Animation. The
+                    // row has tvOS's scroll off there, so nothing else puts the card in place.
+                    let slides = index == 0 && (1...Self.backSlideLimit).contains(from)
+                    alignTestMove(
+                        to: alignTestTarget(index, in: cards),
+                        animated: slides,
+                        duration: 0.3,
+                        note: "back idx=\(index) from=\(from)"
+                    )
+                } else if index == 0, (1...Self.backSlideLimit).contains(from) {
                     withAnimation(.easeOut(duration: 0.3)) {
                         proxy.scrollTo(cards[0].id, anchor: .leading)
                     }
@@ -1121,6 +1183,52 @@ struct TVCatalogRow: View {
 
     /// TEST (Aligned (CA)): how long the row's move takes (about tvOS's own scroll).
     private static let alignTestDuration: TimeInterval = 0.36
+
+    /// TEST (Aligned (CA)): the offset that puts card `index` under the title (the cards
+    /// before it at rest).
+    private func alignTestTarget(_ index: Int, in cards: [TVCatalogMaterializedCard]) -> CGFloat {
+        cards[..<min(max(index, 0), cards.count)].reduce(CGFloat(0)) {
+            $0 + restingCardWidth(for: $1) + rowCardSpacing
+        }
+    }
+
+    /// TEST (Aligned (CA)): moves the row's UIKit scroll view to `target`, by Core Animation
+    /// when animated; noted in the badge and the test log.
+    private func alignTestMove(
+        to target: CGFloat,
+        animated: Bool,
+        duration: TimeInterval = TVCatalogRow.alignTestDuration,
+        note: String
+    ) {
+        let debug = TVRowAlignmentDebug.shared
+        guard let scrollView = scrollBox.scrollView else {
+            debug.move("row=\(debugRowName) \(note) aim=\(Int(target)) no UIScrollView")
+            return
+        }
+        let inset = scrollView.adjustedContentInset
+        let minX = -inset.left
+        let maxX = max(scrollView.contentSize.width + inset.right - scrollView.bounds.width, minX)
+        let x = max(min(target, maxX), minX)
+        let before = scrollView.contentOffset.x
+        let offset = CGPoint(x: x, y: scrollView.contentOffset.y)
+        if animated {
+            UIView.animate(
+                withDuration: duration,
+                delay: 0,
+                usingSpringWithDamping: 1,
+                initialSpringVelocity: 0,
+                options: [.beginFromCurrentState, .allowUserInteraction]
+            ) {
+                scrollView.contentOffset = offset
+            }
+        } else {
+            scrollView.contentOffset = offset
+        }
+        debug.move(
+            "row=\(debugRowName) \(note) aim=\(Int(target)) CA x=\(Int(x)) uikit=\(Int(before)) "
+                + "max=\(Int(maxX)) anim=\(animated ? "on" : "off")"
+        )
+    }
     /// TEST (Aligned (narrow)): the cards built before and after the focused one; the room of
     /// the others is kept by padding. (A lazy stack builds only what is inside the scroll
     /// view, which is one card wide there.)
@@ -1799,6 +1907,9 @@ struct TVCollectionFolderRow: View {
     @AppStorage(SettingsKey.smoothFocus) private var smoothFocus = true
     @AppStorage(SettingsKey.focusHighlighter) private var focusHighlighter = false
     @AppStorage(SettingsKey.fastNavigation) private var fastNavigation = false
+    // TEST (Aligned (CA)): the folders move as the catalog rows do in that mode.
+    @AppStorage(TVRowAlignmentTest.key) private var rowAlignment = TVRowAlignmentTest.system
+    @State private var scrollBox = TVRowScrollViewBox()
 
     private var cardFocusBinding: FocusState<String?>.Binding? {
         ownsCardFocus ? $ownCardFocus : externalFocus
@@ -1939,12 +2050,175 @@ struct TVCollectionFolderRow: View {
         }
     }
 
-    private var cardStrip: some View {
-        let stripWidth = max(1920, UIScreen.main.bounds.width + horizontalEdgeInset * 2)
+    /// One folder's card.
+    private func folderCard(_ card: TVFolderMaterializedCard) -> some View {
         let rowHomeLayout = homeLayout
         let rowPosterLabels = posterLabels
         let rowSmoothFocus = smoothFocus
         let rowFocusHighlighter = focusHighlighter
+        let index = card.index
+        let folder = card.folder
+        let cardKey = card.id
+        let shouldRequestInitialFocus = cardKey == initialFocusCardKey
+        return TVCollectionFolderCard(
+            folder: folder,
+            cardIndex: index,
+            shouldRequestInitialFocus: shouldRequestInitialFocus,
+            onInitialFocusRequested: shouldRequestInitialFocus ? onInitialFocusRequested : nil,
+            externalFocus: cardFocusBinding,
+            externalFocusValue: cardKey,
+            onFocus: {
+                let targetIndex = folders.firstIndex(where: {
+                    TVHomeCardIdentity.folderKey(rowID: id, folder: $0) == cardKey
+                }) ?? folders.firstIndex(where: { $0.id == folder.id }) ?? index
+
+                if let restrictFocusToCardKey {
+                    guard restrictFocusToCardKey == cardKey else { return }
+                    alignScrollIndexToRestrictedFocus()
+                } else if effectiveScrollIndex != targetIndex {
+                    scrollIndex = targetIndex
+                    onScrollIndexChange(targetIndex)
+                } else if scrollIndex != targetIndex {
+                    scrollIndex = targetIndex
+                    onScrollIndexChange(targetIndex)
+                }
+                onFocus(folder)
+            },
+            onBlur: { onBlur?(folder) },
+            layoutMode: rowHomeLayout,
+            showPosterLabels: rowPosterLabels,
+            smoothFocusAnimations: rowSmoothFocus && !fastNavigation,
+            focusHighlighterEnabled: rowFocusHighlighter,
+            retainFocusAppearance: retainFocusAppearanceForCardKey == cardKey,
+            allowsFocus: restrictFocusToCardKey == nil || restrictFocusToCardKey == cardKey,
+            focusCallbackContext: TVCardFocusCallbackContext(
+                restrictFocusToCardKey: restrictFocusToCardKey,
+                suppressFocusAnimations: suppressFocusAnimations
+            ),
+            onMove: onMove,
+            onSelect: { onSelect(folder) }
+        )
+        .equatable()
+    }
+
+    @ViewBuilder
+    private var cardStrip: some View {
+        if rowAlignment == TVRowAlignmentTest.alignedCA {
+            caCardStrip
+        } else {
+            nuvioCardStrip
+        }
+    }
+
+    /// TEST (Aligned (CA)): the folders as a scroll view with tvOS's scroll off; each move puts the
+    /// focused folder under the title with a Core Animation move, as the catalog rows in that mode.
+    private var caCardStrip: some View {
+        let stripWidth = max(1920, UIScreen.main.bounds.width + horizontalEdgeInset * 2)
+        let rowHomeLayout = homeLayout
+        let rowSpacing = TVCollectionFolderCardLayout.rowSpacing(layoutMode: rowHomeLayout)
+        let titleLeading = horizontalEdgeInset + TVLayout.rowLeading
+        let materializedCards = materializedCardItems(
+            stripWidth: stripWidth,
+            layoutMode: rowHomeLayout
+        )
+        let firstIndex = materializedCards.first?.index ?? 0
+        let lastIndex = materializedCards.last?.index ?? 0
+        // The folders after the built ones keep their room, and the last can come under the title.
+        let unbuiltAfter = TVCollectionFolderCardLayout.scrollOffset(
+            to: folders.count,
+            folders: folders,
+            layoutMode: rowHomeLayout
+        ) - TVCollectionFolderCardLayout.scrollOffset(
+            to: lastIndex + 1,
+            folders: folders,
+            layoutMode: rowHomeLayout
+        )
+        let posterWidth = TVCollectionFolderCardLayout.cardWidth(shape: .poster, layoutMode: rowHomeLayout)
+        let trailingRoom = unbuiltAfter + max(titleLeading, stripWidth - titleLeading - posterWidth)
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(alignment: .top, spacing: rowSpacing) {
+                ForEach(materializedCards) { card in
+                    folderCard(card)
+                }
+            }
+            .padding(
+                .leading,
+                titleLeading + TVCollectionFolderCardLayout.scrollOffset(
+                    to: firstIndex,
+                    folders: folders,
+                    layoutMode: rowHomeLayout
+                )
+            )
+            .padding(.trailing, trailingRoom)
+            .padding(.vertical, TVHomeLayout.stripVerticalPadding)
+            .background {
+                TVRowScrollViewFinder(box: scrollBox)
+                    .frame(width: 1, height: 1)
+                    .allowsHitTesting(false)
+            }
+        }
+        .scrollDisabled(true)
+        .scrollClipDisabled()
+        .frame(width: stripWidth, height: stripHeight, alignment: .topLeading)
+        .offset(x: -horizontalEdgeInset)
+        .onAppear {
+            alignScrollIndexToRestrictedFocus()
+            let index = effectiveScrollIndex
+            Task { @MainActor in
+                for _ in 0..<6 where scrollBox.scrollView == nil {
+                    try? await Task.sleep(for: .milliseconds(30))
+                }
+                moveFoldersByCA(to: index, animated: false)
+            }
+        }
+        .onChange(of: restrictedFocusIndex) { _, _ in
+            alignScrollIndexToRestrictedFocus()
+        }
+        .onChange(of: effectiveScrollIndex) { _, index in
+            moveFoldersByCA(
+                to: index,
+                animated: smoothFocus && !suppressFocusAnimations && !fastNavigation
+            )
+        }
+        .frame(height: stripHeight)
+    }
+
+    /// TEST (Aligned (CA)): puts folder `index` under the title.
+    private func moveFoldersByCA(to index: Int, animated: Bool) {
+        guard let scrollView = scrollBox.scrollView else {
+            TestDiagnosticLog.ui("align: folders row=\(id) idx=\(index) no UIScrollView")
+            return
+        }
+        let target = TVCollectionFolderCardLayout.scrollOffset(to: index, folders: folders, layoutMode: homeLayout)
+        let inset = scrollView.adjustedContentInset
+        let minX = -inset.left
+        let maxX = max(scrollView.contentSize.width + inset.right - scrollView.bounds.width, minX)
+        let x = max(min(target, maxX), minX)
+        let before = scrollView.contentOffset.x
+        let offset = CGPoint(x: x, y: scrollView.contentOffset.y)
+        if animated {
+            UIView.animate(
+                withDuration: 0.36,
+                delay: 0,
+                usingSpringWithDamping: 1,
+                initialSpringVelocity: 0,
+                options: [.beginFromCurrentState, .allowUserInteraction]
+            ) {
+                scrollView.contentOffset = offset
+            }
+        } else {
+            scrollView.contentOffset = offset
+        }
+        TestDiagnosticLog.ui(
+            "align: folders row=\(id) idx=\(index) aim=\(Int(target)) CA x=\(Int(x)) uikit=\(Int(before)) "
+                + "max=\(Int(maxX)) anim=\(animated ? "on" : "off")"
+        )
+    }
+
+    private var nuvioCardStrip: some View {
+        let stripWidth = max(1920, UIScreen.main.bounds.width + horizontalEdgeInset * 2)
+        let rowHomeLayout = homeLayout
+        let rowSmoothFocus = smoothFocus
         let rowSpacing = TVCollectionFolderCardLayout.rowSpacing(layoutMode: rowHomeLayout)
         let scrollX = TVCollectionFolderCardLayout.scrollOffset(
             to: effectiveScrollIndex,
@@ -1958,49 +2232,7 @@ struct TVCollectionFolderRow: View {
 
         return HStack(alignment: .top, spacing: rowSpacing) {
             ForEach(materializedCards) { card in
-                let index = card.index
-                let folder = card.folder
-                let cardKey = card.id
-                let shouldRequestInitialFocus = cardKey == initialFocusCardKey
-                TVCollectionFolderCard(
-                    folder: folder,
-                    cardIndex: index,
-                    shouldRequestInitialFocus: shouldRequestInitialFocus,
-                    onInitialFocusRequested: shouldRequestInitialFocus ? onInitialFocusRequested : nil,
-                    externalFocus: cardFocusBinding,
-                    externalFocusValue: cardKey,
-                    onFocus: {
-                        let targetIndex = folders.firstIndex(where: {
-                            TVHomeCardIdentity.folderKey(rowID: id, folder: $0) == cardKey
-                        }) ?? folders.firstIndex(where: { $0.id == folder.id }) ?? index
-
-                        if let restrictFocusToCardKey {
-                            guard restrictFocusToCardKey == cardKey else { return }
-                            alignScrollIndexToRestrictedFocus()
-                        } else if effectiveScrollIndex != targetIndex {
-                            scrollIndex = targetIndex
-                            onScrollIndexChange(targetIndex)
-                        } else if scrollIndex != targetIndex {
-                            scrollIndex = targetIndex
-                            onScrollIndexChange(targetIndex)
-                        }
-                        onFocus(folder)
-                    },
-                    onBlur: { onBlur?(folder) },
-                    layoutMode: rowHomeLayout,
-                    showPosterLabels: rowPosterLabels,
-                    smoothFocusAnimations: rowSmoothFocus && !fastNavigation,
-                    focusHighlighterEnabled: rowFocusHighlighter,
-                    retainFocusAppearance: retainFocusAppearanceForCardKey == cardKey,
-                    allowsFocus: restrictFocusToCardKey == nil || restrictFocusToCardKey == cardKey,
-                    focusCallbackContext: TVCardFocusCallbackContext(
-                        restrictFocusToCardKey: restrictFocusToCardKey,
-                        suppressFocusAnimations: suppressFocusAnimations
-                    ),
-                    onMove: onMove,
-                    onSelect: { onSelect(folder) }
-                )
-                .equatable()
+                folderCard(card)
             }
         }
         .padding(

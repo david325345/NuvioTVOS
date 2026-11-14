@@ -13688,6 +13688,8 @@ private struct AdvancedSettingsView: View {
     @State private var showingTestDiagnostics = false
     @AppStorage(SettingsKey.fastNavigation) private var fastNavigation = false
     @AppStorage(TVRowAlignmentTest.key) private var rowAlignmentTest = TVRowAlignmentTest.system
+    @AppStorage(TVVerticalScrollTest.key) private var verticalScrollTest = TVVerticalScrollTest.nuvio
+    @AppStorage(TVEpisodeAlignmentTest.key) private var episodeAlignmentTest = TVEpisodeAlignmentTest.system
     @AppStorage(SettingsKey.playbackDiagnostics) private var playbackDiagnostics = false
     @AppStorage(SettingsKey.playbackDebug) private var playbackDebug = false
     @State private var isClearingTestHistory = false
@@ -13740,6 +13742,24 @@ private struct AdvancedSettingsView: View {
                     value: TVRowAlignmentTest.label(rowAlignmentTest),
                     accentColor: accentColor,
                     action: { rowAlignmentTest = TVRowAlignmentTest.next(after: rowAlignmentTest) }
+                )
+                SettingsActionRow(
+                    title: "Vertical Scrolling (Test)",
+                    subtitle: verticalScrollTest == TVVerticalScrollTest.ca
+                        ? "Home moves between rows by Core Animation"
+                        : "Home moves between rows by SwiftUI's animation (as now)",
+                    value: TVVerticalScrollTest.label(verticalScrollTest),
+                    accentColor: accentColor,
+                    action: { verticalScrollTest = TVVerticalScrollTest.next(after: verticalScrollTest) }
+                )
+                SettingsActionRow(
+                    title: "Episode Alignment (Test)",
+                    subtitle: episodeAlignmentTest == TVEpisodeAlignmentTest.alignedCA
+                        ? "Details: the focused episode stays at the start, moved by Core Animation"
+                        : "Details: tvOS scrolls the episodes as focus moves (as now)",
+                    value: TVEpisodeAlignmentTest.label(episodeAlignmentTest),
+                    accentColor: accentColor,
+                    action: { episodeAlignmentTest = TVEpisodeAlignmentTest.next(after: episodeAlignmentTest) }
                 )
             }
 

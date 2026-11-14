@@ -302,10 +302,17 @@ final class HitchMeter: NSObject {
         windowStart = now
     }
 
-    /// "align Aligned (CA)" while the row alignment test is on.
+    /// "align Aligned (CA), vertical CA, episodes CA" for the test modes that are on.
     private static var experiments: String {
-        let mode = ProfileSettings.current.string(forKey: TVRowAlignmentTest.key) ?? TVRowAlignmentTest.system
-        return mode == TVRowAlignmentTest.system ? "" : "align \(TVRowAlignmentTest.label(mode))"
+        let defaults = ProfileSettings.current
+        let mode = defaults.string(forKey: TVRowAlignmentTest.key) ?? TVRowAlignmentTest.system
+        var parts: [String] = []
+        if mode != TVRowAlignmentTest.system { parts.append("align \(TVRowAlignmentTest.label(mode))") }
+        if TVVerticalScrollTest.isCA { parts.append("vertical CA") }
+        if defaults.string(forKey: TVEpisodeAlignmentTest.key) == TVEpisodeAlignmentTest.alignedCA {
+            parts.append("episodes CA")
+        }
+        return parts.joined(separator: ", ")
     }
 
     private static var glassCardsOn: Bool {

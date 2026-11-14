@@ -8898,6 +8898,9 @@ private struct TvDetailsEpisodes: View {
     @State private var systemStripScrollGeneration = 0
     /// What the system strip is to scroll to, a new count each time.
     @State private var systemStripScrollRequest = TvEpisodeStripScrollRequest()
+    // TEST (Episode Alignment): Core Animation keeps the focused episode at the column's start.
+    @AppStorage(TVEpisodeAlignmentTest.key) private var episodeAlignment = TVEpisodeAlignmentTest.system
+    @State private var episodeScrollBox = TVRowScrollViewBox()
     @State private var watchedEpisodeKeys: Set<String>
     @State private var episodeWatchCounts: [String: Int]
     @State private var watchedSummary: WatchedEpisodeSummary?
@@ -9253,6 +9256,12 @@ private struct TvDetailsEpisodes: View {
         let first = indices.first ?? 0
         let after = max(0, seasonEpisodes.count - 1 - (indices.last ?? -1))
         let restoreIndex = restoreEpisodeIndex
+        // TEST (Episode Alignment (CA)): room after the last episode, so it too can come to the
+        // column's start; tvOS's own scroll is off, Core Animation moves the strip.
+        let alignsEpisodes = episodeAlignment == TVEpisodeAlignmentTest.alignedCA
+        let trailingRoom = alignsEpisodes
+            ? max(edgeInset + TVLayout.rowLeading, stripWidth - edgeInset - TvEpisodeCardLayout.width)
+            : edgeInset + TVLayout.rowLeading
         return TvSystemEpisodeStripScroller(
             edgeInset: edgeInset,
             viewportWidth: min(stripWidth, 1920),
@@ -9273,11 +9282,23 @@ private struct TvDetailsEpisodes: View {
                 }
             }
             .padding(.leading, edgeInset + CGFloat(first) * TvEpisodeCardLayout.step)
-            .padding(.trailing, edgeInset + TVLayout.rowLeading + CGFloat(after) * TvEpisodeCardLayout.step)
+            .padding(.trailing, trailingRoom + CGFloat(after) * TvEpisodeCardLayout.step)
             .padding(.vertical, TvEpisodeCardLayout.verticalPadding)
+            .background {
+                if alignsEpisodes {
+                    TVRowScrollViewFinder(box: episodeScrollBox)
+                        .frame(width: 1, height: 1)
+                        .allowsHitTesting(false)
+                }
+            }
         }
+        .scrollDisabled(alignsEpisodes)
         .frame(width: stripWidth, height: TvEpisodeCardLayout.stripHeight, alignment: .leading)
         .offset(x: -edgeInset)
+        .onChange(of: episodeScrollIndex) { _, index in
+            guard alignsEpisodes else { return }
+            moveEpisodeStripByCA(to: index)
+        }
         .onAppear {
             // Where the strip was left, or the card focus goes back to.
             keepScrolling(to: restoreIndex ?? episodeScrollIndex)
@@ -9352,6 +9373,32 @@ private struct TvDetailsEpisodes: View {
         requestStripScroll(to: index)
         systemStripScrollTarget = index
         systemStripScrollGeneration &+= 1
+    }
+
+    /// TEST (Episode Alignment (CA)): puts episode `index` at the column's start (episode i starts
+    /// `i * step` in) with a Core Animation move of the strip's UIKit scroll view.
+    private func moveEpisodeStripByCA(to index: Int) {
+        guard let scrollView = episodeScrollBox.scrollView else {
+            TestDiagnosticLog.ui("episodes: CA idx=\(index) no UIScrollView")
+            return
+        }
+        let maxX = max(0, scrollView.contentSize.width - scrollView.bounds.width)
+        let x = min(max(CGFloat(index) * TvEpisodeCardLayout.step, 0), maxX)
+        let before = scrollView.contentOffset.x
+        let offset = CGPoint(x: x, y: scrollView.contentOffset.y)
+        UIView.animate(
+            withDuration: 0.36,
+            delay: 0,
+            usingSpringWithDamping: 1,
+            initialSpringVelocity: 0,
+            options: [.beginFromCurrentState, .allowUserInteraction]
+        ) {
+            scrollView.contentOffset = offset
+        }
+        TestDiagnosticLog.ui(
+            "episodes: CA idx=\(index) x=\(Int(x)) from=\(Int(before)) max=\(Int(maxX)) "
+                + "scroll=\(scrollView.isScrollEnabled ? "on" : "off")"
+        )
     }
 
     private func requestStripScroll(to index: Int) {
