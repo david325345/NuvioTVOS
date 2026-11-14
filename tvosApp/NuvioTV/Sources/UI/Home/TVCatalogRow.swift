@@ -1138,7 +1138,7 @@ struct TVCatalogRow: View {
                 if rowAlignment == TVRowAlignmentTest.alignedCA {
                     // TEST (Aligned (CA)): under the title. (The UIKit scroll view is found once
                     // the strip is in the window, so this waits a turn.)
-                    let target = alignTestTarget(index, in: cards)
+                    let target = alignTestTarget(index, in: cards, spacing: rowCardSpacing)
                     Task { @MainActor in
                         for _ in 0..<6 where scrollBox.scrollView == nil {
                             try? await Task.sleep(for: .milliseconds(30))
@@ -1161,7 +1161,7 @@ struct TVCatalogRow: View {
                     // row has tvOS's scroll off there, so nothing else puts the card in place.
                     let slides = index == 0 && (1...Self.backSlideLimit).contains(from)
                     alignTestMove(
-                        to: alignTestTarget(index, in: cards),
+                        to: alignTestTarget(index, in: cards, spacing: rowCardSpacing),
                         animated: slides,
                         duration: 0.3,
                         note: "back idx=\(index) from=\(from)"
@@ -1186,9 +1186,14 @@ struct TVCatalogRow: View {
 
     /// TEST (Aligned (CA)): the offset that puts card `index` under the title (the cards
     /// before it at rest).
-    private func alignTestTarget(_ index: Int, in cards: [TVCatalogMaterializedCard]) -> CGFloat {
-        cards[..<min(max(index, 0), cards.count)].reduce(CGFloat(0)) {
-            $0 + restingCardWidth(for: $1) + rowCardSpacing
+    private func alignTestTarget(
+        _ index: Int,
+        in cards: [TVCatalogMaterializedCard],
+        spacing: CGFloat
+    ) -> CGFloat {
+        let end = Swift.min(Swift.max(index, 0), cards.count)
+        return cards.prefix(end).reduce(CGFloat(0)) {
+            $0 + restingCardWidth(for: $1) + spacing
         }
     }
 
