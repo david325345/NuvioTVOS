@@ -85,6 +85,8 @@ PLUGINS_PID=$!
 export NUVIO_PLUGINS_URL="http://127.0.0.1:18766/smoke/stremio/"
 # As Nuvio starts it: everything comes from 127.0.0.1, one address for AIOStreams' limits.
 export DISABLE_RATE_LIMITS=true
+# As Nuvio starts it: filters synced from a link (templates such as Tamtaro's) allowed.
+export REGEX_FILTER_ACCESS=all SEL_SYNC_ACCESS=all
 
 started=$(date +%s)
 node --jitless --max-old-space-size=1024 --import "$RUN/wasm/preload.mjs" "$INSTALLER/bootstrap.mjs" > "$RUN/aio.log" 2>&1 &
@@ -155,6 +157,34 @@ if [ -n "$MANIFEST" ]; then
   echo "took $(( ($(date +%s%N) - t0) / 1000000 )) ms"
 else
   echo "FAIL no addon address in the state file"; failed=1
+fi
+
+# A configuration with filters synced from a link, as Tamtaro's template sets
+# up (Vidhin's release-group regexes, Tamtaro's stream expressions). AIOStreams
+# saves it only with REGEX_FILTER_ACCESS=all and SEL_SYNC_ACCESS=all; by
+# default it answers "Forbidden URL(s)". The checks after this one keep using
+# $MANIFEST, the first configuration.
+node -e '
+const fs = require("fs");
+const body = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+const T = "https://raw.githubusercontent.com/Tam-Taro/SEL-Filtering-and-Sorting/refs/heads/main/AIOStreams-SyncedURLs/";
+body.config.syncedRankedRegexUrls = ["https://raw.githubusercontent.com/Vidhin05/Releases-Regex/main/English/regexes.json"];
+body.config.syncedRankedStreamExpressionUrls = ["https://raw.githubusercontent.com/Vidhin05/Releases-Regex/main/English/expressions.json"];
+body.config.syncedExcludedStreamExpressionUrls = [T + "Tamtaro-synced-ESEs-standard.json"];
+body.config.syncedIncludedStreamExpressionUrls = [T + "Tamtaro-synced-ISEs.json"];
+fs.writeFileSync(process.argv[2], JSON.stringify(body));
+' "$RUN/config.json" "$RUN/synced.json"
+status=$(curl -s -o "$RUN/created-synced" -w '%{http_code}' --max-time 120 -H 'content-type: application/json' \
+  --data-binary "@$RUN/synced.json" "$LAN/api/v1/user")
+case "$status" in
+  2??) echo "ok   configuration with filters synced from a link saved (HTTP $status)" ;;
+  *) echo "FAIL configuration with filters synced from a link: HTTP $status"; head -c 400 "$RUN/created-synced"; echo; failed=1 ;;
+esac
+sleep 1
+SYNCED=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).manifest||'')}catch{console.log('')}" "$NUVIO_STATE_FILE")
+if [ -n "$SYNCED" ] && [ "$SYNCED" != "$MANIFEST" ]; then
+  check "stream request with the synced filters" 200 "${SYNCED%/manifest.json}/stream/movie/tt0133093.json"
+  echo "$(node -e 'try{const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).streams||[];console.log(s.length+" streams after the synced filters")}catch(e){console.log("unreadable")}' "$RUN/body")"
 fi
 
 CONTROL="http://127.0.0.1:$NUVIO_CONTROL_PORT"
