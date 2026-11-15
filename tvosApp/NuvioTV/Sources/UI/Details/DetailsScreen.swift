@@ -4393,6 +4393,7 @@ struct TvDetailsContent: View {
         }
         DispatchQueue.main.async { updateTrailerParkingForScroll() }
         DispatchQueue.main.async {
+            TVDetailsOpenTrace.note("full-screen trailer closed: focus to the trailer button") // test build
             actionFocus = .trailer
         }
     }
@@ -5008,7 +5009,7 @@ struct TvDetailsContent: View {
                                     .modifier(TVScrollTopReader(
                                         key: String(describing: section),
                                         tops: detailsSectionTops,
-                                        space: "tv-details-scroll"
+                                        space: "tv-details-content"
                                     ))
                                 }
                             }
@@ -5051,9 +5052,17 @@ struct TvDetailsContent: View {
                             .padding(.bottom, 96)
                             .frame(width: detailsWidth(proxy, hasEpisodes: !episodes.isEmpty), alignment: .leading)
                             .frame(maxWidth: .infinity, minHeight: proxy.size.height, alignment: .topLeading)
+                            // Where the sections start in the content, for `moveDetails`.
+                            .coordinateSpace(name: "tv-details-content")
                         }
                         .scrollClipDisabledIfAvailable()
                         .coordinateSpace(name: "tv-details-scroll")
+                        // Test build.
+                        .modifier(TVDetailsOpenTraceModifier(
+                            action: String(describing: actionFocus),
+                            section: String(describing: focusedDetailsSection),
+                            sections: activeDetailsSections.count
+                        ))
                         .onAppear {
                             if let initialRelatedFocusID {
                                 beginRelatedFocusRestoration(initialRelatedFocusID, using: scrollProxy)
@@ -5102,6 +5111,7 @@ struct TvDetailsContent: View {
             // button. Move it onto Play explicitly once the content appears
             // (async so it runs after the focus engine's own first pass).
             .onAppear {
+                TVDetailsOpenTrace.begin(meta.id) // test build
                 configuredDetailsSections = TVDetailsSectionOrder.currentOrder()
                 disabledDetailsSections = TVDetailsSectionOrder.disabledSections()
                 let relatedFocusRequestID = initialRelatedFocusID
@@ -5128,7 +5138,11 @@ struct TvDetailsContent: View {
                         focusCalendarEpisode(calendarEpisodeKey)
                     } else {
                         focusedDetailsSection = .actions
-                        DispatchQueue.main.async { actionFocus = .play }
+                        TVDetailsOpenTrace.note("asks for Play") // test build
+                        DispatchQueue.main.async {
+                            TVDetailsOpenTrace.note("Play asked, action focus was \(String(describing: actionFocus))") // test build
+                            actionFocus = .play
+                        }
                     }
                 }
                 scheduleBackgroundTrailer(for: meta)
@@ -5481,9 +5495,10 @@ struct TvDetailsContent: View {
     /// Moves Details to the top of the section focus went to (to the very top for the actions),
     /// by Core Animation: tvOS doesn't scroll Details (`TVScrollLock`), whose scroll for focus
     /// went frame by frame on the main thread and stuttered while the main thread built what
-    /// focus brought. tvOS still moves focus to a section off screen. Just after Details opened,
-    /// or a section was built, the section may not be laid out yet: tried again a few times
-    /// while focus stays there.
+    /// focus brought. tvOS still moves focus to a section off screen. A section not laid out yet
+    /// (metadata still loading, the main thread held up) is moved to once its place is known
+    /// (`TVScrollTops`); Details' scroll view not there yet (just after it opened), tried again
+    /// while focus stays in the section.
     private func moveDetails(to section: TvDetailsFocusSection, attempt: Int = 0) {
         let key: String
         if section == .actions {
@@ -5493,10 +5508,20 @@ struct TvDetailsContent: View {
         } else {
             return
         }
-        guard !detailsSectionTops.move(to: key, margin: 0, toTop: section == .actions),
-              attempt < 6 else { return }
+        let moved = detailsSectionTops.move(to: key, margin: 0, toTop: section == .actions)
+        // Test build: the move in the test log.
+        var traceState = "moving"
+        if !moved {
+            traceState = detailsSectionTops.scrollBox.scrollView == nil ? "no scroll view yet" : "place not known yet, follows it"
+        }
+        let traceTop: String = detailsSectionTops.tops[key].map { String(Int($0)) } ?? "-"
+        let traceTry: String = attempt > 0 ? " (try \(attempt + 1))" : ""
+        TVDetailsOpenTrace.move("to " + key + traceTry + ": " + traceState + " top=" + traceTop)
+        guard !moved,
+              detailsSectionTops.scrollBox.scrollView == nil,
+              attempt < 40 else { return }
         Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(30))
+            try? await Task.sleep(for: .milliseconds(50))
             guard focusedDetailsSection == section else { return }
             moveDetails(to: section, attempt: attempt + 1)
         }
