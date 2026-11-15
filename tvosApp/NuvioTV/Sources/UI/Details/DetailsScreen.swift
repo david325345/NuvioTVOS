@@ -4308,6 +4308,9 @@ struct TvDetailsContent: View {
     @State private var progressRevision = 0
     @State private var scrollOffset: CGFloat = 0
     @State private var hasAppearedBefore = false
+    /// Details just opened (or came back) asking for Play, and focus hasn't come to the actions
+    /// yet (`keepAskingForPlay`, `settleOpeningPlayFocus`).
+    @State private var openingPlayFocusPending = false
     /// Opened from the calendar before the title listed that episode (a
     /// cached copy shows first): focus it once the full title arrives.
     @State private var calendarFocusPending = false
@@ -5143,6 +5146,8 @@ struct TvDetailsContent: View {
                             TVDetailsOpenTrace.note("Play asked, action focus was \(String(describing: actionFocus))") // test build
                             actionFocus = .play
                         }
+                        openingPlayFocusPending = true
+                        keepAskingForPlay()
                     }
                 }
                 scheduleBackgroundTrailer(for: meta)
@@ -5163,7 +5168,11 @@ struct TvDetailsContent: View {
                 guard focusedDetailsSection == .actions, actionFocus == nil || actionFocus == .play else { return }
                 focusCalendarEpisode(key)
             }
+            .onChange(of: actionFocus) { _, focus in
+                settleOpeningPlayFocus(focus)
+            }
             .onDisappear {
+                openingPlayFocusPending = false
                 cancelRelatedFocusRestoration()
                 let seconds = trailerPlayer.currentTime().seconds
                 if seconds > 0.1 && !seconds.isNaN && !seconds.isInfinite {
@@ -5531,6 +5540,34 @@ struct TvDetailsContent: View {
             guard focusedDetailsSection == section else { return }
             moveDetails(to: section, attempt: attempt + 1)
         }
+    }
+
+    /// Play asked for again while focus is nowhere as Details opens: the first ask can find Play
+    /// not focusable yet, and nothing had focus until tvOS put it on Trailer by itself most of a
+    /// second later. Every 100 ms for up to two seconds, while focus stays out of the sections.
+    private func keepAskingForPlay(attempt: Int = 0) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            guard openingPlayFocusPending else { return }
+            guard focusedDetailsSection == .actions, attempt < 20 else {
+                openingPlayFocusPending = false
+                return
+            }
+            if actionFocus == nil {
+                TVDetailsOpenTrace.note("Play asked again (try \(attempt + 2))") // test build
+                actionFocus = .play
+            }
+            keepAskingForPlay(attempt: attempt + 1)
+        }
+    }
+
+    /// Focus coming to the actions first as Details opens goes to Play: anywhere else (Trailer)
+    /// was tvOS's own pick, as a press from nowhere goes where the screen prefers.
+    private func settleOpeningPlayFocus(_ focus: DetailsActionFocus?) {
+        guard openingPlayFocusPending, let focus else { return }
+        openingPlayFocusPending = false
+        guard focus != .play else { return }
+        TVDetailsOpenTrace.note("first focus on \(focus), moved to Play") // test build
+        actionFocus = .play
     }
 
     /// The section below the one focus moved into, built now if it isn't yet.
@@ -6046,18 +6083,30 @@ private struct TvDetailsBackdrop: View {
                 // One sharp image throughout (switching between two versions of it when the
                 // blurred copy arrived could flash as Details opened); live blur only until the
                 // blurred copy is ready.
-                Image(uiImage: backdropImage)
-                    .resizable()
-                    .scaledToFill()
-                    .blur(radius: blurredBackdrop != nil ? 0 : blurRadius, opaque: true)
-                    .animation(.easeInOut(duration: 0.35), value: blurRadius)
+                //
+                // The images fill the screen and no more: one taller than the screen (a poster
+                // as the backdrop, ~2700 points filled to the screen's width) made Details as
+                // tall, its scroll view too, and Details could no longer move to its sections.
+                Color.clear
+                    .overlay(alignment: .topLeading) {
+                        Image(uiImage: backdropImage)
+                            .resizable()
+                            .scaledToFill()
+                            .blur(radius: blurredBackdrop != nil ? 0 : blurRadius, opaque: true)
+                            .animation(.easeInOut(duration: 0.35), value: blurRadius)
+                    }
+                    .clipped()
                     .ignoresSafeArea()
                 if let blurredBackdrop {
-                    Image(uiImage: blurredBackdrop)
-                        .resizable()
-                        .scaledToFill()
-                        .opacity(blurRadius > 0 ? 1 : 0)
-                        .animation(.easeInOut(duration: 0.35), value: blurRadius)
+                    Color.clear
+                        .overlay(alignment: .topLeading) {
+                            Image(uiImage: blurredBackdrop)
+                                .resizable()
+                                .scaledToFill()
+                                .opacity(blurRadius > 0 ? 1 : 0)
+                                .animation(.easeInOut(duration: 0.35), value: blurRadius)
+                        }
+                        .clipped()
                         .ignoresSafeArea()
                         .allowsHitTesting(false)
                 }
@@ -6117,6 +6166,24 @@ private struct TvDetailsBackdrop: View {
             blurredBackdrop = blurred
         }
         .ignoresSafeArea()
+        // Test build: which artwork the backdrop shows, and its size.
+        .onChange(of: backdropImage, initial: true) { _, image in
+            guard let image else { return }
+            TVDetailsOpenTrace.move(
+                "backdrop \(targetArtworkKind) \(Int(image.size.width * image.scale))×\(Int(image.size.height * image.scale))"
+                    + " (\(targetArtworkURL?.host ?? "-"))"
+            )
+        }
+    }
+
+    /// Test build: which of the meta's artwork the backdrop asks for.
+    private var targetArtworkKind: String {
+        let kinds = ["background", "landscape poster", "poster"]
+        for (index, candidate) in [meta.backgroundUrl, meta.landscapePosterUrl, meta.posterUrl].enumerated() {
+            let trimmed = candidate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !trimmed.isEmpty, URL(string: trimmed) != nil { return kinds[index] }
+        }
+        return "none"
     }
 
     private struct BlurredBackdropKey: Equatable {
