@@ -1258,12 +1258,19 @@ struct ContentView: View {
     /// with Details still whole over Home, and Details fades out on the next turn of the run
     /// loop.
     private func leaveDetails() {
+        TVHomeReturnTrace.leave( // test build
+            "back from Details \(TVDetailsOpenTrace.sinceOpenText) after it opened: screen \(activeScreen), "
+                + "already leaving \(isLeavingDetailsForHome), back stack \(detailsBackStack.count)"
+        )
         if isLeavingDetailsForHome { return }
         if detailsBackStack.isEmpty, case .main = detailsReturnDestination {
             isLeavingDetailsForHome = true
             DispatchQueue.main.async {
                 defer { isLeavingDetailsForHome = false }
-                guard case .details = activeScreen else { return }
+                guard case .details = activeScreen else {
+                    TVHomeReturnTrace.note("back from Details skipped: screen was \(activeScreen)") // test build
+                    return
+                }
                 fadeOutDetails()
             }
             return
@@ -1272,6 +1279,7 @@ struct ContentView: View {
     }
 
     private func fadeOutDetails() {
+        TVHomeReturnTrace.note("Details fades out (back stack \(detailsBackStack.count))") // test build
         pendingDetailsPlaybackRequestID = nil
         TVHomeDebugTrace.log(
             "details.leave backStackRemaining=\(detailsBackStack.count) returnDest=\(detailsReturnDestination)"
@@ -4789,6 +4797,10 @@ private struct TVMainTabView: View {
         ))
             .equatable()
             .id(activeProfile?.id ?? "none")
+            // Test build: Home kept still while Details covers it, and let go.
+            .onChange(of: isFullScreenOverlayPresented && !homeCatchesUp) { _, covered in
+                TVHomeReturnTrace.note("home \(covered ? "kept still (covered)" : "let go")")
+            }
     }
 
     private var libraryTabContent: some View {
@@ -7987,7 +7999,18 @@ struct TVHomeView: View {
     private func moveHome(to sectionID: String, fast: Bool) -> Bool {
         guard let scrollView = TVHomeVerticalScroll.scrollView, scrollView.window != nil,
               let top = focusWork.rowTops[sectionID]
-        else { return false }
+        else {
+            // Test build.
+            TVHomeReturnTrace.note(
+                "home to row \(sectionID): not moved (row top \(focusWork.rowTops[sectionID].map { String(Int($0)) } ?? "unknown")), "
+                    + TVDetailsOpenTrace.scrollState(TVHomeVerticalScroll.scrollView)
+            )
+            return false
+        }
+        // Test build.
+        TVHomeReturnTrace.note(
+            "home to row \(sectionID): moving to \(Int(top)), " + TVDetailsOpenTrace.scrollState(scrollView)
+        )
         TVScrollMove.move(
             scrollView,
             to: CGPoint(x: scrollView.contentOffset.x, y: top - scrollView.adjustedContentInset.top),

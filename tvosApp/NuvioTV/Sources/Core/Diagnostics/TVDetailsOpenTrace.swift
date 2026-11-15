@@ -29,6 +29,12 @@ enum TVDetailsOpenTrace {
         TestDiagnosticLog.ui("details: \(text)")
     }
 
+    /// How long ago Details last opened ("850 ms").
+    static var sinceOpenText: String {
+        guard openedAt > 0 else { return "?" }
+        return "\(Int((CACurrentMediaTime() - openedAt) * 1_000)) ms"
+    }
+
     /// The scroll view Details moves: which one, on screen or not, its content's and its own
     /// height, where it is (where the move ends, and what is on screen now), whether it scrolls
     /// for focus, and whether the focused view is in it.
@@ -74,7 +80,7 @@ enum TVDetailsOpenTrace {
         }
     }
 
-    private static func shortID(_ object: AnyObject) -> String {
+    static func shortID(_ object: AnyObject) -> String {
         String(UInt(bitPattern: ObjectIdentifier(object).hashValue) & 0xFFFFF, radix: 16)
     }
 
@@ -89,6 +95,29 @@ enum TVDetailsOpenTrace {
         }
         guard let view = environment as? UIView else { return "?" }
         return view.isDescendant(of: scrollView) ? "yes" : "NO"
+    }
+}
+
+/// TEST: back from Details to Home, and Home's moves in the twelve seconds after it: whether
+/// Home was let go (it is kept still while Details covers it), and where its page and rows move.
+enum TVHomeReturnTrace {
+    nonisolated(unsafe) private static var leftAt: CFTimeInterval = 0
+    static let window: CFTimeInterval = 12
+
+    static func leave(_ text: String) {
+        leftAt = CACurrentMediaTime()
+        TestDiagnosticLog.ui("home return: \(text)")
+    }
+
+    /// Logged in the twelve seconds after a back from Details.
+    static func note(_ text: String) {
+        let elapsed = CACurrentMediaTime() - leftAt
+        guard leftAt > 0, elapsed < window else { return }
+        TestDiagnosticLog.ui("home return +\(Int(elapsed * 1_000)) ms: \(text)")
+    }
+
+    static func shortID(_ object: AnyObject) -> String {
+        TVDetailsOpenTrace.shortID(object)
     }
 }
 

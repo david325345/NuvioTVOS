@@ -933,7 +933,17 @@ struct TVCatalogRow: View {
         animated: Bool,
         duration: TimeInterval = TVScrollMove.duration
     ) -> Bool {
-        guard let scrollView = scrollBox.scrollView else { return false }
+        guard let scrollView = scrollBox.scrollView else {
+            TVHomeReturnTrace.note("row \(id) to x \(Int(x)): no scroll view yet") // test build
+            return false
+        }
+        // Test build.
+        TVHomeReturnTrace.note(
+            "row \(id) to x \(Int(x)): sv \(TVHomeReturnTrace.shortID(scrollView))"
+                + (scrollView.window == nil ? " OFF screen" : " on screen")
+                + " offset \(Int(scrollView.contentOffset.x))"
+                + " shown \(Int(scrollView.layer.presentation()?.bounds.origin.x ?? scrollView.contentOffset.x))"
+        )
         TVScrollMove.move(
             scrollView,
             to: CGPoint(x: x, y: scrollView.contentOffset.y),
