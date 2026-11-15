@@ -6920,6 +6920,8 @@ private struct TvDetailsCastAndTrailer: View {
 
     private static let firstCards = 3
     private static let cardsPerStep = 3
+    private static let personSpacing: CGFloat = 58
+    @AppStorage(SettingsKey.smoothFocus) private var smoothFocus = true
 
     var body: some View {
         let items = displayPeople
@@ -6951,8 +6953,14 @@ private struct TvDetailsCastAndTrailer: View {
                         .disabled(entryLocked)
                 }
 
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 58) {
+                // Moved by Core Animation, the focused person where the first one rests, as the
+                // rows below (tvOS's scroll for focus went frame by frame on the main thread).
+                TVCAStrip(
+                    index: focusedPersonIndex,
+                    step: TvDetailsPersonCard.width + Self.personSpacing,
+                    animated: smoothFocus
+                ) {
+                    HStack(spacing: Self.personSpacing) {
                         ForEach(Array(items.enumerated()), id: \.element.id) { index, person in
                             if index < builtCount {
                                 TvDetailsPersonCard(
@@ -6973,9 +6981,7 @@ private struct TvDetailsCastAndTrailer: View {
                             }
                         }
                     }
-                    .padding(.trailing, 80)
                 }
-                .scrollClipDisabledIfAvailable()
             }
             .focusSection()
             .onExitCommand {

@@ -1285,6 +1285,9 @@ private struct CalendarDayPanel: View {
     var focus: FocusState<CalendarFocus?>.Binding
     let onOpen: (CalendarEntry) -> Void
 
+    /// tvOS doesn't scroll the list: Core Animation moves it to the selected day, and brings the
+    /// focused event on screen.
+    @State private var reveal = TVScrollReveal()
 
     private var sections: [CalendarDaySection] {
         result.days.filter { $0.date.isSameMonth(as: month) }
@@ -1331,6 +1334,7 @@ private struct CalendarDayPanel: View {
                                 .buttonStyle(PosterCardButtonStyle())
                                 .focusEffectDisabledIfAvailable()
                                 .focused(focus, equals: .entry(entry.id))
+                                .modifier(TVScrollFrameReader(key: "entry:\(entry.id)", reveal: reveal, space: "calendar-day-panel"))
                             }
                         }
                         .padding(14)
@@ -1342,6 +1346,7 @@ private struct CalendarDayPanel: View {
                             RoundedRectangle(cornerRadius: 14)
                                 .strokeBorder(section.date == today ? accent.opacity(0.8) : Color.clear, lineWidth: 2)
                         )
+                        .modifier(TVScrollFrameReader(key: "section:\(section.id)", reveal: reveal, space: "calendar-day-panel"))
                         .id(section.id)
                     }
                     if showsTvmazeTimes {
@@ -1353,23 +1358,32 @@ private struct CalendarDayPanel: View {
                 }
                 .padding(.vertical, 20)
                 .padding(.horizontal, 12)
+                .tvScrollRevealPage(reveal)
             }
-            // One scroll owner: ScrollViewReader. Native tvOS focus may move
-            // between event buttons independently; do not reset the panel's
-            // position on every focus change or bind a second scroll position.
+            .coordinateSpace(name: "calendar-day-panel")
+            // The selected day goes to the top; focus moving between events doesn't reset the
+            // panel's position, it only brings the focused event on screen.
             // Clip the list so offscreen rows cannot draw over the calendar.
-            .onAppear { scroll(proxy) }
+            .onAppear { scroll(proxy, animated: false) }
             .onChange(of: anchorID) { _, _ in
-                scroll(proxy)
+                scroll(proxy, animated: true)
             }
+            .tvReveal(focusedEntryKey, in: reveal, margin: 90)
         }
     }
 
-    private func scroll(_ proxy: ScrollViewProxy) {
+    /// The focused event's key in `reveal`, nil when focus is elsewhere.
+    private var focusedEntryKey: String? {
+        if case .entry(let id) = focus.wrappedValue { return "entry:\(id)" }
+        return nil
+    }
+
+    /// The selected day to the top: by Core Animation once the list knows where the day is,
+    /// else (a day not laid out yet in the lazy list) straight there.
+    private func scroll(_ proxy: ScrollViewProxy, animated: Bool) {
         guard let anchorID else { return }
-        withAnimation(.easeOut(duration: 0.2)) {
-            proxy.scrollTo(anchorID, anchor: .top)
-        }
+        if animated, reveal.move(toTopOf: "section:\(anchorID)", margin: 0) { return }
+        proxy.scrollTo(anchorID, anchor: .top)
     }
 }
 

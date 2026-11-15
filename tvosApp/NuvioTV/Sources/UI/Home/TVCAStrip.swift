@@ -167,3 +167,114 @@ struct TVScrollTopReader: ViewModifier {
         }
     }
 }
+
+/// A page tvOS doesn't scroll (`TVScrollLock`) that brings the focused item on screen by Core
+/// Animation, as far as tvOS's scroll for focus took it: not at all while the item is on screen
+/// with `margin` to spare above and below it, else just far enough. The margin also keeps part
+/// of the row beyond on screen, so a lazy grid or list has it built for focus to move to.
+final class TVScrollReveal {
+    let scrollBox = TVScrollViewBox()
+    private var frames: [AnyHashable: CGRect] = [:]
+
+    /// `visibleFrame`: the item's frame in the scroll view's own space (where it is on screen);
+    /// with the scroll's offset, where it is in the content.
+    func record(_ key: AnyHashable, visibleFrame: CGRect) {
+        frames[key] = visibleFrame.offsetBy(dx: 0, dy: scrollBox.scrollView?.contentOffset.y ?? 0)
+    }
+
+    /// Brings item `key` on screen with `margin` above and below it (the top of an item taller
+    /// than that). False while its place isn't known yet.
+    @discardableResult
+    func reveal(_ key: AnyHashable, margin: CGFloat) -> Bool {
+        guard let scrollView = scrollBox.scrollView, let frame = frames[key] else { return false }
+        let inset = scrollView.adjustedContentInset
+        let top = scrollView.contentOffset.y + inset.top
+        let bottom = scrollView.contentOffset.y + scrollView.bounds.height - inset.bottom
+        if frame.minY - margin < top || frame.height + 2 * margin > bottom - top {
+            move(scrollView, to: frame.minY - margin - inset.top)
+        } else if frame.maxY + margin > bottom {
+            move(scrollView, to: frame.maxY + margin - scrollView.bounds.height + inset.bottom)
+        }
+        return true
+    }
+
+    /// Moves so item `key` starts `margin` below the top. False while its place isn't known yet.
+    @discardableResult
+    func move(toTopOf key: AnyHashable, margin: CGFloat) -> Bool {
+        guard let scrollView = scrollBox.scrollView, let frame = frames[key] else { return false }
+        move(scrollView, to: frame.minY - margin - scrollView.adjustedContentInset.top)
+        return true
+    }
+
+    /// Moves to the page's top. False while its scroll view isn't known yet.
+    @discardableResult
+    func moveToTop() -> Bool {
+        guard let scrollView = scrollBox.scrollView else { return false }
+        move(scrollView, to: -scrollView.adjustedContentInset.top)
+        return true
+    }
+
+    private func move(_ scrollView: UIScrollView, to target: CGFloat) {
+        let inset = scrollView.adjustedContentInset
+        let maxY = max(-inset.top, scrollView.contentSize.height + inset.bottom - scrollView.bounds.height)
+        let clamped = min(max(target, -inset.top), maxY)
+        // A scroll UIKit may be running stops where it is, so it doesn't add up with the move.
+        scrollView.setContentOffset(scrollView.contentOffset, animated: false)
+        guard abs(scrollView.contentOffset.y - clamped) >= 1 else { return }
+        TVScrollMove.move(scrollView, to: CGPoint(x: scrollView.contentOffset.x, y: clamped), animated: true)
+    }
+}
+
+/// Records where the view is in `space` (the page's scroll view) for `TVScrollReveal`.
+struct TVScrollFrameReader: ViewModifier {
+    let key: AnyHashable
+    let reveal: TVScrollReveal
+    let space: String
+
+    func body(content: Content) -> some View {
+        content.onGeometryChange(for: CGRect.self) { proxy in
+            proxy.frame(in: .named(space))
+        } action: { frame in
+            reveal.record(key, visibleFrame: frame)
+        }
+    }
+}
+
+extension View {
+    /// The page's scroll view, for `TVScrollReveal`, and its scrolling for focus off: put in the
+    /// scroll view's content.
+    func tvScrollRevealPage(_ reveal: TVScrollReveal) -> some View {
+        background {
+            TVScrollViewFinder(box: reveal.scrollBox)
+                .frame(width: 1, height: 1)
+                .allowsHitTesting(false)
+            TVScrollLock(locked: true)
+                .frame(width: 1, height: 1)
+                .allowsHitTesting(false)
+        }
+    }
+
+    /// Brings `key` on screen once `reveal` knows where it is (it may be laid out only just after
+    /// focus went to it): tried again a few times.
+    func tvReveal<Key: Hashable>(_ key: Key?, in reveal: TVScrollReveal, margin: CGFloat) -> some View {
+        onChange(of: key) { _, key in
+            guard let key else { return }
+            TVScrollRevealRetry.reveal(AnyHashable(key), in: reveal, margin: margin, attempt: 0)
+        }
+    }
+}
+
+private enum TVScrollRevealRetry {
+    static func reveal(_ key: AnyHashable, in reveal: TVScrollReveal, margin: CGFloat, attempt: Int) {
+        guard !reveal.reveal(key, margin: margin), attempt < 6 else { return }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(30))
+            Self.reveal(key, in: reveal, margin: margin, attempt: attempt + 1)
+        }
+    }
+}
+
+/// How much of the rows above and below a grid's focused card `TVScrollReveal` keeps on screen.
+enum TVGridReveal {
+    static let margin: CGFloat = 90
+}

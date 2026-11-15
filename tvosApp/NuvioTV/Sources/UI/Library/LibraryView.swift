@@ -268,6 +268,8 @@ public struct LibraryView: View {
     @State private var overlayRestoreCloudItemID: String?
 
     @FocusState private var focusedItemID: String?
+    /// tvOS doesn't scroll the grid: Core Animation brings the focused title on screen.
+    @State private var gridReveal = TVScrollReveal()
     /// Last card focused in the grid, kept so returning from details (which
     /// steals focus and nils `focusedItemID`) restores that card instead of
     /// snapping back to the top of the grid.
@@ -646,6 +648,7 @@ public struct LibraryView: View {
                                     (overlayRestoreItemID != nil && overlayRestoreItemID != item.id)
                                         || !watchedContextIsCurrent
                                 )
+                                .modifier(TVScrollFrameReader(key: item.id, reveal: gridReveal, space: "library-grid-scroll"))
                             }
                         }
                     }
@@ -654,7 +657,10 @@ public struct LibraryView: View {
                 .padding(.horizontal, 12)
                 .padding(.bottom, 90)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .tvScrollRevealPage(gridReveal)
             }
+            .coordinateSpace(name: "library-grid-scroll")
+            .tvReveal(focusedItemID, in: gridReveal, margin: TVGridReveal.margin)
             .focusSection()
             .defaultFocusIfAvailable($focusedItemID, shouldRestoreFocus ? lastFocusedItemID : nil)
         }

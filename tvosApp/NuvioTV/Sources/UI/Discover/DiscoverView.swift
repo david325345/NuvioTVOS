@@ -22,6 +22,8 @@ struct DiscoverSection: View {
     var onFocusExit: (() -> Void)? = nil
     @StateObject private var viewModel = DiscoverViewModel()
     @FocusState private var focusedCardID: String?
+    /// tvOS doesn't scroll the grid: Core Animation brings the focused card on screen.
+    @State private var gridReveal = TVScrollReveal()
     @FocusState private var focusedFilterID: String?
     @State private var focusedElementID: String?
     /// Cards can briefly blur while a rapid remote swipe realizes the next
@@ -344,10 +346,12 @@ struct DiscoverSection: View {
                         ))
                         .disabled(overlayRestoreCardID != nil && overlayRestoreCardID != item.id)
                         .onAppear { viewModel.loadMoreIfNeeded(currentItem: item) }
+                        .modifier(TVScrollFrameReader(key: item.id, reveal: gridReveal, space: "discover-grid-scroll"))
                     }
                 }
                 .padding(.top, 16)
                 .padding(.horizontal, 12)
+                .tvScrollRevealPage(gridReveal)
 
                 if viewModel.isLoadingMore {
                     ProgressView()
@@ -357,8 +361,10 @@ struct DiscoverSection: View {
 
                 Color.clear.frame(height: 60)
             }
+            .coordinateSpace(name: "discover-grid-scroll")
+            .tvReveal(focusedCardID, in: gridReveal, margin: TVGridReveal.margin)
             .onChange(of: scrollToTopGeneration) { _, _ in
-                withAnimation(.easeInOut(duration: 0.2)) {
+                if !gridReveal.moveToTop() {
                     proxy.scrollTo("discover-grid-top", anchor: .top)
                 }
             }

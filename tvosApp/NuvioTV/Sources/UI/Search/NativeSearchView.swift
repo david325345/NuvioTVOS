@@ -248,6 +248,8 @@ struct NativeSearchView: View {
     @AppStorage("nuvio.keyboard.detectedLayout") private var detectedKeyboardMode: TVOSKeyboardLayoutMode = .linear
 
     @FocusState private var focusedResultID: String?
+    /// tvOS doesn't scroll the results: Core Animation brings the focused one on screen.
+    @State private var resultsReveal = TVScrollReveal()
     @FocusState private var focusedFilterID: String?
     @FocusState private var clearRecentFocused: Bool
     @State private var lastFocusedResultID: String?
@@ -1012,13 +1014,17 @@ struct NativeSearchView: View {
                             retainsFocusAppearance: overlayRestoreResultID == item.id
                         ))
                         .disabled(overlayRestoreResultID != nil && overlayRestoreResultID != item.id)
+                        .modifier(TVScrollFrameReader(key: item.id, reveal: resultsReveal, space: "native-search-results-scroll"))
                     }
                 }
                 .padding(.top, 16)
                 .padding(.horizontal, NativeSearchGridMetrics.gridContentInset)
+                .tvScrollRevealPage(resultsReveal)
             }
+            .coordinateSpace(name: "native-search-results-scroll")
+            .tvReveal(focusedResultID, in: resultsReveal, margin: TVGridReveal.margin)
             .onChange(of: resultsScrollTopGeneration) { _, _ in
-                withAnimation(.easeInOut(duration: 0.2)) {
+                if !resultsReveal.moveToTop() {
                     proxy.scrollTo("native-search-results-top", anchor: .top)
                 }
             }
