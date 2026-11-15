@@ -133,6 +133,22 @@ final class TVScrollTops {
         let toTop: Bool
     }
 
+    init() {
+        // The page's content put in another scroll view: that one goes where the page was.
+        scrollBox.onReplaced = { [weak self] _ in
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let target = self.target else { return }
+                self.apply(target)
+            }
+        }
+    }
+
+    /// The page's scroll view, while it is on screen.
+    var scrollView: UIScrollView? {
+        guard let scrollView = scrollBox.scrollView, scrollView.window != nil else { return nil }
+        return scrollView
+    }
+
     /// `contentMinY`: where the part starts in the page's content (`TVScrollTopReader`, in a
     /// space on the content itself, so it doesn't change as the page scrolls).
     func record(_ key: String, contentMinY: CGFloat) {
@@ -155,7 +171,7 @@ final class TVScrollTops {
 
     @discardableResult
     private func apply(_ target: Target) -> Bool {
-        guard let scrollView = scrollBox.scrollView else { return false }
+        guard let scrollView else { return false }
         let inset = scrollView.adjustedContentInset
         let y: CGFloat
         if target.toTop {

@@ -5497,8 +5497,8 @@ struct TvDetailsContent: View {
     /// went frame by frame on the main thread and stuttered while the main thread built what
     /// focus brought. tvOS still moves focus to a section off screen. A section not laid out yet
     /// (metadata still loading, the main thread held up) is moved to once its place is known
-    /// (`TVScrollTops`); Details' scroll view not there yet (just after it opened), tried again
-    /// while focus stays in the section.
+    /// (`TVScrollTops`); Details' scroll view not on screen yet (just after it opened), tried
+    /// again while focus stays in the section.
     private func moveDetails(to section: TvDetailsFocusSection, attempt: Int = 0) {
         let key: String
         if section == .actions {
@@ -5508,17 +5508,23 @@ struct TvDetailsContent: View {
         } else {
             return
         }
+        let traceFrom: String = detailsSectionTops.scrollBox.scrollView.map { String(Int($0.contentOffset.y)) } ?? "-" // test build
         let moved = detailsSectionTops.move(to: key, margin: 0, toTop: section == .actions)
-        // Test build: the move in the test log.
+        // Test build: the move in the test log, with the scroll view's state.
         var traceState = "moving"
         if !moved {
-            traceState = detailsSectionTops.scrollBox.scrollView == nil ? "no scroll view yet" : "place not known yet, follows it"
+            traceState = detailsSectionTops.scrollView == nil ? "no scroll view on screen yet" : "place not known yet, follows it"
         }
         let traceTop: String = detailsSectionTops.tops[key].map { String(Int($0)) } ?? "-"
         let traceTry: String = attempt > 0 ? " (try \(attempt + 1))" : ""
-        TVDetailsOpenTrace.move("to " + key + traceTry + ": " + traceState + " top=" + traceTop)
+        TVDetailsOpenTrace.move(
+            "to " + key + traceTry + ": " + traceState + " top=" + traceTop + " from=" + traceFrom + ", "
+                + TVDetailsOpenTrace.scrollState(detailsSectionTops.scrollBox.scrollView)
+        )
+        TVDetailsOpenTrace.watch(detailsSectionTops.scrollView)
+        TVDetailsOpenTrace.rest(after: key, detailsSectionTops.scrollBox)
         guard !moved,
-              detailsSectionTops.scrollBox.scrollView == nil,
+              detailsSectionTops.scrollView == nil,
               attempt < 40 else { return }
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(50))
