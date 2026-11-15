@@ -1,4 +1,3 @@
-import Combine
 import Foundation
 import QuartzCore
 import SwiftUI
@@ -92,76 +91,6 @@ enum TVDetailsMoveTest {
         case ca: return caFull
         default: return nuvio
         }
-    }
-}
-
-/// TEST (Details Move CA full): Details' UIKit scroll view doesn't scroll for focus. tvOS then
-/// can't move focus to a section off screen, so Details moves it there itself (see
-/// `TVDetailsSectionEntry`).
-struct TVDetailsScrollLock: UIViewRepresentable {
-    let locked: Bool
-
-    final class LockView: UIView {
-        var locked = false
-        private var didLock = false
-
-        override func didMoveToWindow() {
-            super.didMoveToWindow()
-            apply()
-        }
-
-        func apply() {
-            // After SwiftUI's own update of the scroll view, which may set it scrolling again.
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.window != nil else { return }
-                var current = self.superview
-                while let candidate = current, !(candidate is UIScrollView) { current = candidate.superview }
-                guard let scrollView = current as? UIScrollView else { return }
-                if self.locked {
-                    scrollView.isScrollEnabled = false
-                    self.didLock = true
-                } else if self.didLock {
-                    scrollView.isScrollEnabled = true
-                    self.didLock = false
-                }
-            }
-        }
-    }
-
-    func makeUIView(context: Context) -> LockView {
-        let view = LockView(frame: .zero)
-        view.isUserInteractionEnabled = false
-        view.locked = locked
-        return view
-    }
-
-    func updateUIView(_ uiView: LockView, context: Context) {
-        uiView.locked = locked
-        uiView.apply()
-    }
-}
-
-/// TEST (Details Move CA full): Details asks one of its rows to put focus on the card the row
-/// would take focus on (its remembered one). `fromBelow`: focus comes up from the section below.
-enum TVDetailsSectionEntry {
-    static let notification = Notification.Name("nuvio.test.detailsSectionEntry")
-
-    static func post(_ section: String, fromBelow: Bool) {
-        NotificationCenter.default.post(
-            name: notification,
-            object: nil,
-            userInfo: ["section": section, "fromBelow": fromBelow]
-        )
-    }
-
-    /// The requests for `section`, as whether focus comes from below.
-    static func requests(for section: String) -> AnyPublisher<Bool, Never> {
-        NotificationCenter.default.publisher(for: notification)
-            .compactMap { note -> Bool? in
-                guard note.userInfo?["section"] as? String == section else { return nil }
-                return note.userInfo?["fromBelow"] as? Bool ?? false
-            }
-            .eraseToAnyPublisher()
     }
 }
 

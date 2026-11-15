@@ -4756,8 +4756,7 @@ struct TvDetailsContent: View {
                         relatedTitlesRow(
                             title: L10n.string("details_anilist_related", fallback: "Related"),
                             items: AniListTitleIndex.related(metaID: meta.id),
-                            scrollProxy: scrollProxy,
-                            entersFromBelow: uiState.moreLikeThis.isEmpty
+                            scrollProxy: scrollProxy
                         )
                     }
                     if !uiState.moreLikeThis.isEmpty {
@@ -4765,8 +4764,7 @@ struct TvDetailsContent: View {
                             title: L10n.string("settings_tmdb_module_more_like_this", fallback: "More Like This"),
                             items: uiState.moreLikeThis,
                             scrollProxy: scrollProxy,
-                            restoresMoreLikeThisFocus: true,
-                            entersFromAbove: AniListTitleIndex.related(metaID: meta.id).isEmpty
+                            restoresMoreLikeThisFocus: true
                         )
                     }
                 }
@@ -4783,7 +4781,6 @@ struct TvDetailsContent: View {
                     title: L10n.string("details_network", fallback: "Network"),
                     companies: networks,
                     entryLocked: focusedDetailsSection != .network,
-                    entrySection: "network", // test build
                     onSelect: { company in
                         onOpenProduction?(company)
                     },
@@ -4812,7 +4809,6 @@ struct TvDetailsContent: View {
                     title: L10n.string("details_production", fallback: "Production"),
                     companies: productionCompanies,
                     entryLocked: focusedDetailsSection != .production,
-                    entrySection: "production", // test build
                     onSelect: { company in
                         onOpenProduction?(company)
                     },
@@ -5027,7 +5023,7 @@ struct TvDetailsContent: View {
                                     .frame(width: 1, height: 1)
                                     .allowsHitTesting(false)
                                 // Test build (Details Move CA full): no scroll for focus.
-                                TVDetailsScrollLock(locked: detailsMoveTest == TVDetailsMoveTest.caFull)
+                                TVScrollLock(locked: detailsMoveTest == TVDetailsMoveTest.caFull)
                                     .frame(width: 1, height: 1)
                                     .allowsHitTesting(false)
                             }
@@ -5112,7 +5108,7 @@ struct TvDetailsContent: View {
             #if os(tvOS)
             .onMoveCommand { direction in
                 cancelRelatedFocusRestoration()
-                scheduleCAFullSectionMove(direction) // test build
+                logCAFullPressWithoutMove(direction) // test build
             }
             #endif
             // tvOS doesn't re-run default-focus when this content swaps in after
@@ -5498,8 +5494,23 @@ struct TvDetailsContent: View {
     /// main thread, and moves Details to the section's top by Core Animation in its place. CA
     /// full: tvOS doesn't scroll Details at all, the move is only this.
     @discardableResult
-    private func moveDetailsByCA(to section: TvDetailsFocusSection) -> Bool {
+    private func moveDetailsByCA(to section: TvDetailsFocusSection, attempt: Int = 0) -> Bool {
         guard TVDetailsMoveTest.isCA(detailsMoveTest) else { return false }
+        /// Just after Details opened (or a section was built), the section may not be laid out
+        /// yet: tried again a few times while focus stays there.
+        func tryAgainLater(_ why: String) -> Bool {
+            guard attempt < 6 else {
+                TVDetailsMoveTrace.note("CA: \(why), gave up")
+                return false
+            }
+            if attempt == 0 { TVDetailsMoveTrace.note("CA: \(why), trying again") }
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(30))
+                guard focusedDetailsSection == section else { return }
+                moveDetailsByCA(to: section, attempt: attempt + 1)
+            }
+            return false
+        }
         let key: String
         if section == .actions {
             key = "actions"
@@ -5510,12 +5521,10 @@ struct TvDetailsContent: View {
             return false
         }
         guard let scrollView = detailsSectionTops.scrollBox.scrollView else {
-            TVDetailsMoveTrace.note("CA: no UIScrollView")
-            return false
+            return tryAgainLater("no UIScrollView")
         }
         guard let top = detailsSectionTops.tops[key] else {
-            TVDetailsMoveTrace.note("CA: top of \(key) not known")
-            return false
+            return tryAgainLater("top of \(key) not known")
         }
         let current = scrollView.contentOffset
         let target = top - scrollView.adjustedContentInset.top
@@ -5539,53 +5548,20 @@ struct TvDetailsContent: View {
         return true
     }
 
-    /// TEST (Details Move CA full): Details doesn't scroll for focus, so tvOS finds nothing to
-    /// move to when the section above (or below) is off screen, and the press is lost. When a
-    /// press up or down moved focus nowhere, Details moves to the section by Core Animation and
-    /// puts focus where tvOS would have: the episode or card the section would take it on.
-    private func scheduleCAFullSectionMove(_ direction: MoveCommandDirection) {
+    /// TEST (Details Move CA full): tvOS doesn't scroll Details, and still moves focus to a
+    /// section off screen; Details moves there by Core Animation as the section changes. The
+    /// move command comes after focus moved (as the button is let go), so this only logs a
+    /// press up or down that moved focus nowhere at all, to see whether that ever happens.
+    private func logCAFullPressWithoutMove(_ direction: MoveCommandDirection) {
         guard detailsMoveTest == TVDetailsMoveTest.caFull,
               direction == .up || direction == .down else { return }
         TvDetailsFocusActivity.start()
         let section = focusedDetailsSection
-        let pressedAt = CACurrentMediaTime()
+        let commandAt = CACurrentMediaTime()
         Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(40))
-            // Focus moved for this press: the move tvOS made (just before the command came, or
-            // since), or one Details' own handlers made (the episodes').
-            guard TvDetailsFocusActivity.lastMoveAt < pressedAt - 0.05,
-                  focusedDetailsSection == section,
-                  relatedFocusRestoreAttemptID == nil,
-                  restoreEpisodeKey == nil,
-                  !isFullscreenTrailerPresented,
-                  detailsMoveTest == TVDetailsMoveTest.caFull else { return }
-            moveFocusToAdjacentSection(from: section, down: direction == .down)
-        }
-    }
-
-    private func moveFocusToAdjacentSection(from section: TvDetailsFocusSection, down: Bool) {
-        let order = detailsFocusOrder
-        guard let index = order.firstIndex(of: section) else { return }
-        let targetIndex = down ? index + 1 : index - 1
-        guard order.indices.contains(targetIndex) else { return }
-        let target = order[targetIndex]
-        TVDetailsMoveTrace.begin("press \(down ? "down" : "up") found nothing: \(section) → \(target)")
-        // On screen at once for focus: Core Animation moves the scroll's end, only the picture
-        // follows.
-        moveDetailsByCA(to: target)
-        switch target {
-        case .actions:
-            focusPlayFromEpisodes()
-        case .episodes:
-            cancelPendingFocusHandoff()
-            focusedDetailsSection = .episodes
-            setEpisodeFocus(TvEpisodeFocus.entry)
-        case .cast:
-            // The heading is the way in from above and from below (the cards are locked until
-            // focus is in the section).
-            focusCastHeaderFromEpisodes()
-        case .related, .network, .production, .comments:
-            TVDetailsSectionEntry.post(String(describing: target), fromBelow: !down)
+            try? await Task.sleep(for: .milliseconds(150))
+            guard TvDetailsFocusActivity.lastMoveAt < commandAt - 0.6 else { return }
+            TestDiagnosticLog.ui("details: press \(direction == .down ? "down" : "up") moved no focus (\(section))")
         }
     }
 
@@ -5763,16 +5739,12 @@ struct TvDetailsContent: View {
         title: String,
         items: [RelatedTitle],
         scrollProxy: ScrollViewProxy,
-        restoresMoreLikeThisFocus: Bool = false,
-        entersFromAbove: Bool = true,
-        entersFromBelow: Bool = true
+        restoresMoreLikeThisFocus: Bool = false
     ) -> some View {
         TvDetailsRelatedRow(
             title: title,
             items: items,
             entryLocked: focusedDetailsSection != .related,
-            entersFromAbove: entersFromAbove, // test build
-            entersFromBelow: entersFromBelow, // test build
             focusRequestID: restoresMoreLikeThisFocus ? relatedFocusRestoreAttemptID : nil,
             externalFocus: restoresMoreLikeThisFocus ? $relatedCardFocus : nil,
             onMounted: restoresMoreLikeThisFocus ? {
@@ -7181,10 +7153,6 @@ private struct TvDetailsRelatedRow: View {
     let title: String
     let items: [RelatedTitle]
     let entryLocked: Bool
-    /// Test build (Details Move CA full): whether this row takes focus Details puts into the
-    /// section from above, and from below.
-    var entersFromAbove: Bool = true
-    var entersFromBelow: Bool = true
     var focusRequestID: String? = nil
     var externalFocus: FocusState<String?>.Binding? = nil
     var onMounted: (() -> Void)? = nil
@@ -7195,7 +7163,6 @@ private struct TvDetailsRelatedRow: View {
     let onFocus: () -> Void
 
     @State private var scrollIndex = 0
-    @FocusState private var entryFocus: String? // test build
     /// The row's posters come a few at a time, empty space of their size until then: built all
     /// at once (16 or more) as Details built this section, half a second after focus went into
     /// the episodes, they were a 90-150 ms frame. All of them once focus comes into the row.
@@ -7223,61 +7190,49 @@ private struct TvDetailsRelatedRow: View {
                 .font(.system(size: 34, weight: .semibold))
                 .foregroundColor(.white.opacity(0.9))
 
-            HStack(alignment: .bottom, spacing: spacing) {
-                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                    let buildsLater = index >= builtCount
-                    PosterCard(
-                        meta: item.asMeta,
-                        customPosterScreen: .details,
-                        onFocus: { _ in
-                            if scrollIndex != index { scrollIndex = index }
-                            if builtCount < items.count { builtCount = items.count }
-                            onFocus()
-                            onItemFocus?(item)
-                        },
-                        externalFocus: externalFocus,
-                        externalFocusValue: item.id,
-                        layoutMode: homeLayout,
-                        showPosterLabels: posterLabels,
-                        smoothFocusAnimations: smoothFocus,
-                        focusHighlighterEnabled: focusHighlighter,
-                        buildsLater: buildsLater
-                    ) {
-                        onSelect(item)
+            TVCAStrip(index: scrollIndex, step: step, animated: smoothFocus) {
+                HStack(alignment: .bottom, spacing: spacing) {
+                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                        let buildsLater = index >= builtCount
+                        PosterCard(
+                            meta: item.asMeta,
+                            customPosterScreen: .details,
+                            onFocus: { _ in
+                                if scrollIndex != index { scrollIndex = index }
+                                if builtCount < items.count { builtCount = items.count }
+                                onFocus()
+                                onItemFocus?(item)
+                            },
+                            externalFocus: externalFocus,
+                            externalFocusValue: item.id,
+                            layoutMode: homeLayout,
+                            showPosterLabels: posterLabels,
+                            smoothFocusAnimations: smoothFocus,
+                            focusHighlighterEnabled: focusHighlighter,
+                            buildsLater: buildsLater
+                        ) {
+                            onSelect(item)
+                        }
+                        .detailsSnapshot(TvDetailsCardSnapshotKey(
+                            item: item,
+                            index: index,
+                            style: "\(homeLayout)|\(posterLabels)|\(smoothFocus)|\(focusHighlighter)|\(buildsLater)"
+                        ))
+                        .disabled(
+                            focusRequestID.map { $0 != item.id }
+                                ?? (entryLocked && index != scrollIndex)
+                        )
                     }
-                    .detailsSnapshot(TvDetailsCardSnapshotKey(
-                        item: item,
-                        index: index,
-                        style: "\(homeLayout)|\(posterLabels)|\(smoothFocus)|\(focusHighlighter)|\(buildsLater)"
-                    ))
-                    .focused($entryFocus, equals: item.id) // test build
-                    .disabled(
-                        focusRequestID.map { $0 != item.id }
-                            ?? (entryLocked && index != scrollIndex)
-                    )
                 }
+                .padding(.vertical, TvDetailsHorizontalStrip.verticalPadding)
             }
-            .padding(.vertical, TvDetailsHorizontalStrip.verticalPadding)
-            .offset(x: -CGFloat(scrollIndex) * step)
             // Deliberately do not clip this strip to the text column. Like the
             // Home rows, posters keep drawing all the way to the screen edge.
             .frame(height: stripHeight, alignment: .leading)
-            .animation(
-                smoothFocus ? TvDetailsHorizontalStrip.scrollSpring : nil,
-                value: scrollIndex
-            )
         }
         .focusSection()
         .onExitCommand {
             onBack?()
-        }
-        // Test build (Details Move CA full): Details puts focus on the poster the row would take
-        // it on.
-        .onReceive(TVDetailsSectionEntry.requests(for: "related")) { fromBelow in
-            guard fromBelow ? entersFromBelow : entersFromAbove,
-                  items.indices.contains(scrollIndex) else { return }
-            if builtCount <= scrollIndex { builtCount = items.count }
-            entryFocus = items[scrollIndex].id
         }
         .task {
             while builtCount < items.count {
@@ -7318,14 +7273,11 @@ private struct TvDetailsProductionRow: View {
     let title: String
     let companies: [MetaCompany]
     let entryLocked: Bool
-    /// Test build (Details Move CA full): which section this row is ("network", "production").
-    var entrySection: String = ""
     let onSelect: (MetaCompany) -> Void
     var onBack: (() -> Void)? = nil
     let onFocus: () -> Void
 
     @State private var scrollIndex = 0
-    @FocusState private var entryFocus: Int? // test build
     @AppStorage(SettingsKey.smoothFocus) private var smoothFocus = true
 
     private let cardWidth: CGFloat = 200
@@ -7350,38 +7302,29 @@ private struct TvDetailsProductionRow: View {
                 .font(.system(size: 34, weight: .semibold))
                 .foregroundColor(.white.opacity(0.9))
 
-            HStack(alignment: .top, spacing: spacing) {
-                ForEach(Array(companies.enumerated()), id: \.element.id) { index, company in
-                    TvDetailsCompanyCard(
-                        company: company,
-                        onSelect: { onSelect(company) },
-                        onFocus: {
-                            if scrollIndex != index { scrollIndex = index }
-                            onFocus()
-                        },
-                        onBack: onBack
-                    )
-                    .detailsSnapshot(TvDetailsCardSnapshotKey(item: company, index: index))
-                    .focused($entryFocus, equals: index) // test build
-                    .disabled(entryLocked && index != entryCompanyIndex)
+            TVCAStrip(index: scrollIndex, step: step, animated: smoothFocus) {
+                HStack(alignment: .top, spacing: spacing) {
+                    ForEach(Array(companies.enumerated()), id: \.element.id) { index, company in
+                        TvDetailsCompanyCard(
+                            company: company,
+                            onSelect: { onSelect(company) },
+                            onFocus: {
+                                if scrollIndex != index { scrollIndex = index }
+                                onFocus()
+                            },
+                            onBack: onBack
+                        )
+                        .detailsSnapshot(TvDetailsCardSnapshotKey(item: company, index: index))
+                        .disabled(entryLocked && index != entryCompanyIndex)
+                    }
                 }
+                .padding(.vertical, TvDetailsHorizontalStrip.verticalPadding)
             }
-            .padding(.vertical, TvDetailsHorizontalStrip.verticalPadding)
-            .offset(x: -CGFloat(scrollIndex) * step)
             .frame(height: stripHeight, alignment: .leading)
-            .animation(
-                smoothFocus ? TvDetailsHorizontalStrip.scrollSpring : nil,
-                value: scrollIndex
-            )
         }
         .focusSection()
         .onExitCommand {
             onBack?()
-        }
-        // Test build (Details Move CA full): Details puts focus on the card the row would take
-        // it on.
-        .onReceive(TVDetailsSectionEntry.requests(for: entrySection)) { _ in
-            entryFocus = entryCompanyIndex
         }
     }
 }
@@ -7484,7 +7427,6 @@ private struct TvDetailsCommentsRow: View {
     let onFocus: () -> Void
 
     @State private var scrollIndex = 0
-    @FocusState private var entryFocus: Int? // test build
     @AppStorage(SettingsKey.smoothFocus) private var smoothFocus = true
 
     private let cardWidth: CGFloat = 420
@@ -7501,41 +7443,31 @@ private struct TvDetailsCommentsRow: View {
                 .font(.system(size: 34, weight: .semibold))
                 .foregroundColor(.white.opacity(0.9))
 
-            HStack(spacing: 22) {
-                ForEach(Array(comments.enumerated()), id: \.element.id) { index, comment in
-                    TvDetailsCommentCard(
-                        comment: comment,
-                        onSelect: { onSelect(comment) },
-                        onFocus: {
-                            if scrollIndex != index { scrollIndex = index }
-                            onFocus()
-                        },
-                        onBack: onBack
-                    )
-                    .detailsSnapshot(TvDetailsCardSnapshotKey(item: comment, index: index))
-                    .focused($entryFocus, equals: index) // test build
-                    .disabled(entryLocked && index != scrollIndex)
+            TVCAStrip(index: scrollIndex, step: cardWidth + spacing, animated: smoothFocus) {
+                HStack(spacing: 22) {
+                    ForEach(Array(comments.enumerated()), id: \.element.id) { index, comment in
+                        TvDetailsCommentCard(
+                            comment: comment,
+                            onSelect: { onSelect(comment) },
+                            onFocus: {
+                                if scrollIndex != index { scrollIndex = index }
+                                onFocus()
+                            },
+                            onBack: onBack
+                        )
+                        .detailsSnapshot(TvDetailsCardSnapshotKey(item: comment, index: index))
+                        .disabled(entryLocked && index != scrollIndex)
+                    }
                 }
+                .padding(.vertical, TvDetailsHorizontalStrip.verticalPadding)
             }
-            .padding(.vertical, TvDetailsHorizontalStrip.verticalPadding)
-            .offset(x: -CGFloat(scrollIndex) * (cardWidth + spacing))
             // Keep comment cards edge-to-edge as well; the parent vertical
             // scroll view owns the viewport instead of this row clipping it.
             .frame(height: stripHeight, alignment: .leading)
-            .animation(
-                smoothFocus ? TvDetailsHorizontalStrip.scrollSpring : nil,
-                value: scrollIndex
-            )
         }
         .focusSection()
         .onExitCommand {
             onBack?()
-        }
-        // Test build (Details Move CA full): Details puts focus on the comment the row would
-        // take it on.
-        .onReceive(TVDetailsSectionEntry.requests(for: "comments")) { _ in
-            guard comments.indices.contains(scrollIndex) else { return }
-            entryFocus = scrollIndex
         }
     }
 }
@@ -9224,13 +9156,7 @@ private struct TvDetailsEpisodes: View {
     }
 
     private func applyEpisodeFocusRequest(_ request: TvEpisodeFocusRequest?) {
-        guard var key = request?.key else { return }
-        if key == TvEpisodeFocus.entry { // test build
-            guard !seasonEpisodes.isEmpty else { return }
-            let index = min(max(episodeScrollIndex, 0), seasonEpisodes.count - 1)
-            key = TvEpisodeFocus.card(seasonEpisodes[index].id)
-        }
-        guard ownEpisodeFocus != key else { return }
+        guard let key = request?.key, ownEpisodeFocus != key else { return }
         ownEpisodeFocus = key
     }
 
@@ -9840,8 +9766,6 @@ enum TvDetailsEpisodeIndex {
 /// Focus keys for episode cards in the strip.
 private enum TvEpisodeFocus {
     static func card(_ videoID: String) -> String { "episode-card\u{1}\(videoID)" }
-    /// Test build (Details Move CA full): the card the strip would take focus on.
-    static let entry = "episode-entry"
 }
 
 extension TvEpisodeCard: Equatable {
