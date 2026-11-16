@@ -94,26 +94,14 @@ else
 </plist>
 PLIST
     PAYLOAD_APP="$OUTPUT_DIR/Payload/NuvioTV.app"
-    # Test app (fork): the app itself also asks for Increased Memory Limit, which the
-    # sideloader then requests for its App ID. Whether tvOS grants more memory with it is
-    # what the test is for.
-    APP_ENTITLEMENTS="$GROUP_ENTITLEMENTS"
-    if [[ "${NUVIO_INCREASED_MEMORY_LIMIT:-0}" == "1" ]]; then
-      APP_ENTITLEMENTS="$(dirname "$ARCHIVE_DIR")/app.entitlements"
-      cp "$GROUP_ENTITLEMENTS" "$APP_ENTITLEMENTS"
-      /usr/libexec/PlistBuddy -c "Add :com.apple.developer.kernel.increased-memory-limit bool true" "$APP_ENTITLEMENTS"
-      echo "==> The app also asks for Increased Memory Limit"
-    fi
     # Extensions first: signing the app seals what it contains.
     for BUNDLE in "$PAYLOAD_APP"/PlugIns/*.appex "$PAYLOAD_APP"; do
       [[ -d "$BUNDLE" ]] || continue
       EXECUTABLE=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$BUNDLE/Info.plist")
-      ENTITLEMENTS="$GROUP_ENTITLEMENTS"
-      [[ "$BUNDLE" == "$PAYLOAD_APP" ]] && ENTITLEMENTS="$APP_ENTITLEMENTS"
       if [[ "$SIGNING_METHOD" == "ldid" ]]; then
-        ldid -S"$ENTITLEMENTS" "$BUNDLE/$EXECUTABLE"
+        ldid -S"$GROUP_ENTITLEMENTS" "$BUNDLE/$EXECUTABLE"
       else
-        codesign --force --sign - --entitlements "$ENTITLEMENTS" "$BUNDLE/$EXECUTABLE"
+        codesign --force --sign - --entitlements "$GROUP_ENTITLEMENTS" "$BUNDLE/$EXECUTABLE"
       fi
     done
   fi

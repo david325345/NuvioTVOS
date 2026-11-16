@@ -39,10 +39,7 @@ jobs:
               | sort -u | head -40 | while IFS= read -r line; do echo "::error::$line"; done
           }
           trap 'report' ERR
-          # The app asks for Increased Memory Limit (scripts/build-ipa.sh): does tvOS give more?
-          NUVIO_INCREASED_MEMORY_LIMIT=1 bash scripts/build-ipa.sh 2>&1 | tee build.log
-          codesign -d --entitlements - build-ipa/Payload/NuvioTV.app 2>/dev/null | grep -q increased-memory-limit \
-            || { echo "::error::Increased Memory Limit is not in the app's entitlements"; exit 1; }
+          bash scripts/build-ipa.sh 2>&1 | tee build.log
       - uses: actions/upload-artifact@v4
         with:
           name: NuvioTV-AIO-Test-unsigned-ipa
