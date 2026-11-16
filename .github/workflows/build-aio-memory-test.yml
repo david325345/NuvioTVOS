@@ -1,0 +1,73 @@
+name: AIO memory test (fork)
+
+# Fork only, never part of a PR: the author's latest build with Node.js' memory limit set by the
+# Apple TV and memory in the AIOStreams log, as a separate app (Nuvio AIO Test, its own AIOStreams
+# ports), and the new test.
+on:
+  push:
+    branches: [aio-memory-test]
+  workflow_dispatch:
+
+jobs:
+  ipa:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Tuist
+        run: brew install tuist
+      - name: Make it a separate app (Nuvio AIO Test)
+        # Its own bundle ID, name and App Group, so the test build installs next to Nuvio and
+        # Nuvio Test instead of replacing one of them. Only this job: the tests keep the real IDs.
+        run: |
+          set -euo pipefail
+          perl -pi -e 's/^let bundleID = "com\.pyksel\.nuviotvos"$/let bundleID = "com.pyksel.nuviotvos.aiotest"/' tvosApp/Project.swift
+          grep -q '^let bundleID = "com.pyksel.nuviotvos.aiotest"$' tvosApp/Project.swift
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Nuvio AIO Test" tvosApp/NuvioTV/Info.plist
+          perl -pi -e 's/group\.com\.pyksel\.nuviotvos</group.com.pyksel.nuviotvos.aiotest</' \
+            tvosApp/NuvioTV/NuvioTV.entitlements tvosApp/TopShelf/TopShelf.entitlements
+          grep -q 'group.com.pyksel.nuviotvos.aiotest' tvosApp/NuvioTV/NuvioTV.entitlements
+          perl -pi -e 's/^let projectVersion = "(\d+)"$/let projectVersion = "$1.$ENV{GITHUB_RUN_NUMBER}"/' tvosApp/Project.swift
+          echo "::notice::bundle com.pyksel.nuviotvos.aiotest · Nuvio AIO Test · build $(sed -n 's/^let projectVersion = "\(.*\)"$/\1/p' tvosApp/Project.swift)"
+      - name: Build unsigned IPA
+        run: |
+          set -o pipefail
+          report() {
+            grep -E "error: " build.log | grep -v "produced no further output" \
+              | sort -u | head -40 | while IFS= read -r line; do echo "::error::$line"; done
+          }
+          trap 'report' ERR
+          bash scripts/build-ipa.sh 2>&1 | tee build.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NuvioTV-AIO-Test-unsigned-ipa
+          path: build-ipa/NuvioTV-unsigned.ipa
+          retention-days: 7
+
+  tests:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Tuist
+        run: brew install tuist
+      - name: Generate Xcode project
+        run: tuist generate --path tvosApp --no-open
+      - name: AIOStreams tests
+        env:
+          NUVIO_TEST_ARTIFACTS: ${{ runner.temp }}/nuvio-tests
+          NUVIO_DERIVED_DATA: ${{ runner.temp }}/NuvioTVDerivedData
+        run: |
+          set -o pipefail
+          report() {
+            grep -E "error: |XCTAssert|failed \(" "$NUVIO_TEST_ARTIFACTS/xcodebuild.log" 2>/dev/null \
+              | grep -v "produced no further output" \
+              | sort -u | head -40 | while IFS= read -r line; do echo "::error::$line"; done
+          }
+          trap 'report' ERR
+          # Not AIOSettingsSyncTests: this test app never writes AIOStreams to the account.
+          bash scripts/test-tvos.sh -only-testing:NuvioTVTests/AIOStreamsHostTests

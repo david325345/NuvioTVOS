@@ -91,6 +91,9 @@ enum AIOSettingsSync {
         existing: [String: Any]?,
         backup: [String: Any]?
     ) -> [String: Any]? {
+        // Test app (Nuvio AIO Test): never changes the account's copy, so a test
+        // configuration doesn't reach Nuvio on this or another Apple TV.
+        return existing
         switch syncChoice(store: store) {
         case nil:
             return existing

@@ -40,8 +40,9 @@ import os
 final class AIOStreamsHost: ObservableObject {
     static let shared = AIOStreamsHost()
 
-    nonisolated static let aioPort = 8770
-    nonisolated static let lanPort = 8767
+    // Test app (Nuvio AIO Test): its own ports, so it runs next to Nuvio's AIOStreams.
+    nonisolated static let aioPort = 8780
+    nonisolated static let lanPort = 8777
     nonisolated static let autoStartKey = "aio.experiment.autoStart"
     nonisolated static let addonKey = "aio.experiment.addonEnabled"
     private nonisolated static let secretKey = "aio.experiment.secret"
@@ -59,7 +60,7 @@ final class AIOStreamsHost: ObservableObject {
     /// AIOStreams' official image.
     nonisolated static let defaultSource = "ghcr.io/viren070/aiostreams"
     /// Nuvio's own port in nuvio-main.mjs (versions), 127.0.0.1 only.
-    nonisolated static let controlPort = 8771
+    nonisolated static let controlPort = 8781 // test app
     private let controlToken = UUID().uuidString
     /// The movie the warm-up asks for (The Matrix).
     private nonisolated static let warmUpID = "tt0133093"
