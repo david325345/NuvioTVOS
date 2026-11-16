@@ -27,6 +27,9 @@ final class TVBackgroundDownloadProbe: NSObject {
 
     private static let activeKey = "test.downloadProbe.backgroundActive"
     private static let foregroundKey = "test.downloadProbe.foregroundActive"
+    /// Set while a launch with the background test running is under way; still set at the next
+    /// launch, that launch crashed, and the test is stopped so Nuvio opens.
+    private static let launchGuardKey = "test.downloadProbe.launchGuard"
 
     /// Shown in Settings: the last thing the probe noted.
     private(set) var status = "Not started"
@@ -96,15 +99,43 @@ final class TVBackgroundDownloadProbe: NSObject {
     func registerAtLaunch() {
         guard !isRegistered else { return }
         isRegistered = true
-        let accepted = BGTaskScheduler.shared.register(forTaskWithIdentifier: Self.processingTaskID, using: nil) { [weak self] task in
-            self?.handleProcessing(task)
+        let defaults = UserDefaults.standard
+        if defaults.bool(forKey: Self.launchGuardKey) {
+            // The last launch with the test running didn't get through: stop it, so Nuvio opens.
+            defaults.set(false, forKey: Self.launchGuardKey)
+            defaults.set(false, forKey: Self.activeKey)
+            BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.processingTaskID)
+            log("the last launch with the background test running crashed: test stopped (see Crash Reports)")
         }
-        if !accepted { log("background task handler not accepted") }
+        var accepted = false
+        if let exception = NuvioTestCatchException({
+            accepted = BGTaskScheduler.shared.register(forTaskWithIdentifier: Self.processingTaskID, using: nil) { [weak self] task in
+                self?.handleProcessing(task)
+            }
+        }) {
+            log("background task handler raised: \(exception.name.rawValue) \(exception.reason ?? "")")
+        } else if !accepted {
+            log("background task handler not accepted")
+        }
         if isBackgroundTestActive {
-            _ = backgroundSession
-            if #available(tvOS 18.4, *) { BADownloadManager.shared.delegate = self }
+            defaults.set(true, forKey: Self.launchGuardKey)
             log("launched while the background test runs" + uptimeText)
+            _ = backgroundSession
+            if #available(tvOS 18.4, *) {
+                if let exception = NuvioTestCatchException({ BADownloadManager.shared.delegate = self }) {
+                    log("Background Assets raised: \(exception.name.rawValue) \(exception.reason ?? "")")
+                }
+            }
             status = "Background test running — open this screen after the Apple TV slept, then send the log"
+            // Launch finished and two seconds on (also when the system launches Nuvio in the
+            // background, which may suspend it soon after): the launch went through.
+            NotificationCenter.default.addObserver(
+                forName: UIApplication.didFinishLaunchingNotification, object: nil, queue: .main
+            ) { _ in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                    UserDefaults.standard.set(false, forKey: Self.launchGuardKey)
+                }
+            }
         }
         // A foreground test doesn't survive Nuvio closing.
         UserDefaults.standard.set(false, forKey: Self.foregroundKey)
@@ -177,13 +208,18 @@ final class TVBackgroundDownloadProbe: NSObject {
     func stopTests() {
         UserDefaults.standard.set(false, forKey: Self.activeKey)
         UserDefaults.standard.set(false, forKey: Self.foregroundKey)
+        UserDefaults.standard.set(false, forKey: Self.launchGuardKey)
         BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.processingTaskID)
         backgroundSession.getAllTasks { tasks in tasks.forEach { $0.cancel() } }
         inAppSession.getAllTasks { tasks in tasks.forEach { $0.cancel() } }
         if #available(tvOS 18.4, *) {
-            let manager = BADownloadManager.shared
-            if let downloads = try? manager.fetchCurrentDownloads() {
-                for download in downloads { try? manager.cancel(download) }
+            if let exception = NuvioTestCatchException({
+                let manager = BADownloadManager.shared
+                if let downloads = try? manager.fetchCurrentDownloads() {
+                    for download in downloads { try? manager.cancel(download) }
+                }
+            }) {
+                log("Background Assets raised: \(exception.name.rawValue) \(exception.reason ?? "")")
             }
         }
         DispatchQueue.main.async { UIApplication.shared.isIdleTimerDisabled = false }
@@ -195,11 +231,15 @@ final class TVBackgroundDownloadProbe: NSObject {
         let request = BGProcessingTaskRequest(identifier: Self.processingTaskID)
         request.requiresNetworkConnectivity = true
         request.requiresExternalPower = true
-        do {
-            try BGTaskScheduler.shared.submit(request)
+        var failure: Error?
+        if let exception = NuvioTestCatchException({
+            do { try BGTaskScheduler.shared.submit(request) } catch { failure = error }
+        }) {
+            log("background task request raised: \(exception.name.rawValue) \(exception.reason ?? "")")
+        } else if let failure {
+            log("background task not accepted: \(failure.localizedDescription)")
+        } else {
             log("background task asked for (the system runs it when it chooses)")
-        } catch {
-            log("background task not accepted: \(error.localizedDescription)")
         }
     }
 
@@ -208,23 +248,27 @@ final class TVBackgroundDownloadProbe: NSObject {
             log("Background Assets needs tvOS 18.4")
             return
         }
-        let manager = BADownloadManager.shared
-        manager.delegate = self
-        let download = BAURLDownload(
-            identifier: "download-probe-\(Int(Date().timeIntervalSince1970))",
-            request: URLRequest(url: Self.testFile("1GB")),
-            essential: false,
-            // 0: no size check (a non-essential download fails when the size given is off).
-            fileSize: 0,
-            applicationGroupIdentifier: topShelfAppGroupID,
-            priority: .default
-        )
-        do {
-            try manager.scheduleDownload(download)
+        var failure: Error?
+        if let exception = NuvioTestCatchException({
+            let manager = BADownloadManager.shared
+            manager.delegate = self
+            let download = BAURLDownload(
+                identifier: "download-probe-\(Int(Date().timeIntervalSince1970))",
+                request: URLRequest(url: Self.testFile("1GB")),
+                essential: false,
+                // 0: no size check (a non-essential download fails when the size given is off).
+                fileSize: 0,
+                applicationGroupIdentifier: topShelfAppGroupID,
+                priority: .default
+            )
+            do { try manager.scheduleDownload(download) } catch { failure = error }
+        }) {
+            log("Background Assets raised: \(exception.name.rawValue) \(exception.reason ?? "")")
+        } else if let failure {
+            log("Background Assets download not accepted: \(failure.localizedDescription)")
+        } else {
             lock.withLock { startedAt["Background Assets"] = Date() }
             log("Background Assets download of 1GB.bin scheduled (App Group \(topShelfAppGroupID))")
-        } catch {
-            log("Background Assets download not accepted: \(error.localizedDescription)")
         }
     }
 
@@ -304,16 +348,23 @@ final class TVBackgroundDownloadProbe: NSObject {
 
     private func reportBackgroundAssets() {
         guard isBackgroundTestActive, #available(tvOS 18.4, *) else { return }
-        do {
-            let downloads = try BADownloadManager.shared.fetchCurrentDownloads()
-            if downloads.isEmpty {
-                log("Background Assets: no download queued (finished, failed or never started)")
-            }
-            for download in downloads {
-                log("Background Assets: \(download.identifier) \(Self.describe(download.state))")
-            }
-        } catch {
-            log("Background Assets: can't read the queue: \(error.localizedDescription)")
+        var downloads: [BADownload] = []
+        var failure: Error?
+        if let exception = NuvioTestCatchException({
+            do { downloads = try BADownloadManager.shared.fetchCurrentDownloads() } catch { failure = error }
+        }) {
+            log("Background Assets raised: \(exception.name.rawValue) \(exception.reason ?? "")")
+            return
+        }
+        if let failure {
+            log("Background Assets: can't read the queue: \(failure.localizedDescription)")
+            return
+        }
+        if downloads.isEmpty {
+            log("Background Assets: no download queued (finished, failed or never started)")
+        }
+        for download in downloads {
+            log("Background Assets: \(download.identifier) \(Self.describe(download.state))")
         }
     }
 
