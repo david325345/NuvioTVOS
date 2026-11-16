@@ -1,4 +1,3 @@
-import BackgroundAssets
 import BackgroundTasks
 import Foundation
 import QuartzCore
@@ -7,10 +6,10 @@ import UIKit
 /// TEST: whether the Apple TV downloads while Nuvio is in the background, or while the Apple TV
 /// sleeps, for a planned "download / preload" feature. Settings → Crash Reports & Test Log.
 ///
-/// The background test tries three ways at once, all logged:
+/// The background test tries two ways at once, both logged (Background Assets, tried too, had
+/// tvOS end Nuvio as soon as it was used, at every launch after):
 /// - a system download (a background `URLSession`), which the system goes on with while Nuvio is
 ///   suspended;
-/// - a Background Assets download (tvOS 18.4), which the system runs when it chooses;
 /// - a background task (`BGProcessingTask`) that, when the system runs it, downloads for as long
 ///   as it is let.
 /// The foreground test downloads with Nuvio open and the screen saver and sleep held off, for an
@@ -121,11 +120,6 @@ final class TVBackgroundDownloadProbe: NSObject {
             defaults.set(true, forKey: Self.launchGuardKey)
             log("launched while the background test runs" + uptimeText)
             _ = backgroundSession
-            if #available(tvOS 18.4, *) {
-                if let exception = NuvioTestCatchException({ BADownloadManager.shared.delegate = self }) {
-                    log("Background Assets raised: \(exception.name.rawValue) \(exception.reason ?? "")")
-                }
-            }
             status = "Background test running — open this screen after the Apple TV slept, then send the log"
             // Launch finished and two seconds on (also when the system launches Nuvio in the
             // background, which may suspend it soon after): the launch went through.
@@ -179,12 +173,11 @@ final class TVBackgroundDownloadProbe: NSObject {
         }
         log(text + progressText)
         reportSystemDownloads()
-        reportBackgroundAssets()
     }
 
     // MARK: - Background test
 
-    /// The system download, the Background Assets download and the background task, at once.
+    /// The system download and the background task, at once.
     func startBackgroundTest() {
         UserDefaults.standard.set(true, forKey: Self.activeKey)
         let free = Self.freeSpace
@@ -200,7 +193,6 @@ final class TVBackgroundDownloadProbe: NSObject {
         lock.withLock { startedAt["system download"] = Date() }
         log("system download of \(systemURL.lastPathComponent) started")
 
-        scheduleBackgroundAssets()
         scheduleProcessing()
         status = "Background test running — press Home, let the Apple TV sleep, come back and send the log"
     }
@@ -212,16 +204,6 @@ final class TVBackgroundDownloadProbe: NSObject {
         BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.processingTaskID)
         backgroundSession.getAllTasks { tasks in tasks.forEach { $0.cancel() } }
         inAppSession.getAllTasks { tasks in tasks.forEach { $0.cancel() } }
-        if #available(tvOS 18.4, *) {
-            if let exception = NuvioTestCatchException({
-                let manager = BADownloadManager.shared
-                if let downloads = try? manager.fetchCurrentDownloads() {
-                    for download in downloads { try? manager.cancel(download) }
-                }
-            }) {
-                log("Background Assets raised: \(exception.name.rawValue) \(exception.reason ?? "")")
-            }
-        }
         DispatchQueue.main.async { UIApplication.shared.isIdleTimerDisabled = false }
         log("tests stopped" + progressText)
         status = "Stopped"
@@ -240,35 +222,6 @@ final class TVBackgroundDownloadProbe: NSObject {
             log("background task not accepted: \(failure.localizedDescription)")
         } else {
             log("background task asked for (the system runs it when it chooses)")
-        }
-    }
-
-    private func scheduleBackgroundAssets() {
-        guard #available(tvOS 18.4, *) else {
-            log("Background Assets needs tvOS 18.4")
-            return
-        }
-        var failure: Error?
-        if let exception = NuvioTestCatchException({
-            let manager = BADownloadManager.shared
-            manager.delegate = self
-            let download = BAURLDownload(
-                identifier: "download-probe-\(Int(Date().timeIntervalSince1970))",
-                request: URLRequest(url: Self.testFile("1GB")),
-                essential: false,
-                // 0: no size check (a non-essential download fails when the size given is off).
-                fileSize: 0,
-                applicationGroupIdentifier: topShelfAppGroupID,
-                priority: .default
-            )
-            do { try manager.scheduleDownload(download) } catch { failure = error }
-        }) {
-            log("Background Assets raised: \(exception.name.rawValue) \(exception.reason ?? "")")
-        } else if let failure {
-            log("Background Assets download not accepted: \(failure.localizedDescription)")
-        } else {
-            lock.withLock { startedAt["Background Assets"] = Date() }
-            log("Background Assets download of 1GB.bin scheduled (App Group \(topShelfAppGroupID))")
         }
     }
 
@@ -346,28 +299,6 @@ final class TVBackgroundDownloadProbe: NSObject {
         }
     }
 
-    private func reportBackgroundAssets() {
-        guard isBackgroundTestActive, #available(tvOS 18.4, *) else { return }
-        var downloads: [BADownload] = []
-        var failure: Error?
-        if let exception = NuvioTestCatchException({
-            do { downloads = try BADownloadManager.shared.fetchCurrentDownloads() } catch { failure = error }
-        }) {
-            log("Background Assets raised: \(exception.name.rawValue) \(exception.reason ?? "")")
-            return
-        }
-        if let failure {
-            log("Background Assets: can't read the queue: \(failure.localizedDescription)")
-            return
-        }
-        if downloads.isEmpty {
-            log("Background Assets: no download queued (finished, failed or never started)")
-        }
-        for download in downloads {
-            log("Background Assets: \(download.identifier) \(Self.describe(download.state))")
-        }
-    }
-
     private func log(_ text: String) {
         TestDiagnosticLog.ui("download test: \(text)")
     }
@@ -411,18 +342,6 @@ final class TVBackgroundDownloadProbe: NSObject {
         case .suspended: return "suspended"
         case .canceling: return "canceling"
         case .completed: return "completed"
-        @unknown default: return "?"
-        }
-    }
-
-    @available(tvOS 18.4, *)
-    private static func describe(_ state: BADownload.State) -> String {
-        switch state {
-        case .created: return "created"
-        case .waiting: return "waiting"
-        case .downloading: return "downloading"
-        case .finished: return "finished"
-        case .failed: return "failed"
         @unknown default: return "?"
         }
     }
@@ -505,34 +424,6 @@ extension TVBackgroundDownloadProbe: URLSessionDownloadDelegate, URLSessionDataD
             self.backgroundCompletionHandler?()
             self.backgroundCompletionHandler = nil
         }
-    }
-}
-
-// MARK: - Background Assets
-
-@available(tvOS 18.4, *)
-extension TVBackgroundDownloadProbe: BADownloadManagerDelegate {
-    func downloadDidBegin(_ download: BADownload) {
-        log("Background Assets download began" + uptimeText)
-    }
-
-    func downloadDidPause(_ download: BADownload) {
-        log("Background Assets download paused")
-    }
-
-    func download(_ download: BADownload, didWriteBytes bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-        guard progressDue("Background Assets", every: 60) else { return }
-        log("Background Assets: \(TestDiagnosticLog.size(totalBytesWritten)) written")
-    }
-
-    func download(_ download: BADownload, finishedWithFileURL fileURL: URL) {
-        let size = Self.fileSize(fileURL)
-        try? FileManager.default.removeItem(at: fileURL)
-        log("Background Assets download finished after \(elapsedText("Background Assets")): \(TestDiagnosticLog.size(size)), file deleted" + uptimeText)
-    }
-
-    func download(_ download: BADownload, failedWithError error: Error) {
-        log("Background Assets download failed: \(error.localizedDescription)")
     }
 }
 

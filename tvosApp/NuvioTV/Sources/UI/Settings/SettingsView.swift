@@ -8287,7 +8287,7 @@ private struct TestDiagnosticsSheet: View {
                     ) {
                         SettingsActionRow(
                             title: "Start Background Test",
-                            subtitle: "A system download, a Background Assets download and a background task. Then press Home and let the Apple TV sleep (10 minutes, or overnight); open Nuvio again and send the log.",
+                            subtitle: "A system download and a background task. Then press Home and let the Apple TV sleep (10 minutes, or overnight); open Nuvio again and send the log.",
                             value: TVBackgroundDownloadProbe.shared.isBackgroundTestActive ? "Running" : "",
                             accentColor: accentColor
                         ) {
