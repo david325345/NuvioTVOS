@@ -329,8 +329,7 @@ final class TVBackgroundDownloadProbe: NSObject {
 
     private static var freeSpace: Int64 {
         let url = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey])
-        if let important = values?.volumeAvailableCapacityForImportantUsage, important > 0 { return important }
+        let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityKey])
         return Int64(values?.volumeAvailableCapacity ?? 0)
     }
 
