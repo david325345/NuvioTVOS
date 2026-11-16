@@ -8,15 +8,17 @@ import UIKit
 ///
 /// The background test tries two ways at once, both logged (Background Assets, tried too, had
 /// tvOS end Nuvio as soon as it was used, at every launch after):
-/// - a system download (a background `URLSession`), which the system goes on with while Nuvio is
-///   suspended;
+/// - system downloads (a background `URLSession`), which the system goes on with while Nuvio is
+///   suspended: a big file and a 100 MB one, to tell a size limit from no download at all;
 /// - a background task (`BGProcessingTask`) that, when the system runs it, downloads for as long
 ///   as it is let.
 /// The foreground test downloads with Nuvio open and the screen saver and sleep held off, for an
 /// Apple TV left on with only the TV turned off.
 ///
-/// Test files are Hetzner's speed test files, not kept: the system download's file is deleted as
-/// soon as it arrives, the others are read and thrown away.
+/// Test files are public speed test files, not kept: the system download's file is deleted as
+/// soon as it arrives, the others are read and thrown away. Each test first fetches 1 MB from
+/// every test server and uses the fastest that answered (one dropped the Apple TV's connection
+/// at once).
 final class TVBackgroundDownloadProbe: NSObject {
     static let shared = TVBackgroundDownloadProbe()
 
@@ -29,6 +31,8 @@ final class TVBackgroundDownloadProbe: NSObject {
     /// Set while a launch with the background test running is under way; still set at the next
     /// launch, that launch crashed, and the test is stopped so Nuvio opens.
     private static let launchGuardKey = "test.downloadProbe.launchGuard"
+    /// The test server the last test picked, for the background task.
+    private static let hostKey = "test.downloadProbe.host"
 
     /// Shown in Settings: the last thing the probe noted.
     private(set) var status = "Not started"
@@ -36,6 +40,11 @@ final class TVBackgroundDownloadProbe: NSObject {
     private var isRegistered = false
     private var backgroundCompletionHandler: (() -> Void)?
     private var wentToBackgroundAt: (wall: Date, uptime: TimeInterval)?
+    /// Main thread only: the system downloads' state, logged while Nuvio is open.
+    private var statusTimer: Timer?
+    private var watchingSince = Date()
+    /// Main thread only: how often the foreground test started again after a network error.
+    private var foregroundRestarts = 0
 
     /// In-app downloads (background task, foreground test): bytes so far, by task description.
     /// Reached from the sessions' queues and the main thread: only under `lock`.
@@ -72,13 +81,38 @@ final class TVBackgroundDownloadProbe: NSObject {
         }
     }
 
-    private lazy var backgroundSession: URLSession = {
-        let configuration = URLSessionConfiguration.background(withIdentifier: Self.sessionID)
-        configuration.sessionSendsLaunchEvents = true
-        configuration.isDiscretionary = false
-        configuration.timeoutIntervalForResource = 60 * 60 * 24
-        return URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
-    }()
+    // MARK: - Sessions
+
+    /// The system downloads' session, made and used on its own queue: making it waits for the
+    /// system's download service, which on some systems never answers (and tvOS ends an app
+    /// kept waiting on the main thread at launch).
+    private let sessionQueue = DispatchQueue(label: "nuvio.test.download-probe.session")
+    /// Only on `sessionQueue`.
+    private var madeBackgroundSession: URLSession?
+
+    private func withBackgroundSession(_ body: @escaping (URLSession) -> Void) {
+        sessionQueue.async { [self] in
+            if madeBackgroundSession == nil {
+                let start = Date()
+                let late = DispatchWorkItem { [weak self] in
+                    self?.log("system download service hasn't answered for 5 s")
+                }
+                DispatchQueue.global().asyncAfter(deadline: .now() + 5, execute: late)
+                let configuration = URLSessionConfiguration.background(withIdentifier: Self.sessionID)
+                configuration.sessionSendsLaunchEvents = true
+                configuration.isDiscretionary = false
+                configuration.timeoutIntervalForResource = 60 * 60 * 24
+                let session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+                late.cancel()
+                madeBackgroundSession = session
+                log(
+                    "system download session ready in \(TestDiagnosticLog.elapsed(since: start)) "
+                        + "(discretionary \(session.configuration.isDiscretionary))"
+                )
+            }
+            if let session = madeBackgroundSession { body(session) }
+        }
+    }
 
     private lazy var inAppSession: URLSession = {
         let configuration = URLSessionConfiguration.default
@@ -87,13 +121,22 @@ final class TVBackgroundDownloadProbe: NSObject {
         return URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
     }()
 
+    /// The 1 MB server checks: no delegate, nothing kept.
+    private lazy var checkSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.urlCache = nil
+        configuration.timeoutIntervalForRequest = 10
+        return URLSession(configuration: configuration)
+    }()
+
     var isBackgroundTestActive: Bool { UserDefaults.standard.bool(forKey: Self.activeKey) }
     var isForegroundTestActive: Bool { UserDefaults.standard.bool(forKey: Self.foregroundKey) }
 
     // MARK: - Launch
 
     /// From the app's init: the background task's handler (BGTaskScheduler only accepts it before
-    /// launch finishes), the system download's session again (so a download the system finished
+    /// launch finishes), the system downloads' session again (so a download the system finished
     /// meanwhile reports back), and the app's comings and goings.
     func registerAtLaunch() {
         guard !isRegistered else { return }
@@ -105,6 +148,7 @@ final class TVBackgroundDownloadProbe: NSObject {
             defaults.set(false, forKey: Self.activeKey)
             BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.processingTaskID)
             log("the last launch with the background test running crashed: test stopped (see Crash Reports)")
+            cancelSystemDownloads()
         }
         var accepted = false
         if let exception = NuvioTestCatchException({
@@ -119,16 +163,19 @@ final class TVBackgroundDownloadProbe: NSObject {
         if isBackgroundTestActive {
             defaults.set(true, forKey: Self.launchGuardKey)
             log("launched while the background test runs" + uptimeText)
-            _ = backgroundSession
+            withBackgroundSession { _ in }
             status = "Background test running — open this screen after the Apple TV slept, then send the log"
             // Launch finished and two seconds on (also when the system launches Nuvio in the
             // background, which may suspend it soon after): the launch went through.
             NotificationCenter.default.addObserver(
                 forName: UIApplication.didFinishLaunchingNotification, object: nil, queue: .main
-            ) { _ in
+            ) { [weak self] _ in
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                     UserDefaults.standard.set(false, forKey: Self.launchGuardKey)
                 }
+                guard let self, UIApplication.shared.applicationState != .background else { return }
+                self.reportSystemDownloads()
+                self.watchSystemDownloads()
             }
         }
         // A foreground test doesn't survive Nuvio closing.
@@ -173,28 +220,167 @@ final class TVBackgroundDownloadProbe: NSObject {
         }
         log(text + progressText)
         reportSystemDownloads()
+        watchSystemDownloads()
+    }
+
+    // MARK: - Test servers
+
+    private enum FileSize: String {
+        case tenGB = "10 GB", oneGB = "1 GB", hundredMB = "100 MB"
+    }
+
+    private struct TestServer {
+        let name: String
+        let base: String
+        let files: [FileSize: String]
+        /// 1 MB for the check: a path asked for in full, or nil for the first megabyte of the
+        /// biggest file (a range).
+        let checkPath: String?
+
+        func url(_ size: FileSize) -> URL? {
+            files[size].flatMap { URL(string: base + $0) }
+        }
+
+        var biggest: FileSize { files[.tenGB] != nil ? .tenGB : files[.oneGB] != nil ? .oneGB : .hundredMB }
+    }
+
+    /// In order of preference when two are as fast.
+    private static let servers: [TestServer] = [
+        TestServer(
+            name: "Hetzner Nuremberg", base: "https://nbg1-speed.hetzner.com/",
+            files: [.tenGB: "10GB.bin", .oneGB: "1GB.bin", .hundredMB: "100MB.bin"], checkPath: nil
+        ),
+        TestServer(
+            name: "Tele2", base: "http://speedtest.tele2.net/",
+            files: [.tenGB: "10GB.zip", .oneGB: "1GB.zip", .hundredMB: "100MB.zip"], checkPath: nil
+        ),
+        TestServer(
+            name: "thinkbroadband", base: "http://ipv4.download.thinkbroadband.com/",
+            files: [.oneGB: "1GB.zip", .hundredMB: "100MB.zip"], checkPath: nil
+        ),
+        TestServer(
+            name: "Cloudflare", base: "https://speed.cloudflare.com/__down?bytes=",
+            files: [.oneGB: "1000000000", .hundredMB: "100000000"], checkPath: "1048576"
+        ),
+        TestServer(
+            name: "Hetzner Falkenstein", base: "https://fsn1-speed.hetzner.com/",
+            files: [.tenGB: "10GB.bin", .oneGB: "1GB.bin", .hundredMB: "100MB.bin"], checkPath: nil
+        )
+    ]
+
+    private static let checkBytes = 1_048_576
+
+    /// 1 MB from every test server at once, each logged; the fastest that answered, kept for the
+    /// background task too.
+    private func chooseServer() async -> TestServer? {
+        let results = await withTaskGroup(of: (Int, TimeInterval?).self) { group in
+            for index in Self.servers.indices {
+                group.addTask { [self] in (index, await check(Self.servers[index])) }
+            }
+            var all: [(Int, TimeInterval?)] = []
+            for await result in group { all.append(result) }
+            return all
+        }
+        let working = results.compactMap { index, seconds in seconds.map { (index, $0) } }
+        guard let best = working.min(by: { $0.1 < $1.1 || ($0.1 == $1.1 && $0.0 < $1.0) }) else {
+            log("no test server answered: test stopped")
+            return nil
+        }
+        let server = Self.servers[best.0]
+        UserDefaults.standard.set(server.name, forKey: Self.hostKey)
+        log("test files from \(server.name)")
+        return server
+    }
+
+    /// Seconds for the first megabyte, or nil (logged either way).
+    private func check(_ server: TestServer) async -> TimeInterval? {
+        let start = Date()
+        let url = server.checkPath.flatMap { URL(string: server.base + $0) } ?? server.url(server.biggest)
+        guard let url else { return nil }
+        var request = URLRequest(url: url)
+        if server.checkPath == nil {
+            request.setValue("bytes=0-\(Self.checkBytes - 1)", forHTTPHeaderField: "Range")
+        }
+        do {
+            let (bytes, response) = try await checkSession.bytes(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            var count = 0
+            for try await _ in bytes {
+                count += 1
+                if count >= Self.checkBytes { break }
+            }
+            bytes.task.cancel()
+            let seconds = Date().timeIntervalSince(start)
+            let rate = Double(count) * 8 / max(seconds, 0.001) / 1_000_000
+            log(
+                "server check \(server.name): HTTP \(status), \(TestDiagnosticLog.size(Int64(count))) in "
+                    + "\(Int(seconds * 1_000)) ms (\(Int(rate)) Mbit/s)"
+            )
+            guard (200..<300).contains(status), count >= Self.checkBytes else { return nil }
+            return seconds
+        } catch {
+            log("server check \(server.name) failed after \(Int(Date().timeIntervalSince(start) * 1_000)) ms: \(Self.errorText(error))")
+            return nil
+        }
+    }
+
+    private static var savedServer: TestServer {
+        let name = UserDefaults.standard.string(forKey: hostKey)
+        return servers.first { $0.name == name } ?? servers[0]
     }
 
     // MARK: - Background test
 
-    /// The system download and the background task, at once.
+    /// The system downloads and the background task, at once.
     func startBackgroundTest() {
         UserDefaults.standard.set(true, forKey: Self.activeKey)
         let free = Self.freeSpace
-        log("background test starts; free space \(TestDiagnosticLog.size(free))")
+        log("background test starts; tvOS \(UIDevice.current.systemVersion), free space \(TestDiagnosticLog.size(free))")
+        status = "Background test starting — checking test servers, then press Home, let the Apple TV sleep, come back and send the log"
+        Task { [weak self] in
+            guard let self, let server = await self.chooseServer() else {
+                UserDefaults.standard.set(false, forKey: Self.activeKey)
+                return
+            }
+            guard self.isBackgroundTestActive else { return }
+            // 10 GB when there is room for it, so it lasts past the moment the Apple TV falls asleep.
+            let big: FileSize = free > 25 * 1024 * 1024 * 1024 ? server.biggest : .oneGB
+            self.startSystemDownloads([big, .hundredMB], from: server)
+            await MainActor.run {
+                self.scheduleProcessing()
+                self.status = "Background test running — press Home, let the Apple TV sleep, come back and send the log"
+            }
+        }
+    }
 
-        // 10 GB when there is room for it, so it lasts past the moment the Apple TV falls asleep.
-        let big = free > 25 * 1024 * 1024 * 1024
-        let systemURL = Self.testFile(big ? "10GB" : "1GB")
-        let task = backgroundSession.downloadTask(with: systemURL)
-        task.taskDescription = "system download"
-        task.countOfBytesClientExpectsToReceive = big ? 10_000_000_000 : 1_000_000_000
-        task.resume()
-        lock.withLock { startedAt["system download"] = Date() }
-        log("system download of \(systemURL.lastPathComponent) started")
+    /// Earlier system downloads cancelled first, so only these run. No size given to the system:
+    /// a big one may have it hold the download back.
+    private func startSystemDownloads(_ sizes: [FileSize], from server: TestServer) {
+        withBackgroundSession { [weak self] session in
+            session.getAllTasks { old in
+                guard let self else { return }
+                if !old.isEmpty {
+                    old.forEach { $0.cancel() }
+                    self.log("cancelled \(old.count) earlier system download(s)")
+                }
+                for size in sizes {
+                    guard let url = server.url(size) else { continue }
+                    let key = "system download \(size.rawValue)"
+                    let task = session.downloadTask(with: url)
+                    task.taskDescription = key
+                    self.begin(key)
+                    task.resume()
+                    self.log("\(Self.name(task)) started: \(url.absoluteString)")
+                }
+                self.watchSystemDownloads()
+            }
+        }
+    }
 
-        scheduleProcessing()
-        status = "Background test running — press Home, let the Apple TV sleep, come back and send the log"
+    private func cancelSystemDownloads() {
+        withBackgroundSession { session in
+            session.getAllTasks { tasks in tasks.forEach { $0.cancel() } }
+        }
     }
 
     func stopTests() {
@@ -202,9 +388,13 @@ final class TVBackgroundDownloadProbe: NSObject {
         UserDefaults.standard.set(false, forKey: Self.foregroundKey)
         UserDefaults.standard.set(false, forKey: Self.launchGuardKey)
         BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.processingTaskID)
-        backgroundSession.getAllTasks { tasks in tasks.forEach { $0.cancel() } }
+        cancelSystemDownloads()
         inAppSession.getAllTasks { tasks in tasks.forEach { $0.cancel() } }
-        DispatchQueue.main.async { UIApplication.shared.isIdleTimerDisabled = false }
+        DispatchQueue.main.async {
+            UIApplication.shared.isIdleTimerDisabled = false
+            self.statusTimer?.invalidate()
+            self.statusTimer = nil
+        }
         log("tests stopped" + progressText)
         status = "Stopped"
     }
@@ -238,8 +428,12 @@ final class TVBackgroundDownloadProbe: NSObject {
         }
         lock.withLock { processingTask = task }
         scheduleProcessing() // the next run
+        guard let url = Self.savedServer.url(.oneGB) else {
+            takeProcessingTask()?.setTaskCompleted(success: false)
+            return
+        }
         begin("background task")
-        let download = inAppSession.dataTask(with: Self.testFile("1GB"))
+        let download = inAppSession.dataTask(with: url)
         download.taskDescription = "background task"
         task.expirationHandler = { [weak self, weak download] in
             guard let self else { return }
@@ -256,12 +450,48 @@ final class TVBackgroundDownloadProbe: NSObject {
     func startForegroundTest() {
         UserDefaults.standard.set(true, forKey: Self.foregroundKey)
         UIApplication.shared.isIdleTimerDisabled = true
-        begin("foreground test")
-        let download = inAppSession.dataTask(with: Self.testFile("10GB"))
+        foregroundRestarts = 0
+        status = "Foreground test starting — checking test servers, then turn off only the TV, come back later and send the log"
+        log("foreground test starts; tvOS \(UIDevice.current.systemVersion)")
+        Task { [weak self] in
+            guard let self, let server = await self.chooseServer() else {
+                UserDefaults.standard.set(false, forKey: Self.foregroundKey)
+                await MainActor.run { UIApplication.shared.isIdleTimerDisabled = false }
+                return
+            }
+            await MainActor.run {
+                guard self.isForegroundTestActive else { return }
+                self.begin("foreground test")
+                self.runForegroundDownload(from: server)
+                self.status = "Foreground test running — turn off only the TV, come back later and send the log"
+            }
+        }
+    }
+
+    /// Main thread.
+    private func runForegroundDownload(from server: TestServer) {
+        guard let url = server.url(server.biggest) else { return }
+        let download = inAppSession.dataTask(with: url)
         download.taskDescription = "foreground test"
         download.resume()
-        log("foreground test starts: 10GB.bin with Nuvio open, screen saver and sleep held off")
-        status = "Foreground test running — turn off only the TV, come back later and send the log"
+        log("foreground test downloads \(url.absoluteString) with Nuvio open, screen saver and sleep held off")
+    }
+
+    /// After a network error: up to three more tries, five seconds apart (bytes keep adding up).
+    private func restartForegroundDownload() {
+        DispatchQueue.main.async { [self] in
+            guard isForegroundTestActive, foregroundRestarts < 3 else {
+                UserDefaults.standard.set(false, forKey: Self.foregroundKey)
+                UIApplication.shared.isIdleTimerDisabled = false
+                return
+            }
+            foregroundRestarts += 1
+            log("foreground test starts again in 5 s (try \(foregroundRestarts + 1) of 4)")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [self] in
+                guard isForegroundTestActive else { return }
+                runForegroundDownload(from: Self.savedServer)
+            }
+        }
     }
 
     // MARK: - Reports
@@ -283,18 +513,42 @@ final class TVBackgroundDownloadProbe: NSObject {
         return Self.duration(Date().timeIntervalSince(start))
     }
 
+    /// While Nuvio is open: the system downloads every 15 s for two minutes, then every minute.
+    private func watchSystemDownloads() {
+        DispatchQueue.main.async { [self] in
+            guard isBackgroundTestActive else { return }
+            watchingSince = Date()
+            statusTimer?.invalidate()
+            statusTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+                guard let self else { return }
+                guard self.isBackgroundTestActive else {
+                    self.statusTimer?.invalidate()
+                    self.statusTimer = nil
+                    return
+                }
+                guard UIApplication.shared.applicationState == .active else { return }
+                let early = Date().timeIntervalSince(self.watchingSince) < 120
+                guard self.progressDue("system download status", every: early ? 14 : 59) else { return }
+                self.reportSystemDownloads()
+            }
+        }
+    }
+
     private func reportSystemDownloads() {
         guard isBackgroundTestActive else { return }
-        backgroundSession.getAllTasks { [weak self] tasks in
-            guard let self else { return }
-            if tasks.isEmpty {
-                self.log("system download: none running (finished or stopped)")
-            }
-            for task in tasks {
-                self.log(
-                    "system download: \(TestDiagnosticLog.size(task.countOfBytesReceived)) of "
-                        + "\(TestDiagnosticLog.size(max(task.countOfBytesExpectedToReceive, 0))), \(Self.describe(task.state))"
-                )
+        withBackgroundSession { [weak self] session in
+            session.getAllTasks { tasks in
+                guard let self else { return }
+                if tasks.isEmpty {
+                    self.log("system downloads: none running (finished or stopped)")
+                    DispatchQueue.main.async {
+                        self.statusTimer?.invalidate()
+                        self.statusTimer = nil
+                    }
+                }
+                for task in tasks.sorted(by: { $0.taskIdentifier < $1.taskIdentifier }) {
+                    self.log(Self.describe(task))
+                }
             }
         }
     }
@@ -304,10 +558,6 @@ final class TVBackgroundDownloadProbe: NSObject {
     }
 
     // MARK: - Helpers
-
-    private static func testFile(_ name: String) -> URL {
-        URL(string: "https://fsn1-speed.hetzner.com/\(name).bin")!
-    }
 
     private static var freeSpace: Int64 {
         let url = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
@@ -325,6 +575,33 @@ final class TVBackgroundDownloadProbe: NSObject {
         if total < 60 { return "\(total) s" }
         if total < 3_600 { return "\(total / 60) min \(total % 60) s" }
         return "\(total / 3_600) h \((total % 3_600) / 60) min"
+    }
+
+    /// "system download 100 MB #4".
+    private static func name(_ task: URLSessionTask) -> String {
+        "\(task.taskDescription ?? "download") #\(task.taskIdentifier)"
+    }
+
+    private static func describe(_ task: URLSessionTask) -> String {
+        var text = "\(name(task)): \(TestDiagnosticLog.size(task.countOfBytesReceived)) of "
+            + "\(TestDiagnosticLog.size(max(task.countOfBytesExpectedToReceive, 0))), \(describe(task.state))"
+        if let response = task.response as? HTTPURLResponse {
+            text += ", HTTP \(response.statusCode)"
+        } else {
+            text += ", no answer from the server yet"
+        }
+        if let error = task.error { text += ", " + errorText(error) }
+        return text
+    }
+
+    /// The message with its domain and code, and the error under it.
+    static func errorText(_ error: Error) -> String {
+        let error = error as NSError
+        var text = "\(error.localizedDescription) (\(error.domain) \(error.code))"
+        if let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError {
+            text += " ← \(underlying.domain) \(underlying.code)"
+        }
+        return text
     }
 
     private static func describe(_ state: UIApplication.State) -> String {
@@ -346,21 +623,26 @@ final class TVBackgroundDownloadProbe: NSObject {
         }
     }
 
-    /// From the app delegate: the system woke Nuvio for the system download.
+    /// From the app delegate: the system woke Nuvio for a system download.
     func handleBackgroundEvents(_ completionHandler: @escaping () -> Void) {
         backgroundCompletionHandler = completionHandler
-        log("the system woke Nuvio for the system download" + uptimeText)
-        _ = backgroundSession
+        log("the system woke Nuvio for a system download" + uptimeText)
+        withBackgroundSession { _ in }
     }
 }
 
 // MARK: - URLSession
 
 extension TVBackgroundDownloadProbe: URLSessionDownloadDelegate, URLSessionDataDelegate {
+    private static func isSystemDownload(_ session: URLSession) -> Bool {
+        session.configuration.identifier == sessionID
+    }
+
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
         let size = Self.fileSize(location)
         try? FileManager.default.removeItem(at: location)
-        log("system download finished: \(TestDiagnosticLog.size(size)), file deleted" + uptimeText)
+        let key = downloadTask.taskDescription ?? "system download"
+        log("\(Self.name(downloadTask)) finished: \(TestDiagnosticLog.size(size)) in \(elapsedText(key)), file deleted" + uptimeText)
     }
 
     func urlSession(
@@ -370,9 +652,17 @@ extension TVBackgroundDownloadProbe: URLSessionDownloadDelegate, URLSessionDataD
         totalBytesWritten: Int64,
         totalBytesExpectedToWrite: Int64
     ) {
-        // Only while Nuvio runs; once a minute.
-        guard progressDue("system download", every: 60) else { return }
-        log("system download: \(TestDiagnosticLog.size(totalBytesWritten)) of \(TestDiagnosticLog.size(max(totalBytesExpectedToWrite, 0)))")
+        // Only while Nuvio runs: the first data at once, then once a minute.
+        let key = downloadTask.taskDescription ?? "system download"
+        guard progressDue(key, every: 60) else { return }
+        var text = "\(Self.name(downloadTask)): \(TestDiagnosticLog.size(totalBytesWritten)) of "
+            + "\(TestDiagnosticLog.size(max(totalBytesExpectedToWrite, 0))) after \(elapsedText(key))"
+        if let response = downloadTask.response as? HTTPURLResponse { text += ", HTTP \(response.statusCode)" }
+        if let start = lock.withLock({ startedAt[key] }) {
+            let seconds = max(1, Date().timeIntervalSince(start))
+            text += ", \(Int(Double(totalBytesWritten) * 8 / seconds / 1_000_000)) Mbit/s"
+        }
+        log(text)
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
@@ -389,31 +679,50 @@ extension TVBackgroundDownloadProbe: URLSessionDownloadDelegate, URLSessionDataD
         log("\(key): \(bytesText(key)) in \(elapsedText(key)), \(Int(rate)) Mbit/s")
     }
 
+    func urlSession(_ session: URLSession, taskIsWaitingForConnectivity task: URLSessionTask) {
+        log("\(Self.name(task)): the system says it waits for a network connection")
+    }
+
     func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
-        guard session === backgroundSession else { return }
         let interval = metrics.taskInterval
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
-        log(
-            "system download ran from \(formatter.string(from: interval.start)) to "
-                + "\(formatter.string(from: interval.end)) (\(Self.duration(interval.duration)))"
-        )
+        let tries = metrics.transactionMetrics
+        var text = "\(Self.name(task)) ran from \(formatter.string(from: interval.start)) to "
+            + "\(formatter.string(from: interval.end)) (\(Self.duration(interval.duration))); "
+            + "\(tries.count) request(s) sent"
+        if let last = tries.last {
+            text += "; the last: \(last.networkProtocolName ?? "no protocol")"
+            if let response = last.response as? HTTPURLResponse {
+                text += ", HTTP \(response.statusCode)"
+            } else {
+                text += ", no answer"
+            }
+            if let address = last.remoteAddress { text += ", server \(address)" }
+        }
+        log(text)
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         let key = task.taskDescription ?? "download"
+        let system = Self.isSystemDownload(session)
         if let error {
             let cancelled = (error as NSError).code == NSURLErrorCancelled
-            if !cancelled || key == "system download" {
-                log("\(key) ended: \(error.localizedDescription)" + (key == "system download" ? "" : "; \(bytesText(key))"))
+            if system {
+                log("\(Self.name(task)) ended: \(Self.errorText(error)); \(TestDiagnosticLog.size(task.countOfBytesReceived)) received")
+            } else if !cancelled {
+                log("\(key) ended: \(Self.errorText(error)); \(bytesText(key)) in \(elapsedText(key))")
             }
-        } else if key != "system download" {
+            if key == "foreground test", !cancelled {
+                restartForegroundDownload()
+            }
+        } else if !system {
             log("\(key) finished: \(bytesText(key)) in \(elapsedText(key))")
         }
         if key == "background task" {
             takeProcessingTask()?.setTaskCompleted(success: error == nil)
         }
-        if key == "foreground test" {
+        if key == "foreground test", error == nil || (error as NSError?)?.code == NSURLErrorCancelled {
             UserDefaults.standard.set(false, forKey: Self.foregroundKey)
             DispatchQueue.main.async { UIApplication.shared.isIdleTimerDisabled = false }
         }
@@ -427,7 +736,7 @@ extension TVBackgroundDownloadProbe: URLSessionDownloadDelegate, URLSessionDataD
     }
 }
 
-/// TEST: the app delegate, for the system waking Nuvio when the system download needs it.
+/// TEST: the app delegate, for the system waking Nuvio when a system download needs it.
 final class TVBackgroundProbeAppDelegate: NSObject, UIApplicationDelegate {
     func application(
         _ application: UIApplication,

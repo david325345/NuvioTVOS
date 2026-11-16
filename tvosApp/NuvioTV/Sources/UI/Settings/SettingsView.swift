@@ -8287,7 +8287,7 @@ private struct TestDiagnosticsSheet: View {
                     ) {
                         SettingsActionRow(
                             title: "Start Background Test",
-                            subtitle: "A system download and a background task. Then press Home and let the Apple TV sleep (10 minutes, or overnight); open Nuvio again and send the log.",
+                            subtitle: "Two system downloads (a big file and 100 MB) and a background task, from the fastest test server. Then press Home and let the Apple TV sleep (10 minutes, or overnight); open Nuvio again and send the log.",
                             value: TVBackgroundDownloadProbe.shared.isBackgroundTestActive ? "Running" : "",
                             accentColor: accentColor
                         ) {
@@ -8415,6 +8415,17 @@ private struct TestDiagnosticsSheet: View {
         isSendingToGitHub = true
         githubSent = false
         githubMessage = "Sending…"
+        // The log as it is now, not as it was when this screen opened (a test may have run since).
+        TestDiagnosticLog.snapshot { lines in
+            Task { @MainActor in
+                usenetLines = lines
+                reports = CrashRecorder.reports()
+                upload()
+            }
+        }
+    }
+
+    private func upload() {
         let object: [String: Any] = [
             "app": CrashRecorder.appVersion,
             "sentAt": Date().formatted(.iso8601),
