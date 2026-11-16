@@ -9,6 +9,10 @@ name: Node.js for tvOS
 # Vendor/NodeMobile/Package.swift points at that release: after a new build,
 # update its URL and the checksum this workflow prints.
 on:
+  # Fork only: this branch builds and publishes on push (the fork's main has no copy of
+  # this workflow to dispatch it from).
+  push:
+    branches: [node-tvos-icu-build]
   workflow_dispatch:
     inputs:
       reuse_run:
@@ -186,7 +190,7 @@ jobs:
           name: NodeMobile.xcframework
           path: out/NodeMobile.xcframework.zip
       - name: Release ${{ env.NODE_TVOS_RELEASE }}
-        if: inputs.publish
+        if: inputs.publish || github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
           CHECKSUM: ${{ steps.zip.outputs.checksum }}
