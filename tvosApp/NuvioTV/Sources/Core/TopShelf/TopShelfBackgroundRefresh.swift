@@ -55,11 +55,21 @@ enum TopShelfBackgroundRefresh {
     }
 
     private static func handle(_ task: BGTask) {
+        // Test build: when tvOS runs Nuvio in the background.
+        let started = Date()
+        TestDiagnosticLog.ui(
+            "download test: Top Shelf background refresh runs (Apple TV awake for "
+                + "\(TVBackgroundDownloadProbe.duration(ProcessInfo.processInfo.systemUptime)) since it last started)"
+        )
         schedule()
         let work = Task { @MainActor in await refresh() }
-        task.expirationHandler = { work.cancel() }
+        task.expirationHandler = {
+            TestDiagnosticLog.ui("download test: Top Shelf background refresh stopped by the system after \(TestDiagnosticLog.elapsed(since: started))") // test build
+            work.cancel()
+        }
         Task {
             let complete = await work.value
+            TestDiagnosticLog.ui("download test: Top Shelf background refresh done in \(TestDiagnosticLog.elapsed(since: started)), complete \(complete)") // test build
             task.setTaskCompleted(success: complete)
         }
     }

@@ -8191,6 +8191,7 @@ private struct TestDiagnosticsSheet: View {
     @State private var isSendingToGitHub = false
     @State private var githubMessage: String?
     @State private var githubSent = false
+    @State private var downloadProbeStatus = TVBackgroundDownloadProbe.shared.status
 
     var body: some View {
         ZStack {
@@ -8277,6 +8278,39 @@ private struct TestDiagnosticsSheet: View {
                                 githubSent = false
                                 githubMessage = nil
                             }
+                        }
+                    }
+
+                    SettingsGroup(
+                        title: "Download Test",
+                        subtitle: "Does the Apple TV download while Nuvio is in the background or asleep? Every step goes to the test log. \(downloadProbeStatus)"
+                    ) {
+                        SettingsActionRow(
+                            title: "Start Background Test",
+                            subtitle: "A system download, a Background Assets download and a background task. Then press Home and let the Apple TV sleep (10 minutes, or overnight); open Nuvio again and send the log.",
+                            value: TVBackgroundDownloadProbe.shared.isBackgroundTestActive ? "Running" : "",
+                            accentColor: accentColor
+                        ) {
+                            TVBackgroundDownloadProbe.shared.startBackgroundTest()
+                            downloadProbeStatus = TVBackgroundDownloadProbe.shared.status
+                        }
+                        SettingsActionRow(
+                            title: "Start Foreground Test",
+                            subtitle: "Downloads with Nuvio open, no screen saver and no sleep. Turn off only the TV (HDMI-CEC off), come back later and send the log.",
+                            value: TVBackgroundDownloadProbe.shared.isForegroundTestActive ? "Running" : "",
+                            accentColor: accentColor
+                        ) {
+                            TVBackgroundDownloadProbe.shared.startForegroundTest()
+                            downloadProbeStatus = TVBackgroundDownloadProbe.shared.status
+                        }
+                        SettingsActionRow(
+                            title: "Stop Download Tests",
+                            subtitle: "Stops and deletes the test downloads",
+                            value: "",
+                            accentColor: accentColor
+                        ) {
+                            TVBackgroundDownloadProbe.shared.stopTests()
+                            downloadProbeStatus = TVBackgroundDownloadProbe.shared.status
                         }
                     }
 

@@ -80,7 +80,10 @@
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
 		<string>com.nuvio.tv.topshelf.refresh</string>
+		<string>com.nuvio.tv.test.download-probe</string>
 	</array>
+	<key>BAMaxInstallSize</key>
+	<integer>2147483648</integer>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Allow $(PRODUCT_NAME) to access your local network</string>
 	<key>NSMicrophoneUsageDescription</key>
@@ -95,6 +98,7 @@
 	<array>
 		<string>audio</string>
 		<string>fetch</string>
+		<string>processing</string>
 	</array>
 	<key>UIFileSharingEnabled</key>
 	<true/>

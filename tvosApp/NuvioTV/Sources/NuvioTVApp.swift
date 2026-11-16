@@ -17,6 +17,9 @@ import AetherEngine
 
 @main
 struct NuvioTVApp: App {
+    /// Test build: the system waking Nuvio for the background download test.
+    @UIApplicationDelegateAdaptor(TVBackgroundProbeAppDelegate.self) private var probeAppDelegate
+
     init() {
         // Test build: why the last session ended, and how smooth the interface was.
         CrashRecorder.install()
@@ -35,6 +38,7 @@ struct NuvioTVApp: App {
         SubtitleFontLibrary.prepareAtLaunch()
         // Before launch finishes, as BGTaskScheduler requires.
         TopShelfBackgroundRefresh.register()
+        TVBackgroundDownloadProbe.shared.registerAtLaunch() // test build
         let payloadMigrationKey = "nuvio.tv.migrations.largePayloadPreferences.v1"
         if !UserDefaults.standard.bool(forKey: payloadMigrationKey),
            HomeCatalogPayloadStore.migrateAllKnownPreferences() {
