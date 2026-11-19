@@ -213,7 +213,6 @@ enum AniListPeople {
                 year: year,
                 rating: nil,
                 overview: nil,
-                backdropURL: media.bannerImage,
                 caption: caption.isEmpty ? nil : caption
             )
             if AniListMetaBuilder.isMovie(media) {

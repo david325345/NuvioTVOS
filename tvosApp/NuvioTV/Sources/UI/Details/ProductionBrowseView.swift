@@ -539,16 +539,22 @@ struct PersonBrowseView: View {
 
             if let backdropURL {
                 ZStack {
-                    AsyncImage(url: backdropURL) { phase in
-                        if case .success(let image) = phase {
-                            image
-                                .resizable()
-                                .scaledToFill()
+                    // An overlay of a fixed frame, so the picture never sets the page's width:
+                    // AniList's banner (about 4.75 : 1) filled to this height is wider than the
+                    // screen and pushed the whole page sideways.
+                    Color.clear
+                        .frame(maxWidth: .infinity, maxHeight: 520)
+                        .overlay {
+                            AsyncImage(url: backdropURL) { phase in
+                                if case .success(let image) = phase {
+                                    image
+                                        .resizable()
+                                        .scaledToFill()
+                                }
+                            }
                         }
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: 520)
-                    .clipped()
-                    .blur(radius: 8, opaque: true)
+                        .clipped()
+                        .blur(radius: 8, opaque: true)
 
                     GeometryReader { proxy in
                         LinearGradient(
