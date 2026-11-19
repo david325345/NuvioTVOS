@@ -455,6 +455,8 @@ enum AniListService {
                 keys: Array(Set([meta.id, id] + tabs.map { AniListMetaBuilder.metaID($0.id) }))
             ),
             finished: tabs.allSatisfy { $0.status == "FINISHED" || $0.status == "CANCELLED" },
+            // A picture that didn't load (a network failure) is asked again soon.
+            missingPictures: AniListSettings.usesEpisodeDetails && artwork.background == nil,
             signature: signature
         )
         return meta
@@ -824,7 +826,8 @@ enum AniListTitleIndex {
 
 /// AniList titles built in this app session, with their extras (cast and recommendations), so
 /// Back to a title shows it at once: its details screen and repository are made anew and would
-/// build it again from the saved answers. Finished titles keep 6 hours, airing ones 30 minutes;
+/// build it again from the saved answers. Finished titles keep 6 hours, airing ones 30 minutes,
+/// one without its background 5 minutes (a picture that failed to load is asked again soon);
 /// a change of the settings that shape a title, another profile or Clear Cache drops them.
 enum AniListSessionCache {
     struct Title {
@@ -846,6 +849,7 @@ enum AniListSessionCache {
 
     static let finishedTTL: TimeInterval = 6 * 3600
     static let airingTTL: TimeInterval = 30 * 60
+    static let missingPicturesTTL: TimeInterval = 5 * 60
     /// Past this many ids, the expired ones go, then all of them.
     static let limit = 300
 
@@ -871,8 +875,9 @@ enum AniListSessionCache {
         return kept.value
     }
 
-    static func store(_ title: Title, finished: Bool, signature: String, now: Date = Date()) {
-        let kept = Kept(value: title, signature: signature, expires: now.addingTimeInterval(finished ? finishedTTL : airingTTL))
+    static func store(_ title: Title, finished: Bool, missingPictures: Bool = false, signature: String, now: Date = Date()) {
+        let lifetime = missingPictures ? missingPicturesTTL : (finished ? finishedTTL : airingTTL)
+        let kept = Kept(value: title, signature: signature, expires: now.addingTimeInterval(lifetime))
         lock.lock()
         defer { lock.unlock() }
         trim(&keptTitles, now: now)

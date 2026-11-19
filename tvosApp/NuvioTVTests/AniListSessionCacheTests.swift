@@ -36,6 +36,15 @@ final class AniListSessionCacheTests: XCTestCase {
         XCTAssertNil(AniListSessionCache.title("anilist:1", signature: "a", now: now.addingTimeInterval(7 * 3600)))
     }
 
+    func testATitleWithoutItsBackgroundIsBuiltAgainSoon() {
+        AniListSessionCache.removeAll()
+        defer { AniListSessionCache.removeAll() }
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        AniListSessionCache.store(builtTitle("anilist:3", keys: ["anilist:3"]), finished: true, missingPictures: true, signature: "a", now: now)
+        XCTAssertNotNil(AniListSessionCache.title("anilist:3", signature: "a", now: now.addingTimeInterval(60)), "Back still shows it at once")
+        XCTAssertNil(AniListSessionCache.title("anilist:3", signature: "a", now: now.addingTimeInterval(10 * 60)))
+    }
+
     func testClearingTheCacheDropsTitlesAndExtras() {
         let now = Date()
         AniListSessionCache.store(builtTitle("anilist:1", keys: ["anilist:1"]), finished: true, signature: "a", now: now)
