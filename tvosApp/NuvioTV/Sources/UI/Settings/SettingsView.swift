@@ -7185,6 +7185,8 @@ private struct AniListOptionsSheet: View {
     @State private var statusText = ""
     @State private var homeStatusText = ""
     @State private var searchStatusText = ""
+    /// Test build only: the pictures of the last AniList title.
+    @State private var pictureLogText = AniListPictureLog.text()
     @State private var accountStatusText = ""
     @State private var accountName: String?
     @State private var tokenDraft = ""
@@ -7658,6 +7660,26 @@ private struct AniListOptionsSheet: View {
                 Task { await refreshStatus() }
             }
 
+            // Test build only.
+            Button {
+                pictureLogText = AniListPictureLog.text()
+            } label: {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Pictures of the last AniList title (test build) · press to refresh")
+                        .font(.appFont(size: 22, weight: .semibold))
+                        .foregroundColor(.white)
+                    Text(pictureLogText)
+                        .font(.system(size: 17, weight: .regular, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.72))
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 28)
+                .padding(.vertical, 20)
+            }
+            .buttonStyle(.card)
+
             SettingsActionRow(
                 title: L10n.string("settings_anilist_test", fallback: "Test Connection"),
                 subtitle: testResult ?? L10n.string("settings_anilist_test_subtitle", fallback: "Search AniList for Frieren now, past the saved answers"),
@@ -7702,6 +7724,7 @@ private struct AniListOptionsSheet: View {
         statusText = await AniListService.statusText()
         homeStatusText = AniListService.homeStatusText()
         searchStatusText = AniListService.searchStatusText()
+        pictureLogText = AniListPictureLog.text()
         accountStatusText = AniListSettings.isEnabled ? AniListDiagnostics.text(.account) : "Off"
         accountName = AniListAccount.login?.viewerName
         if AniListSettings.isEnabled, !updatingOffline {

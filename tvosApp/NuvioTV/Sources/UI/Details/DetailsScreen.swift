@@ -4586,6 +4586,9 @@ struct TvDetailsContent: View {
             }
             applySoundPreference(trailerSound)
             isTrailerPlaying = true
+            if let id = uiState.meta?.id, AniListMetaBuilder.isAniListID(id) {
+                AniListPictureLog.noteAlways("details: background trailer started")
+            }
             trailerPlayer.play()
         }
     }
@@ -6487,13 +6490,23 @@ private struct TvDetailsBackdrop: View {
                 backdropImageURL = nil
                 return
             }
+            var loadedNow = false
             if let cached = BackdropImageCache.shared.cachedImage(for: url) {
                 backdropImage = cached
                 backdropImageURL = url
+                loadedNow = true
             } else if let loaded = await BackdropImageCache.shared.image(for: url) {
                 guard !Task.isCancelled else { return }
                 backdropImage = loaded
                 backdropImageURL = url
+                loadedNow = true
+            }
+            if AniListMetaBuilder.isAniListID(meta.id) {
+                let source = url.absoluteString == meta.backgroundUrl ? "background" : (url.absoluteString == meta.posterUrl ? "poster" : "landscape")
+                let size = backdropImage.map { " \(Int($0.size.width))×\(Int($0.size.height))" } ?? ""
+                AniListPictureLog.noteAlways(
+                    "details backdrop: \(source) \(AniListPictureLog.short(url))\(loadedNow ? size : " failed to load")"
+                )
             }
         }
         // Keyed by the picture shown: blurring when the target changed, while the earlier

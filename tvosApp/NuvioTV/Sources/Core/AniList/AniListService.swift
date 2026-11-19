@@ -376,6 +376,7 @@ enum AniListService {
         // Built before in this session: Back to a title builds its details screen anew.
         let signature = AniListSessionCache.signature
         if let built = AniListSessionCache.title(id, signature: signature) {
+            AniListPictureLog.begin("\(id): kept in memory · background \(AniListPictureLog.short(built.meta.backgroundUrl))")
             for key in built.keys {
                 AniListTitleIndex.store(metaID: key, tabLabels: built.tabLabels, seasonByEntry: built.seasonByEntry, related: built.related)
             }
@@ -402,6 +403,10 @@ enum AniListService {
 
         let tabs = (merge ? chainIDs : [startID]).compactMap { entries[$0] }
         guard !tabs.isEmpty else { throw DetailsError.notFound }
+        AniListPictureLog.begin(
+            "\(id) · \(merge ? "One Title" : "Each Entry") · tabs \(tabs.map { String($0.id) }.joined(separator: ", "))"
+                + (AniListSettings.usesEpisodeDetails ? "" : " · Episode Details OFF")
+        )
 
         // api.ani.zip: titles and pictures of episodes, and TheTVDB's background and logo of
         // the series. It has no AniList rate limit.
@@ -420,6 +425,16 @@ enum AniListService {
             }
         }
 
+        if AniListSettings.usesEpisodeDetails {
+            for tab in tabs {
+                let line = aniZip[tab.id].map { zip in
+                    "fanart \(AniListPictureLog.short(zip.fanart)) · logo \(AniListPictureLog.short(zip.clearLogo))"
+                        + " · tmdb \(zip.mappings?.themoviedbID.map { String($0) } ?? "-") · imdb \(zip.mappings?.imdbID ?? "-")"
+                } ?? "no answer, or an unreadable one"
+                AniListPictureLog.noteAlways("ani.zip \(tab.id): \(line)")
+            }
+        }
+
         var episodes: [Int: [NuvioVideo]] = [:]
         for (index, tab) in tabs.enumerated() {
             episodes[tab.id] = AniListMetaBuilder.episodes(of: tab, season: index + 1, aniZip: aniZip[tab.id]?.episodes ?? [:])
@@ -430,13 +445,21 @@ enum AniListService {
         let isFilm = tabs.count == 1 && AniListMetaBuilder.isMovie(tabs[0])
         var artwork = AniListMetaBuilder.Artwork.empty
         if AniListSettings.usesEpisodeDetails {
-            for tab in tabs where !artwork.isComplete {
-                artwork = artwork.filled(by: await Self.entryArtwork(entryID: tab.id, aniZip: aniZip[tab.id], isFilm: isFilm))
-            }
-            if !isFilm {
-                artwork = await Self.borrowingFromEarlierSeasons(artwork, entryID: tabs[0].id, known: tabs[0])
+            let zips = aniZip
+            artwork = await AniListPictureLog.$isRecording.withValue(true) { () async -> AniListMetaBuilder.Artwork in
+                var found = AniListMetaBuilder.Artwork.empty
+                for tab in tabs where !found.isComplete {
+                    found = found.filled(by: await Self.entryArtwork(entryID: tab.id, aniZip: zips[tab.id], isFilm: isFilm))
+                }
+                if !isFilm {
+                    found = await Self.borrowingFromEarlierSeasons(found, entryID: tabs[0].id, known: tabs[0])
+                }
+                return found
             }
         }
+        AniListPictureLog.noteAlways(
+            "→ background \(AniListPictureLog.short(artwork.background)) · logo \(AniListPictureLog.short(artwork.logo))"
+        )
 
         guard let meta = AniListMetaBuilder.meta(tabs: tabs, episodes: episodes, language: language, artwork: artwork) else {
             throw DetailsError.notFound
@@ -502,6 +525,10 @@ enum AniListService {
     ) async -> AniListMetaBuilder.Artwork {
         var artwork = AniListMetaBuilder.Artwork(background: aniZip?.fanart)
         artwork.logo = await checkedLogo(aniZip?.clearLogo)
+        AniListPictureLog.note(
+            "\(entryID): ani.zip background \(AniListPictureLog.short(aniZip?.fanart))"
+                + " · logo \(aniZip?.clearLogo == nil ? "none" : (artwork.logo == nil ? "not a logo" : "ok"))"
+        )
         guard !artwork.isComplete else { return artwork }
 
         // Ids from the offline tables first, then ani.zip's, then arm-server's.
@@ -512,16 +539,30 @@ enum AniListService {
            let found = await TmdbDetailsService.artwork(tmdbId: tmdbID, mediaType: isFilm ? "movie" : "tv") {
             artwork.background = artwork.background ?? found.background
             if artwork.logo == nil { artwork.logo = await checkedLogo(found.logo) }
+            AniListPictureLog.note(
+                "  TMDB \(tmdbID): background \(AniListPictureLog.short(found.background)) · logo \(AniListPictureLog.short(found.logo))"
+            )
+        } else {
+            AniListPictureLog.note("  TMDB \(tmdbID.map { String($0) } ?? "no id"): nothing (TMDB off, no key, artwork off, or none)")
         }
         guard !artwork.isComplete else { return artwork }
 
         var imdbID = offline?.imdb ?? mappings?.imdbID
         if imdbID == nil { imdbID = await armIMDbID(aniListID: entryID) }
-        guard let imdbID, let metahub = metahubArtwork(imdbID: imdbID) else { return artwork }
+        guard let imdbID, let metahub = metahubArtwork(imdbID: imdbID) else {
+            AniListPictureLog.note("  IMDb: none (offline tables, ani.zip and arm know none)")
+            return artwork
+        }
+        let neededLogo = artwork.logo == nil
         if artwork.logo == nil { artwork.logo = await checkedLogo(metahub.logo.absoluteString) }
+        let neededBackground = artwork.background == nil
         if artwork.background == nil, await AniListClient.shared.imageExists(metahub.background) {
             artwork.background = metahub.background.absoluteString
         }
+        AniListPictureLog.note(
+            "  Metahub \(imdbID): background \(neededBackground ? (artwork.background == nil ? "check said no" : "ok") : "not needed")"
+                + " · logo \(neededLogo ? (artwork.logo == nil ? "not a logo" : "ok") : "not needed")"
+        )
         return artwork
     }
 
@@ -712,6 +753,7 @@ enum AniListService {
         guard AniListSettings.opensTitles, let id = AniListMetaBuilder.aniListID(from: metaID) else { return ([], []) }
         let signature = AniListSessionCache.signature
         if let kept = AniListSessionCache.extras(metaID, signature: signature) {
+            AniListPictureLog.noteAlways("cast: kept in memory · \(kept.people.count) people, \(kept.recommendations.count) recommendations")
             return kept
         }
         guard let data = await extrasAnswer(id: id),
@@ -739,6 +781,7 @@ enum AniListService {
             .compactMap { $0.mediaRecommendation }
             .filter { $0.type == nil || $0.type == "ANIME" }
             .map { AniListMetaBuilder.relatedTitle($0, relation: nil, language: language) }
+        AniListPictureLog.noteAlways("cast: \(people.count) people, \(recommendations.count) recommendations")
         AniListSessionCache.storeExtras(
             (people, recommendations),
             for: metaID,
@@ -763,9 +806,11 @@ enum AniListService {
                     try await AniListClient.shared.query(AniListQueries.extras, variables: ["id": id], ttl: finishedTTL)
                 }
             } catch AniListClient.ClientError.rateLimited where attempt < extrasAttempts {
+                AniListPictureLog.noteAlways("cast: AniList's rate limit, asking again in \(Int(extrasRetryDelay)) s (\(attempt)/\(extrasAttempts))")
                 try? await Task.sleep(nanoseconds: UInt64(extrasRetryDelay * 1_000_000_000))
                 if Task.isCancelled { return nil }
             } catch {
+                AniListPictureLog.noteAlways("cast: failed · \(AniListDiagnostics.describe(error))")
                 return nil
             }
         }
