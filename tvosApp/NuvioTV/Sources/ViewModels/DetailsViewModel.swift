@@ -799,6 +799,13 @@ class DetailsViewModel: ObservableObject {
                         if !extras.recommendations.isEmpty {
                             self.uiState.moreLikeThis = extras.recommendations
                         }
+                        // A MyAnimeList title's Related row: the pictures MAL's relations lack.
+                        if AnimeSource.isMALTitle(meta.id), await MALSource.fillRelatedPictures(metaID: meta.id),
+                           self.isCurrentRequest(metaId: meta.id, generation: generation) {
+                            // Drawn again: the row reads the pictures as it is drawn.
+                            let shown = self.uiState.moreLikeThis
+                            self.uiState.moreLikeThis = shown
+                        }
                     }
                 }
                 let ratings = await Self.combinedRatings(for: meta)
