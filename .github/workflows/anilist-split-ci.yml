@@ -1,0 +1,60 @@
+name: AniList split PRs (fork)
+
+# Fork only, never part of a PR: builds the app and runs the AniList tests on each of the
+# PR branches split from the AniList fixes, as the upstream test workflow would on a PR.
+on:
+  push:
+    branches: [anilist-split-ci]
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        branch:
+          - anilist-season-tabs
+          - anilist-back-cache
+          - anilist-voice-actor-page
+          - details-wide-action-buttons
+          - anilist-season-chain
+          - anilist-no-banner-background
+          - details-backdrop-blur-fix
+          - anilist-request-priority
+    name: ${{ matrix.branch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.branch }}
+          submodules: recursive
+      - name: Install Tuist
+        run: brew install tuist
+      - name: Generate Xcode project
+        run: tuist generate --path tvosApp --no-open
+      - name: AniList tests
+        env:
+          NUVIO_TEST_ARTIFACTS: ${{ runner.temp }}/nuvio-tests
+          NUVIO_DERIVED_DATA: ${{ runner.temp }}/NuvioTVDerivedData
+        run: |
+          set -o pipefail
+          report() {
+            grep -E "error: |XCTAssert|failed \(" "$NUVIO_TEST_ARTIFACTS/xcodebuild.log" 2>/dev/null \
+              | grep -v "produced no further output" \
+              | sort -u | head -40 | while IFS= read -r line; do echo "::error::$line"; done
+          }
+          trap 'report' ERR
+          bash scripts/test-tvos.sh \
+            -only-testing:NuvioTVTests/AniListTests \
+            -only-testing:NuvioTVTests/AniListTabLabelTests \
+            -only-testing:NuvioTVTests/AniListSessionCacheTests \
+            -only-testing:NuvioTVTests/AniListPeopleTests \
+            -only-testing:NuvioTVTests/AniListSeasonChainTests \
+            -only-testing:NuvioTVTests/AniListRequestPriorityTests
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ matrix.branch }}
+          path: ${{ runner.temp }}/nuvio-tests
+          retention-days: 7
