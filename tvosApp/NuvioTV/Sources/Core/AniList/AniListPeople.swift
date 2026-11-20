@@ -95,12 +95,16 @@ enum AniListPeople {
     }
 
     private static func fetchStaff(_ id: Int) async -> AniListStaff? {
-        guard let data = try? await AniListClient.shared.query(AniListQueries.staff, variables: ["id": id], ttl: ttl) else { return nil }
+        guard let data = try? await AniListClient.$isInteractive.withValue(true, operation: {
+            try await AniListClient.shared.query(AniListQueries.staff, variables: ["id": id], ttl: ttl)
+        }) else { return nil }
         return try? decoder.decode(AniListStaffResponse.self, from: data).data?.Staff
     }
 
     private static func fetchCharacter(_ id: Int) async -> AniListCharacter? {
-        guard let data = try? await AniListClient.shared.query(AniListQueries.character, variables: ["id": id], ttl: ttl) else { return nil }
+        guard let data = try? await AniListClient.$isInteractive.withValue(true, operation: {
+            try await AniListClient.shared.query(AniListQueries.character, variables: ["id": id], ttl: ttl)
+        }) else { return nil }
         return try? decoder.decode(AniListCharacterResponse.self, from: data).data?.Character
     }
 
