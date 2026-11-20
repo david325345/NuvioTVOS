@@ -4978,8 +4978,9 @@ struct TvDetailsContent: View {
                     onPersonClick: { person in
                         let clean = person.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                         guard !clean.isEmpty && clean != "cast" else { return }
-                        // AniList characters have no TMDB page to open.
-                        guard !AniListMetaBuilder.isAniListID(meta.id) else { return }
+                        // An AniList title's characters open their voice actor's AniList page
+                        // (or the character's); they have no TMDB page.
+                        guard !AniListMetaBuilder.isAniListID(meta.id) || person.hasAniListPage else { return }
                         stopBackgroundTrailer(manual: false)
                         onOpenPerson?(
                             person,
@@ -6378,6 +6379,10 @@ private struct TvDetailsBackdrop: View {
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
 
     @State private var backdropImage: UIImage?
+    /// Where `backdropImage` came from. The details open with the card's picture (an AniList
+    /// card's poster) and switch to the title's background moments later; the blurred copy is
+    /// made from, and kept under, the picture shown, never the one still loading.
+    @State private var backdropImageURL: URL?
     /// The backdrop blurred once, faded in over the sharp one instead of blurring it live (a
     /// full-screen blur worked out again on every frame).
     @State private var blurredBackdrop: UIImage?
@@ -6406,16 +6411,19 @@ private struct TvDetailsBackdrop: View {
         self.onTrailerReadyForDisplay = onTrailerReadyForDisplay
 
         var cachedInitial: UIImage? = nil
+        var cachedInitialURL: URL? = nil
         for candidate in [meta.backgroundUrl, meta.landscapePosterUrl, meta.posterUrl] {
             let trimmed = candidate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if !trimmed.isEmpty, let url = URL(string: trimmed) {
                 if let cached = BackdropImageCache.shared.cachedImage(for: url) {
                     cachedInitial = cached
+                    cachedInitialURL = url
                     break
                 }
             }
         }
         _backdropImage = State(initialValue: cachedInitial)
+        _backdropImageURL = State(initialValue: cachedInitialURL)
     }
 
     var body: some View {
@@ -6425,17 +6433,15 @@ private struct TvDetailsBackdrop: View {
             if let backdropImage {
                 // One sharp image throughout (switching between two versions of it when the
                 // blurred copy arrived could flash as Details opened); live blur only until the
-                // blurred copy is ready.
-                Image(uiImage: backdropImage)
-                    .resizable()
-                    .scaledToFill()
+                // blurred copy is ready. Each is drawn in the screen's frame, so a picture of
+                // another shape (a poster) can't make the backdrop taller and push the picture
+                // below the screen.
+                Self.screenFilling(backdropImage)
                     .blur(radius: blurredBackdrop != nil ? 0 : blurRadius, opaque: true)
                     .animation(.easeInOut(duration: 0.35), value: blurRadius)
                     .ignoresSafeArea()
                 if let blurredBackdrop {
-                    Image(uiImage: blurredBackdrop)
-                        .resizable()
-                        .scaledToFill()
+                    Self.screenFilling(blurredBackdrop)
                         .opacity(blurRadius > 0 ? 1 : 0)
                         .animation(.easeInOut(duration: 0.35), value: blurRadius)
                         .ignoresSafeArea()
@@ -6478,20 +6484,27 @@ private struct TvDetailsBackdrop: View {
         .task(id: targetArtworkURL) {
             guard let url = targetArtworkURL else {
                 backdropImage = nil
+                backdropImageURL = nil
                 return
             }
             if let cached = BackdropImageCache.shared.cachedImage(for: url) {
                 backdropImage = cached
+                backdropImageURL = url
             } else if let loaded = await BackdropImageCache.shared.image(for: url) {
                 guard !Task.isCancelled else { return }
                 backdropImage = loaded
+                backdropImageURL = url
             }
         }
-        .task(id: BlurredBackdropKey(url: targetArtworkURL, hasImage: backdropImage != nil)) {
-            guard let url = targetArtworkURL, let backdropImage else {
+        // Keyed by the picture shown: blurring when the target changed, while the earlier
+        // picture was still shown, kept the poster's blur under the background's address.
+        .task(id: backdropImageURL) {
+            guard let url = backdropImageURL, let backdropImage else {
                 if blurredBackdrop != nil { blurredBackdrop = nil }
                 return
             }
+            // Live blur meanwhile, not the earlier picture's blurred copy.
+            blurredBackdrop = nil
             let blurred = await TvDetailsBlurredBackdrop.image(for: url, from: backdropImage)
             guard !Task.isCancelled else { return }
             blurredBackdrop = blurred
@@ -6499,9 +6512,15 @@ private struct TvDetailsBackdrop: View {
         .ignoresSafeArea()
     }
 
-    private struct BlurredBackdropKey: Equatable {
-        let url: URL?
-        let hasImage: Bool
+    /// `image` filling the frame it is given, top first, without setting that frame's size.
+    private static func screenFilling(_ image: UIImage) -> some View {
+        Color.clear
+            .overlay(alignment: .top) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            }
+            .clipped()
     }
 }
 
@@ -6793,6 +6812,9 @@ private struct TvDetailsActionRow: View {
             )
             .disabled(entryLocked)
         }
+        // As wide as its buttons: in a film's narrower column, AniList's and MAL's wide buttons
+        // were squeezed to an icon and "A…". The row may reach past the column's edge instead.
+        .fixedSize(horizontal: true, vertical: false)
         .focusSection()
         .onExitCommand {
             onBack?()
@@ -7087,6 +7109,8 @@ private struct TvDetailsActionButton: View {
                     Text(title)
                         .font(.appFont(size: 32, weight: .medium))
                         .lineLimit(1)
+                        // Play, AniList and MAL keep their whole title ("Watching 5/12"), never "A…".
+                        .fixedSize(horizontal: isPrimary || isWide, vertical: false)
                         .accessibilityHidden(true)
                 }
             }
@@ -9841,6 +9865,7 @@ private struct TvDetailsEpisodes: View {
                         ForEach(seasons, id: \.self) { season in
                             TvSeasonPill(
                                 title: seasonTitle(season),
+                                detail: seasonDetail(season),
                                 isSelected: season == selectedSeason,
                                 onFocus: onFocus,
                                 onMoveUp: onMoveUpFromSeason,
@@ -9871,12 +9896,19 @@ private struct TvDetailsEpisodes: View {
                 }
             }
         } else {
-            Text(seasonTitle(selectedSeason))
-                .font(.system(size: 32, weight: .semibold))
-                .foregroundColor(.black)
-                .padding(.horizontal, 34)
-                .frame(height: 70)
-                .background(Color.white, in: Capsule())
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(seasonTitle(selectedSeason))
+                    .font(.system(size: 32, weight: .semibold))
+                if let detail = seasonDetail(selectedSeason) {
+                    Text(detail)
+                        .font(.system(size: 24, weight: .medium))
+                        .opacity(0.6)
+                }
+            }
+            .foregroundColor(.black)
+            .padding(.horizontal, 34)
+            .frame(height: 70)
+            .background(Color.white, in: Capsule())
         }
     }
 
@@ -9898,15 +9930,20 @@ private struct TvDetailsEpisodes: View {
     }
 
     private func seasonTitle(_ season: Int) -> String {
-        // AniList titles name each tab after its AniList entry.
-        if let name = AniListTitleIndex.tabTitle(metaID: meta.id, season: season) {
-            return name
+        // AniList titles name each tab after its AniList entry; the year is drawn apart.
+        if let label = AniListTitleIndex.tabLabel(metaID: meta.id, season: season) {
+            return label.name
         }
         if AniListMetaBuilder.isAniListID(meta.id) {
             // AniList's entries aren't seasons.
             return seasons.count > 1 ? "Part \(season)" : "Episodes"
         }
         return season <= 0 ? "Specials" : "Season \(season)"
+    }
+
+    /// The year of an AniList tab, smaller and dimmer next to its name.
+    private func seasonDetail(_ season: Int) -> String? {
+        AniListTitleIndex.tabLabel(metaID: meta.id, season: season)?.year.map { String($0) }
     }
 
     private func continueProgress(for video: NuvioVideo) -> Double? {
@@ -9983,6 +10020,8 @@ private enum TvEpisodeCardLayout {
 
 private struct TvSeasonPill: View {
     let title: String
+    /// Drawn after the title, smaller and dimmer (an AniList tab's year).
+    var detail: String? = nil
     let isSelected: Bool
     let onFocus: () -> Void
     let onMoveUp: () -> Void
@@ -9993,20 +10032,28 @@ private struct TvSeasonPill: View {
 
     var body: some View {
         Button(action: action) {
-            Text(title)
-                .font(.system(size: 30, weight: .semibold))
-                .foregroundColor(isSelected || isFocused ? .black : .white.opacity(0.66))
-                .padding(.horizontal, 30)
-                .frame(height: 70)
-                .background {
-                    if isSelected || isFocused {
-                        Capsule().fill(Color.white)
-                    } else {
-                        Capsule()
-                            .fill(Color.white.opacity(0.12))
-                            .background(Color.black.opacity(0.25), in: Capsule())
-                    }
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(title)
+                    .font(.system(size: 30, weight: .semibold))
+                if let detail {
+                    Text(detail)
+                        .font(.system(size: 23, weight: .medium))
+                        .opacity(0.6)
                 }
+            }
+            .lineLimit(1)
+            .foregroundColor(isSelected || isFocused ? .black : .white.opacity(0.66))
+            .padding(.horizontal, 30)
+            .frame(height: 70)
+            .background {
+                if isSelected || isFocused {
+                    Capsule().fill(Color.white)
+                } else {
+                    Capsule()
+                        .fill(Color.white.opacity(0.12))
+                        .background(Color.black.opacity(0.25), in: Capsule())
+                }
+            }
         }
         .buttonStyle(PosterCardButtonStyle())
         .focused($isFocused)

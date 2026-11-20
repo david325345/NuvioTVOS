@@ -66,6 +66,7 @@ enum AniListQueries {
     query ($id: Int) {
       Media(id: $id, type: ANIME) {
         id
+        status
         characters(sort: [ROLE, RELEVANCE, ID], perPage: 25) {
           edges {
             role
@@ -75,6 +76,47 @@ enum AniListQueries {
         }
         recommendations(sort: [RATING_DESC, ID], perPage: 20) {
           nodes { rating mediaRecommendation { \(relationNodeFields) averageScore description(asHtml: false) bannerImage } }
+        }
+      }
+    }
+    """
+
+    /// A voice actor's page: who they are and their anime roles, the best known first.
+    static let staff = """
+    query ($id: Int) {
+      Staff(id: $id) {
+        id
+        name { full native }
+        image { large }
+        description(asHtml: false)
+        dateOfBirth { year month day }
+        dateOfDeath { year month day }
+        homeTown
+        characterMedia(sort: [POPULARITY_DESC], perPage: 50) {
+          edges {
+            characterRole
+            characters { id name { full } }
+            node { \(relationNodeFields) bannerImage isAdult }
+          }
+        }
+      }
+    }
+    """
+
+    /// A character's page (no voice actor known): who it is and the anime it is in.
+    static let character = """
+    query ($id: Int) {
+      Character(id: $id) {
+        id
+        name { full native }
+        image { large }
+        description(asHtml: false)
+        dateOfBirth { year month day }
+        media(type: ANIME, sort: [POPULARITY_DESC], perPage: 50) {
+          edges {
+            characterRole
+            node { \(relationNodeFields) bannerImage isAdult }
+          }
         }
       }
     }
