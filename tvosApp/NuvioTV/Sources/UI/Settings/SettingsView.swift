@@ -24248,6 +24248,7 @@ private struct UsenetSettingsSection: View {
     @State private var profile = UsenetSettings.profile().rawValue
     @State private var prefersOwnServers = UsenetSettings.prefersOwnServers()
     @State private var speedLimit = String(UsenetSettings.speedLimitMbps())
+    @State private var diskReadAhead = String(UsenetSettings.diskReadAheadSeconds())
     @State private var syncToAccount = UsenetSettings.syncChoice() ?? false
 
     var body: some View {
@@ -24295,6 +24296,22 @@ private struct UsenetSettingsSection: View {
                 accentColor: accentColor
             )
 
+            SettingsChoiceRow(
+                title: L10n.string("usenet_disk_read_ahead_title", fallback: "Read Ahead on Disk"),
+                subtitle: L10n.string(
+                    "usenet_disk_read_ahead_subtitle",
+                    fallback: "Download this far ahead of playback into the Apple TV's cache, so skipping forward into it doesn't wait. What was downloaded stays until playback ends (up to 4 GB)."
+                ),
+                selection: $diskReadAhead,
+                options: UsenetSettings.diskReadAheadOptions.map(String.init),
+                optionLabels: Dictionary(uniqueKeysWithValues: UsenetSettings.diskReadAheadOptions.map {
+                    (String($0), $0 == 0
+                        ? L10n.string("usenet_disk_read_ahead_off", fallback: "Off")
+                        : L10n.format("usenet_disk_read_ahead_minutes", fallback: "%d min", $0 / 60))
+                }),
+                accentColor: accentColor
+            )
+
             SettingsToggleRow(
                 title: L10n.string("usenet_prefer_own_title", fallback: "Always Use My Servers"),
                 subtitle: L10n.string("usenet_prefer_own_subtitle", fallback: "Ignore servers an add-on sends with its streams. When off, yours are the fallback."),
@@ -24328,6 +24345,9 @@ private struct UsenetSettingsSection: View {
         }
         .onChange(of: speedLimit) { _, value in
             UsenetSettings.setSpeedLimitMbps(Int(value) ?? 0)
+        }
+        .onChange(of: diskReadAhead) { _, value in
+            UsenetSettings.setDiskReadAheadSeconds(Int(value) ?? UsenetSettings.defaultDiskReadAheadSeconds)
         }
         .onReceive(NotificationCenter.default.publisher(for: .usenetServersChanged)) { _ in
             model.reload()

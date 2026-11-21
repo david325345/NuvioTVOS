@@ -10,6 +10,10 @@ struct UsenetStreamStats: Equatable, Sendable {
     var totalConnections = 0
     var configuredConnections = 0
     var bufferedAheadBytes: Int64 = 0
+    /// The same in seconds of video, once the player knows the duration.
+    var bufferedAheadSeconds: Double?
+    /// Articles kept on disk (Read Ahead on Disk).
+    var diskBytes: Int64 = 0
     var cacheHitRate: Double?
     var missingArticles = 0
     var fallbackArticles = 0
@@ -27,7 +31,9 @@ struct UsenetStreamStats: Equatable, Sendable {
     }
 
     var bufferedFormatted: String {
-        ByteCountFormatter.string(fromByteCount: bufferedAheadBytes, countStyle: .memory)
+        let bytes = ByteCountFormatter.string(fromByteCount: bufferedAheadBytes, countStyle: .memory)
+        guard let bufferedAheadSeconds, bufferedAheadSeconds.isFinite else { return bytes }
+        return bytes + " (\(Int(bufferedAheadSeconds.rounded())) s)"
     }
 
     var connectionsText: String { "\(busyConnections)/\(totalConnections)" }
@@ -45,6 +51,9 @@ struct UsenetStreamStats: Equatable, Sendable {
     /// HUD line 2: what the article cache holds and what went missing.
     var cacheLine: String {
         var parts = ["ahead \(bufferedFormatted)"]
+        if diskBytes > 0 {
+            parts.append("disk " + ByteCountFormatter.string(fromByteCount: diskBytes, countStyle: .file))
+        }
         if let cacheHitRate { parts.append("hit \(Int((cacheHitRate * 100).rounded()))%") }
         parts.append("missing \(missingArticles)")
         if fallbackArticles > 0 { parts.append("backup \(fallbackArticles)") }
@@ -106,7 +115,14 @@ final class UsenetEngineManager: ObservableObject {
             usenetLog.notice("usenet: \(source.name, privacy: .public) [\(source.kind.rawValue, privacy: .public)] — \(source.volumes.count) file(s), \(health.missing)/\(health.checked) sampled articles missing")
             guard UsenetHealthCheck.isPlayable(health) else { throw UsenetError.releaseIncomplete }
 
-            let session = UsenetStreamSession(source: source, pool: pool, profile: UsenetSettings.profile()) { [weak self] in
+            // Off the main thread: it clears what an earlier stream left on disk.
+            let diskSeconds = UsenetSettings.diskReadAheadSeconds()
+            let diskReadAhead = await Task.detached(priority: .userInitiated) {
+                UsenetDiskReadAhead.make(seconds: diskSeconds)
+            }.value
+            let session = UsenetStreamSession(
+                source: source, pool: pool, profile: UsenetSettings.profile(), diskReadAhead: diskReadAhead
+            ) { [weak self] in
                 Task { @MainActor in self?.reportDamage(generation: current) }
             }
             try await session.prepare()
@@ -258,6 +274,8 @@ final class UsenetEngineManager: ObservableObject {
                 stats.fallbackArticles = poolStats.fallbackArticles
                 stats.reconnects = poolStats.reconnects
                 stats.bufferedAheadBytes = sessionStats.bufferedAheadBytes
+                stats.bufferedAheadSeconds = sessionStats.bufferedAheadSeconds
+                stats.diskBytes = sessionStats.diskBytes
                 stats.missingArticles = sessionStats.missingArticles
                 stats.cacheHitRate = lookups > 0 ? Double(sessionStats.cacheHits) / Double(lookups) : nil
                 if stats != self.activeStats { self.activeStats = stats }

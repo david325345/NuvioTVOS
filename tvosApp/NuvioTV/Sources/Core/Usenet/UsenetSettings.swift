@@ -111,6 +111,22 @@ enum UsenetSettings {
         store.set(profile.rawValue, forKey: profileKey)
     }
 
+    static let diskReadAheadKey = "nuvio.tv.settings.integrations.usenetDiskReadAhead"
+    /// How far ahead of playback the read-ahead reaches on disk, in seconds of video; 0 keeps
+    /// it in memory only (the performance profile's size).
+    static let diskReadAheadOptions = [0, 60, 120, 300]
+    static let defaultDiskReadAheadSeconds = 120
+
+    static func diskReadAheadSeconds(store: UserDefaults = ProfileSettings.current) -> Int {
+        guard store.object(forKey: diskReadAheadKey) != nil else { return defaultDiskReadAheadSeconds }
+        let value = store.integer(forKey: diskReadAheadKey)
+        return diskReadAheadOptions.contains(value) ? value : defaultDiskReadAheadSeconds
+    }
+
+    static func setDiskReadAheadSeconds(_ value: Int, store: UserDefaults = ProfileSettings.current) {
+        store.set(diskReadAheadOptions.contains(value) ? value : defaultDiskReadAheadSeconds, forKey: diskReadAheadKey)
+    }
+
     /// When on, your own servers are used even if the add-on sends its own.
     static func prefersOwnServers(store: UserDefaults = ProfileSettings.current) -> Bool {
         store.bool(forKey: preferOwnServersKey)

@@ -1531,6 +1531,14 @@ class PlayerViewModel: ObservableObject {
         return SubtitleLanguagePreferences.orderedFromDefaults()
     }
 
+    /// Seconds of video the playing Usenet stream has read ahead past the player's buffer.
+    private static func usenetBufferedAheadSeconds(_ manager: UsenetEngineManager, playbackURL: String?) -> Double {
+        guard let playbackURL, manager.activeStreamURL?.absoluteString == playbackURL,
+              let seconds = manager.activeStats.bufferedAheadSeconds,
+              seconds.isFinite, seconds > 0 else { return 0 }
+        return seconds
+    }
+
     private static func isLiveContentType(_ type: String) -> Bool {
         switch type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "channel", "channels", "live", "livetv", "live-tv", "live_tv", "iptv", "radio", "sports", "sport", "stream", "streams", "event", "events", "broadcast", "feed":
@@ -3929,7 +3937,14 @@ class PlayerViewModel: ObservableObject {
                 item: trackingAddonItem, currentTime: latestTime.current, duration: latestTime.duration
             )
             let engineBufferedSeconds = Double(c.bufferedMs) / 1000.0
-            let effectiveBuffered = max(engineBufferedSeconds, diskCachedBufferedPosition)
+            // A Usenet stream's own read-ahead continues where the player's buffer ends.
+            let usenetAheadSeconds = Self.usenetBufferedAheadSeconds(
+                UsenetEngineManager.shared, playbackURL: activeStreamURL
+            )
+            let effectiveBuffered = min(
+                latestTime.duration,
+                max(engineBufferedSeconds + usenetAheadSeconds, diskCachedBufferedPosition)
+            )
             if clock.buffered != effectiveBuffered { clock.buffered = effectiveBuffered }
 
             if diskCachePollTask == nil, latestTime.duration > 0 {
