@@ -10,6 +10,7 @@ extension SettingsKey {
     static let kitsuScrobble = "nuvio.tv.settings.integrations.kitsuScrobble"
     static let kitsuDetailsButton = "nuvio.tv.settings.integrations.kitsuDetailsButton"
     static let kitsuFindInMenu = "nuvio.tv.settings.integrations.kitsuFindInMenu"
+    static let kitsuScore = "nuvio.tv.settings.integrations.kitsuScore"
 }
 
 /// Settings → Anime Integrations → Kitsu: Kitsu's catalogs, search and titles (`kitsu:ID`), built
@@ -29,6 +30,14 @@ enum KitsuSettings {
     static var scrobbles: Bool { isEnabled && flag(SettingsKey.kitsuScrobble) }
     static var showsDetailsButton: Bool { KitsuAccount.isLoggedIn && flag(SettingsKey.kitsuDetailsButton) }
     static var findsInMenu: Bool { isEnabled && flag(SettingsKey.kitsuFindInMenu) }
+
+    /// Kitsu's average score beside the others, for anime from Cinemeta, AniList and MyAnimeList
+    /// too. Works with Kitsu (and MyAnimeList) off; never switched, it follows Kitsu being on.
+    static var showsScore: Bool { showsScore(in: ProfileSettings.current) }
+
+    static func showsScore(in store: UserDefaults) -> Bool {
+        store.object(forKey: SettingsKey.kitsuScore) == nil ? isEnabled(in: store) : store.bool(forKey: SettingsKey.kitsuScore)
+    }
 
     private static func flag(_ key: String) -> Bool {
         let store = ProfileSettings.current
@@ -327,11 +336,13 @@ struct KitsuAttributes: Decodable, Sendable {
     var progress: Int?
     var ratingTwenty: Int?
     var slug: String?
+    /// A character's or person's MyAnimeList id.
+    var malId: Int?
 
     enum CodingKeys: String, CodingKey {
         case canonicalTitle, titles, abbreviatedTitles, synopsis, description, averageRating, startDate, endDate
         case subtype, status, posterImage, coverImage, image, episodeCount, episodeLength, youtubeVideoId
-        case ageRating, nsfw, name, canonicalName, names, title, role, locale, progress, ratingTwenty, slug
+        case ageRating, nsfw, name, canonicalName, names, title, role, locale, progress, ratingTwenty, slug, malId
     }
 
     init(from decoder: Decoder) throws {
@@ -368,6 +379,7 @@ struct KitsuAttributes: Decodable, Sendable {
         progress = value(.progress)
         ratingTwenty = value(.ratingTwenty)
         slug = value(.slug)
+        malId = value(.malId)
     }
 }
 
@@ -584,9 +596,11 @@ enum KitsuSource {
 
     // MARK: Cast and recommendations
 
-    /// Characters with their Japanese voice actors from Kitsu, and MyAnimeList's
-    /// recommendations (Kitsu has none) as Kitsu titles, through the offline tables.
+    /// Characters with their Japanese voice actors from Kitsu (with MyAnimeList's pictures of
+    /// them), and MyAnimeList's recommendations (Kitsu has none) as Kitsu titles, through the
+    /// offline tables.
     static func extras(entryID id: Int, language: AniListSettings.TitleLanguage) async -> (people: [TmdbPersonMetadata], recommendations: [RelatedTitle]) {
+        async let pictures = malPictures(kitsuEntry: id)
         let data = try? await AniListClient.$isInteractive.withValue(true) {
             try await KitsuClient.shared.get(
                 "anime/\(id)/characters",
@@ -594,13 +608,54 @@ enum KitsuSource {
                 ttl: peopleTTL
             )
         }
-        let cast = data.flatMap(document).map(people(from:)) ?? []
+        let malFound = await pictures
+        let cast = data.flatMap { Self.document($0) }.map { people(from: $0, malPictures: malFound) } ?? []
         return (cast, await recommendations(entryID: id))
     }
 
+    /// MyAnimeList's pictures of a title's characters and voice actors, by their MAL ids.
+    struct MALPictures: Sendable {
+        var characters: [Int: String] = [:]
+        var people: [Int: String] = [:]
+    }
+
+    /// The pictures of the cast of the MAL entry a Kitsu entry maps to (one request, kept a day):
+    /// Kitsu's own are often missing (a blank figure) or pale, MAL's are the ones AniList and MAL
+    /// titles show.
+    static func malPictures(kitsuEntry id: Int) async -> MALPictures {
+        let maps = AniListOfflineMaps.shared
+        guard let aniList = await maps.aniListID(kitsu: id),
+              let mal = await maps.entry(aniListID: aniList)?.mal, mal > 0,
+              let data = try? await AniListClient.$isInteractive.withValue(true, operation: {
+                  try await TenraiClient.shared.get("anime/\(mal)/characters", ttl: MALSource.peopleTTL)
+              }) else { return MALPictures() }
+        return malPictures(from: data)
+    }
+
+    static func malPictures(from data: Data) -> MALPictures {
+        let roles = (try? MALSource.decoder.decode(TenraiMany<TenraiCharacterRole>.self, from: data).data) ?? []
+        func real(_ images: TenraiImages?) -> String? {
+            // MAL's "no picture" stand-ins.
+            guard let url = MALSource.picture(images), !url.contains("questionmark"), !url.contains("apple-touch-icon") else { return nil }
+            return url
+        }
+        var pictures = MALPictures()
+        for role in roles {
+            if let character = role.character, let url = real(character.images) {
+                pictures.characters[character.malId] = url
+            }
+            for actor in role.voiceActors ?? [] {
+                if let person = actor.person, let url = real(person.images) {
+                    pictures.people[person.malId] = url
+                }
+            }
+        }
+        return pictures
+    }
+
     /// The cast of `anime/{id}/characters`: main characters first, each with their Japanese
-    /// voice actor, whose Kitsu page the card opens.
-    static func people(from document: KitsuDocument) -> [TmdbPersonMetadata] {
+    /// voice actor, whose Kitsu page the card opens; MyAnimeList's pictures where it has them.
+    static func people(from document: KitsuDocument, malPictures: MALPictures = MALPictures()) -> [TmdbPersonMetadata] {
         let lookup = document.lookup
         let roles = document.data.filter { $0.type == "mediaCharacters" }
         let ordered = roles.filter { $0.attributes?.role == "main" } + roles.filter { $0.attributes?.role != "main" }
@@ -611,14 +666,16 @@ enum KitsuSource {
             let voice = voices.first { $0.attributes?.locale == "ja_jp" } ?? voices.first
             let actor = lookup.related(voice, "person").first
             let actorName = actor?.attributes?.name
+            let characterPicture = character.attributes?.malId.flatMap { malPictures.characters[$0] }
+            let actorPicture = actor?.attributes?.malId.flatMap { malPictures.people[$0] }
             var person = TmdbPersonMetadata(
                 name: name,
                 role: actorName ?? (role.attributes?.role == "main" ? "Main" : "Supporting"),
-                profileURL: picture(character.attributes?.image),
+                profileURL: characterPicture ?? picture(character.attributes?.image),
                 tmdbId: nil,
                 aniListCharacterID: Int(character.id),
                 aniListStaffID: actorName == nil ? nil : actor.flatMap { Int($0.id) },
-                aniListStaffImage: picture(actor?.attributes?.image)
+                aniListStaffImage: actorPicture ?? picture(actor?.attributes?.image)
             )
             person.peopleSource = AnimeSource.kitsu.rawValue
             return person

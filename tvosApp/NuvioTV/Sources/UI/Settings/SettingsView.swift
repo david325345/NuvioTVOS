@@ -483,7 +483,7 @@ enum SettingsKey {
         aniListClientID, aniListScrobble, aniListScrobbleCinemeta, aniListListRows, aniListOtherAddons, aniListCatalogs,
         malEnabled, malClientID, malEpisodeRatings, malScrobble, malAdult, malCatalogs, malDetailsButton, aniListDetailsButton, malPlusStatus, aniListPlusStatus, malSeriesScore, aniListScore,
         malTitles, malSearch, aniListFindInMenu, malFindInMenu,
-        kitsuEnabled, kitsuCatalogs, kitsuSearch, kitsuAdult, kitsuScrobble, kitsuDetailsButton, kitsuFindInMenu,
+        kitsuEnabled, kitsuCatalogs, kitsuSearch, kitsuAdult, kitsuScrobble, kitsuDetailsButton, kitsuFindInMenu, kitsuScore,
         mdbListEnabled, mdbListApiKey, mdbListUseImdb, mdbListUseTmdb,
         mdbListUseTomatoes, mdbListUseMetacritic, mdbListUseTrakt,
         mdbListUseLetterboxd, mdbListUseAudience,
@@ -6799,6 +6799,7 @@ private struct KitsuOptionsSheet: View {
     @AppStorage(SettingsKey.kitsuScrobble) private var scrobble = true
     @AppStorage(SettingsKey.kitsuDetailsButton) private var detailsButton = true
     @AppStorage(SettingsKey.kitsuFindInMenu) private var findInMenu = true
+    @AppStorage(SettingsKey.kitsuScore) private var kitsuScoreSetting: Bool?
     @AppStorage(SettingsKey.aniListOtherAddons) private var convertsIDs = true
     @AppStorage(SettingsKey.aniListTitleLanguage) private var titleLanguage = AniListSettings.TitleLanguage.romaji.rawValue
     @AppStorage(SettingsKey.aniListSeasonMode) private var seasonMode = AniListSettings.SeasonMode.merged.rawValue
@@ -6842,6 +6843,16 @@ private struct KitsuOptionsSheet: View {
                             title: L10n.string("settings_kitsu_enable", fallback: "Enable Kitsu"),
                             subtitle: L10n.string("settings_kitsu_enable_subtitle", fallback: "Kitsu catalogs, search and titles (kitsu:ID)"),
                             isOn: $enabled,
+                            accentColor: accentColor
+                        )
+
+                        SettingsToggleRow(
+                            title: L10n.string("settings_kitsu_score", fallback: "Kitsu Score"),
+                            subtitle: L10n.string(
+                                "settings_kitsu_score_subtitle",
+                                fallback: "Kitsu's average score beside the other ratings, for anime from Cinemeta, AniList and MyAnimeList too. Works with Kitsu off; order it in Rating Providers & Order"
+                            ),
+                            isOn: Binding(get: { kitsuScoreSetting ?? enabled }, set: { kitsuScoreSetting = $0 }),
                             accentColor: accentColor
                         )
                     }
@@ -8733,7 +8744,7 @@ private struct MdbListOptionsSheet: View {
                                 RatingProviderOrderRow(
                                     item: item,
                                     accentColor: accentColor,
-                                    canToggle: item.isAddon || item.id == AniListMetaBuilder.ratingSource ? true : mdbListControlsEnabled,
+                                    canToggle: item.isAddon || item.id == AniListMetaBuilder.ratingSource || item.id == AniListMetaBuilder.kitsuRatingSource ? true : mdbListControlsEnabled,
                                     canMoveUp: index > 0,
                                     canMoveDown: index < ratingProviderRows.count - 1,
                                     onToggle: { toggleProvider(item) },
@@ -8837,6 +8848,19 @@ private struct MdbListOptionsSheet: View {
             )
         }
 
+        // Kitsu's own score (Settings → Kitsu → Kitsu Score), like AniList's.
+        do {
+            items.append(
+                RatingProviderRowItem(
+                    id: AniListMetaBuilder.kitsuRatingSource,
+                    title: "Kitsu",
+                    subtitle: L10n.string("settings_rating_provider_kitsu_subtitle", fallback: "Kitsu average score"),
+                    isAddon: false,
+                    isEnabled: AddonRatingsService.isSourceEnabled(AniListMetaBuilder.kitsuRatingSource)
+                )
+            )
+        }
+
         for source in addonRatingSources {
             items.append(
                 RatingProviderRowItem(
@@ -8857,9 +8881,9 @@ private struct MdbListOptionsSheet: View {
         if let idx = ratingProviderRows.firstIndex(where: { $0.id == item.id }) {
             ratingProviderRows[idx].isEnabled = newEnabled
         }
-        if item.isAddon || item.id == AniListMetaBuilder.ratingSource {
+        if item.isAddon || item.id == AniListMetaBuilder.ratingSource || item.id == AniListMetaBuilder.kitsuRatingSource {
             AddonRatingsService.setSourceEnabled(item.id, enabled: newEnabled)
-            if item.id == AniListMetaBuilder.ratingSource {
+            if item.id == AniListMetaBuilder.ratingSource || item.id == AniListMetaBuilder.kitsuRatingSource {
                 // Shown rows filter it out; let them redraw.
                 NotificationCenter.default.post(name: AddonRatingsService.ratingOrderChangedNotification, object: nil)
             }

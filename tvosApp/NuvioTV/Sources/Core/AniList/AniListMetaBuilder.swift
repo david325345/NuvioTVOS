@@ -194,15 +194,7 @@ enum AniListMetaBuilder {
 
     static func rating(_ media: AniListMedia) -> NuvioExternalRating? {
         if AnimeSource.current == .kitsu {
-            guard let score = media.averageScore, score > 0 else { return nil }
-            return NuvioExternalRating(
-                source: kitsuRatingSource,
-                value: Double(score),
-                url: "https://kitsu.app/anime/\(media.id)",
-                name: "Kitsu",
-                iconUrl: nil,
-                max: 100
-            )
+            return kitsuRating(entry: media.id, score: media.averageScore)
         }
         if AnimeSource.current == .mal {
             // MyAnimeList's own score, where the other ratings show MAL's.
@@ -220,6 +212,19 @@ enum AniListMetaBuilder {
             url: "https://anilist.co/anime/\(media.id)",
             name: "AniList",
             iconUrl: ratingIcon,
+            max: 100
+        )
+    }
+
+    /// Kitsu's score of a Kitsu entry (0–100), with Kitsu's logo.
+    static func kitsuRating(entry: Int, score: Int?) -> NuvioExternalRating? {
+        guard let score, score > 0 else { return nil }
+        return NuvioExternalRating(
+            source: kitsuRatingSource,
+            value: Double(score),
+            url: "https://kitsu.app/anime/\(entry)",
+            name: "Kitsu",
+            iconUrl: nil,
             max: 100
         )
     }
