@@ -3803,6 +3803,8 @@ struct TitleActionsMenuContent: View {
                 Label(L10n.string("action_go_to_details", fallback: "Go to details"), systemImage: "info.circle")
             }
 
+            animeFindButtons
+
             if let onPlayManually {
                 Button {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.30) {
