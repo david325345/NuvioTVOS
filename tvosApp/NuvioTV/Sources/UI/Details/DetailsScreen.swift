@@ -4493,7 +4493,7 @@ struct TvDetailsContent: View {
         TvDetailsKitsuMenus(
             title: aniListTarget?.label ?? meta.name,
             entryID: aniListTarget?.entryID,
-            kitsuEntry: aniListTarget?.kitsuID,
+            kitsuEntry: aniListTarget?.kitsuID ?? (AnimeSource.isKitsuTitle(meta.id) ? AnimeSource.kitsuID(from: meta.id) : nil),
             kitsuID: $kitsuID,
             entry: $kitsuEntry,
             showingMenu: $showingKitsuMenu,
@@ -6910,7 +6910,7 @@ private struct TvDetailsAniListMenus: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .task(id: "\(meta.id)|\(episode?.id ?? "")|\(AniListAccount.login?.viewerID ?? 0)|\(MALAccount.login?.userName ?? "")") {
+            .task(id: "\(meta.id)|\(episode?.id ?? "")|\(AniListAccount.login?.viewerID ?? 0)|\(MALAccount.login?.userName ?? "")|\(KitsuAccount.login?.userName ?? "")") {
                 target = await Self.findTarget(meta: meta, episode: episode)
                 if AniListAccount.isLoggedIn, let target, target.hasAniListEntry, !AniListAccount.hasAsked(target.entryID) {
                     await AniListAccount.refreshStates(ids: [target.entryID])
@@ -6984,7 +6984,7 @@ private struct TvDetailsAniListMenus: ViewModifier {
     /// The AniList entry and episode of the play target: an AniList title's own, a Cinemeta
     /// anime's as AniList knows it, an AniList series' first entry before any episode.
     private static func findTarget(meta: NuvioMeta, episode: NuvioVideo?) async -> AniListScrobbler.Target? {
-        guard AniListAccount.isLoggedIn || MALAccount.isLoggedIn else { return nil }
+        guard AniListAccount.isLoggedIn || MALAccount.isLoggedIn || KitsuAccount.isLoggedIn else { return nil }
         if let found = await AniListScrobbler.target(meta: meta, video: episode, season: episode?.season, episode: episode?.episode) {
             return found
         }
