@@ -808,9 +808,8 @@ class DetailsViewModel: ObservableObject {
                     Task { @MainActor [weak self] in
                         await MALSource.fillRelatedPictures(metaID: meta.id, entryIDs: entryIDs) { [weak self] in
                             guard let self, self.isCurrentRequest(metaId: meta.id, generation: generation) else { return }
-                            // Drawn again: the row reads the pictures as it is drawn.
-                            let shown = self.uiState.moreLikeThis
-                            self.uiState.moreLikeThis = shown
+                            // A real change of the state: the row reads the pictures as it is drawn.
+                            self.uiState.relatedPicturesRevision &+= 1
                         }
                     }
                 }

@@ -5068,7 +5068,9 @@ struct TvDetailsContent: View {
             if !relatedRowsAreEmpty(meta: meta) {
                 VStack(alignment: .leading, spacing: 34) {
                     // Settings → Integrations → AniList: the title's OVAs, films and other
-                    // relations, above AniList's recommendations.
+                    // relations, above AniList's recommendations (drawn again as MyAnimeList's
+                    // pictures come in).
+                    let _ = uiState.relatedPicturesRevision
                     if !AniListTitleIndex.related(metaID: meta.id).isEmpty {
                         relatedTitlesRow(
                             title: L10n.string("details_anilist_related", fallback: "Related"),
