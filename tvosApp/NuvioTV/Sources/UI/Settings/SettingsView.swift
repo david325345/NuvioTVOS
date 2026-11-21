@@ -6766,6 +6766,7 @@ private struct MALOptionsSheet: View {
     @AppStorage(SettingsKey.malPlusStatus) private var plusStatus = MALSettings.PlusStatus.planToWatch.rawValue
     @AppStorage(SettingsKey.malTitles) private var malTitles = true
     @AppStorage(SettingsKey.malSearch) private var malSearch = true
+    @AppStorage(SettingsKey.aniListOtherAddons) private var convertsIDs = true
     @AppStorage(SettingsKey.aniListTitleLanguage) private var titleLanguage = AniListSettings.TitleLanguage.romaji.rawValue
     @AppStorage(SettingsKey.aniListSeasonMode) private var seasonMode = AniListSettings.SeasonMode.merged.rawValue
     @AppStorage(SettingsKey.aniListEpisodeDetails) private var episodeDetails = true
@@ -6875,6 +6876,27 @@ private struct MALOptionsSheet: View {
                 accentColor: accentColor,
                 isAvailable: malTitles
             )
+
+            SettingsToggleRow(
+                title: L10n.string("settings_anilist_convert_ids", fallback: "Convert IDs for Other Add-ons"),
+                subtitle: L10n.string(
+                    "settings_mal_convert_ids_subtitle",
+                    fallback: "Add-ons without mal ids get anilist:ID:episode, kitsu:ID:episode, or the IMDb id with TheTVDB's season and episode. An episode that can't be placed isn't asked by IMDb. Shared with AniList"
+                ),
+                isOn: $convertsIDs,
+                accentColor: accentColor,
+                isAvailable: malTitles
+            )
+
+            SettingsHelpText(
+                title: L10n.string("settings_mal_ids_title", fallback: "MAL IDs or Converted IDs?"),
+                paragraphs: [
+                    L10n.string("settings_mal_ids_1", fallback: "**Add-ons that take mal: ids get exactly what you opened.** Every season, part, OVA and movie has its own MAL entry, and episodes are numbered the way MAL numbers them, so nothing has to be guessed."),
+                    L10n.string("settings_mal_ids_2", fallback: "**Converted ids are for add-ons that don't know MAL.** They get the AniList entry the MAL entry maps to, then a Kitsu, AniDB, IMDb or TMDB id with season and episode, from the offline tables. That can miss brand-new seasons or number split seasons differently. An episode that can't be placed isn't asked at all rather than asked wrong."),
+                    L10n.string("settings_mal_ids_3", fallback: "**Recommended:** prefer add-ons that take mal: or anilist: ids, and keep conversion on for the rest.")
+                ]
+            )
+            .opacity(malTitles ? 1 : 0.46)
 
             SettingsChoiceRow(
                 title: L10n.string("settings_anilist_title_language", fallback: "Title Language"),
