@@ -7233,7 +7233,7 @@ private struct MALOptionsSheet: View {
 
             SettingsToggleRow(
                 title: L10n.string("settings_mal_search", fallback: "Search MAL"),
-                subtitle: L10n.string("settings_mal_search_subtitle", fallback: "Anime from MyAnimeList among the search results (with AniList on, those AniList didn't find)"),
+                subtitle: L10n.string("settings_mal_search_subtitle", fallback: "Anime from MyAnimeList among the search results"),
                 isOn: $malSearch,
                 accentColor: accentColor,
                 isAvailable: malTitles

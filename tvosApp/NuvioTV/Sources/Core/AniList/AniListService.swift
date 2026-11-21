@@ -321,36 +321,31 @@ enum AniListService {
         }
     }
 
-    /// AniList's results, then MyAnimeList's (MAL Titles and Search MAL on) that AniList didn't
-    /// find too.
+    /// AniList's results, then all of MyAnimeList's (MAL Titles and Search MAL on) and all of
+    /// Kitsu's (Search Kitsu on): each source shows every title it finds, also one another source
+    /// found too.
     static func search(_ query: String) async -> SearchResult {
         async let mal = MALSource.search(query)
         async let kitsu = KitsuSource.search(query)
         let aniList = await searchAniList(query)
         let fromMAL = await mal
         let fromKitsu = await kitsu
-        guard !fromMAL.items.isEmpty || fromMAL.failed || !fromKitsu.items.isEmpty || fromKitsu.failed else { return aniList.result }
-        let known = aniList.malIDs
-        let extra = fromMAL.items.filter { item in
-            guard let id = AnimeSource.malID(from: item.id) else { return true }
-            return !known.contains(id)
-        }
         return SearchResult(
-            items: aniList.result.items + extra + fromKitsu.items,
-            names: aniList.result.names + fromMAL.names + fromKitsu.names,
-            failed: aniList.result.failed || fromMAL.failed || fromKitsu.failed
+            items: aniList.items + fromMAL.items + fromKitsu.items,
+            names: aniList.names + fromMAL.names + fromKitsu.names,
+            failed: aniList.failed || fromMAL.failed || fromKitsu.failed
         )
     }
 
-    /// AniList's results, with the MAL ids of what they found.
-    private static func searchAniList(_ query: String) async -> (result: SearchResult, malIDs: Set<Int>) {
-        guard AniListSettings.isEnabled else { return (.empty, []) }
+    /// AniList's results.
+    private static func searchAniList(_ query: String) async -> SearchResult {
+        guard AniListSettings.isEnabled else { return .empty }
         guard AniListSettings.searchesAniList else {
             AniListDiagnostics.note(.search, "Off: Search AniList is off")
-            return (.empty, [])
+            return .empty
         }
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return (.empty, []) }
+        guard !trimmed.isEmpty else { return .empty }
         let quoted = "“\(trimmed)”"
         let answer: AniListClient.Answer
         do {
@@ -364,7 +359,7 @@ enum AniListService {
             }
         } catch {
             AniListDiagnostics.note(.search, "\(quoted): failed: \(AniListDiagnostics.describe(error))")
-            return (.failure, [])
+            return .failure
         }
         let media: [AniListMedia]
         do {
@@ -372,7 +367,7 @@ enum AniListService {
         } catch {
             await AniListClient.shared.noteFailure("Unreadable search answer: \(error)")
             AniListDiagnostics.note(.search, "\(quoted): unreadable answer · \(AniListDiagnostics.source(answer))")
-            return (.failure, [])
+            return .failure
         }
         let films = media.filter(AniListMetaBuilder.isMovie).count
         AniListDiagnostics.note(
@@ -388,10 +383,7 @@ enum AniListService {
                 if !key.isEmpty { names.append((name: key, year: year)) }
             }
         }
-        return (
-            SearchResult(items: media.map { AniListMetaBuilder.card($0, language: language) }, names: names),
-            Set(media.compactMap(\.idMal))
-        )
+        return SearchResult(items: media.map { AniListMetaBuilder.card($0, language: language) }, names: names)
     }
 
     static func matchKey(_ name: String) -> String {
