@@ -78,4 +78,5 @@ jobs:
             -only-testing:NuvioTVTests/MALTests \
             -only-testing:NuvioTVTests/MALSourceTests \
             -only-testing:NuvioTVTests/KitsuSourceTests \
-            -only-testing:NuvioTVTests/AnimeReviewsTests
+            -only-testing:NuvioTVTests/AnimeReviewsTests \
+            -only-testing:NuvioTVTests/MdbListScrobbleTests/testPreservingEnrichmentKeepsShownRatingsBesideTheTitlesOwnScore
