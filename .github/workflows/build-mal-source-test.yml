@@ -76,4 +76,5 @@ jobs:
             -only-testing:NuvioTVTests/AniListSeasonChainTests \
             -only-testing:NuvioTVTests/AniListRequestPriorityTests \
             -only-testing:NuvioTVTests/MALTests \
-            -only-testing:NuvioTVTests/MALSourceTests
+            -only-testing:NuvioTVTests/MALSourceTests \
+            -only-testing:NuvioTVTests/KitsuSourceTests
