@@ -82,4 +82,6 @@ jobs:
             -only-testing:NuvioTVTests/MdbListScrobbleTests/testPreservingEnrichmentKeepsShownRatingsBesideTheTitlesOwnScore \
             -only-testing:NuvioTVTests/PlaybackBackendPolicyTests/testAddonSubtitleOfAHigherRankedLanguageReplacesAnAutomaticChoice \
             -only-testing:NuvioTVTests/PlaybackBackendPolicyTests/testLateAddonCzechReplacesTheFilesEnglishButNotAManualChoice \
-            -only-testing:NuvioTVTests/UsenetSourceTests
+            -only-testing:NuvioTVTests/UsenetSourceTests \
+            -only-testing:NuvioTVTests/PlaybackBackendPolicyTests/testMPVBufferedBarEndsWhereTheCacheReaches \
+            -only-testing:NuvioTVTests/PlayerControlsSettingsTests/testLateExternalSubtitlesSelectPreferredEmbeddedLanguageWithOrderedFallback
