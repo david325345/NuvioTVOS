@@ -3937,13 +3937,17 @@ class PlayerViewModel: ObservableObject {
                 item: trackingAddonItem, currentTime: latestTime.current, duration: latestTime.duration
             )
             let engineBufferedSeconds = Double(c.bufferedMs) / 1000.0
-            // A Usenet stream's own read-ahead continues where the player's buffer ends.
+            // A Usenet stream's own read-ahead continues where the player's buffer ends (at
+            // the playhead while a seek empties that buffer).
             let usenetAheadSeconds = Self.usenetBufferedAheadSeconds(
                 UsenetEngineManager.shared, playbackURL: activeStreamURL
             )
+            let playerBuffered = usenetAheadSeconds > 0
+                ? max(engineBufferedSeconds, latestTime.current) + usenetAheadSeconds
+                : engineBufferedSeconds
             let effectiveBuffered = min(
                 latestTime.duration,
-                max(engineBufferedSeconds + usenetAheadSeconds, diskCachedBufferedPosition)
+                max(playerBuffered, diskCachedBufferedPosition)
             )
             if clock.buffered != effectiveBuffered { clock.buffered = effectiveBuffered }
 

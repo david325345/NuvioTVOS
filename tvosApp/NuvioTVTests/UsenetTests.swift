@@ -744,21 +744,14 @@ final class UsenetSourceTests: XCTestCase {
         XCTAssertEqual(UsenetStreamSession.priority(of: 58, playhead: 10, next: 47), .readAhead)
     }
 
-    func testDiskReadAheadReachesSecondsOfVideoWithinItsBudget() {
+    func testDiskReadAheadReachesMostOfItsBudget() {
         let part: Int64 = 716_800
-        // Unknown bitrate or off: the memory read-ahead.
-        XCTAssertEqual(UsenetStreamSession.diskAheadSegments(
-            bytesPerSecond: nil, partSize: part, seconds: 120, budgetBytes: 4 << 30, memory: 107), 107)
-        XCTAssertEqual(UsenetStreamSession.diskAheadSegments(
-            bytesPerSecond: 4.4e6, partSize: part, seconds: 0, budgetBytes: 4 << 30, memory: 107), 107)
-        // A 35 Mbit/s Blu-ray remux: two minutes ≈ 737 articles (528 MB).
-        XCTAssertEqual(UsenetStreamSession.diskAheadSegments(
-            bytesPerSecond: 4.4e6, partSize: part, seconds: 120, budgetBytes: 4 << 30, memory: 107), 737)
-        // A small budget keeps a fifth for what was played; never under the memory read-ahead.
-        XCTAssertEqual(UsenetStreamSession.diskAheadSegments(
-            bytesPerSecond: 4.4e6, partSize: part, seconds: 120, budgetBytes: 300 << 20, memory: 107), 351)
-        XCTAssertEqual(UsenetStreamSession.diskAheadSegments(
-            bytesPerSecond: 4.4e6, partSize: part, seconds: 120, budgetBytes: 50 << 20, memory: 107), 107)
+        // 1 GB: 80 % reads ahead, about 1200 articles (about 3 minutes of a 35 Mbit/s remux).
+        XCTAssertEqual(UsenetStreamSession.diskAheadSegments(partSize: part, budgetBytes: 1 << 30, memory: 107), 1198)
+        // 2 GB: twice that.
+        XCTAssertEqual(UsenetStreamSession.diskAheadSegments(partSize: part, budgetBytes: 2 << 30, memory: 107), 2396)
+        // Never under the memory read-ahead.
+        XCTAssertEqual(UsenetStreamSession.diskAheadSegments(partSize: part, budgetBytes: 50 << 20, memory: 107), 107)
     }
 
     func testDiskEvictionsDropTheFarthestBehindFirst() {
@@ -803,28 +796,31 @@ final class UsenetSourceTests: XCTestCase {
 
     func testDiskReadAheadNeedsTheSettingAndRoom() throws {
         let gib: Int64 = 1 << 30
-        XCTAssertEqual(UsenetDiskReadAhead.budgetBytes(freeSpace: -1), UsenetDiskReadAhead.maxBytes)
-        XCTAssertEqual(UsenetDiskReadAhead.budgetBytes(freeSpace: 3 * gib), gib)
-        XCTAssertEqual(UsenetDiskReadAhead.budgetBytes(freeSpace: 50 * gib), UsenetDiskReadAhead.maxBytes)
+        XCTAssertEqual(UsenetDiskReadAhead.budgetBytes(size: 2 * gib, freeSpace: -1), 2 * gib)
+        XCTAssertEqual(UsenetDiskReadAhead.budgetBytes(size: 2 * gib, freeSpace: 3 * gib), gib)
+        XCTAssertEqual(UsenetDiskReadAhead.budgetBytes(size: 2 * gib, freeSpace: 50 * gib), 2 * gib)
+        XCTAssertEqual(UsenetDiskReadAhead.budgetBytes(size: 64 * gib, freeSpace: 500 * gib), UsenetDiskReadAhead.maxBytes)
 
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("usenet-disk-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
-        XCTAssertNil(UsenetDiskReadAhead.make(seconds: 0, root: root, freeSpace: 50 * gib))
-        XCTAssertNil(UsenetDiskReadAhead.make(seconds: 120, root: root, freeSpace: 2 * gib + 100 << 20))
-        let readAhead = try XCTUnwrap(UsenetDiskReadAhead.make(seconds: 120, root: root, freeSpace: 10 * gib))
-        XCTAssertEqual(readAhead.seconds, 120)
-        XCTAssertEqual(readAhead.budgetBytes, UsenetDiskReadAhead.maxBytes)
+        XCTAssertNil(UsenetDiskReadAhead.make(sizeBytes: nil, root: root, freeSpace: 50 * gib))
+        XCTAssertNil(UsenetDiskReadAhead.make(sizeBytes: 2 * gib, root: root, freeSpace: 2 * gib + 100 << 20))
+        let readAhead = try XCTUnwrap(UsenetDiskReadAhead.make(sizeBytes: 2 * gib, root: root, freeSpace: 10 * gib))
+        XCTAssertEqual(readAhead.budgetBytes, 2 * gib)
     }
 
     func testDiskReadAheadSetting() {
         let store = UserDefaults(suiteName: "usenet-disk-\(UUID().uuidString)")!
-        XCTAssertEqual(UsenetSettings.diskReadAheadSeconds(store: store), 120)
-        UsenetSettings.setDiskReadAheadSeconds(300, store: store)
-        XCTAssertEqual(UsenetSettings.diskReadAheadSeconds(store: store), 300)
-        UsenetSettings.setDiskReadAheadSeconds(0, store: store)
-        XCTAssertEqual(UsenetSettings.diskReadAheadSeconds(store: store), 0)
-        UsenetSettings.setDiskReadAheadSeconds(45, store: store)
-        XCTAssertEqual(UsenetSettings.diskReadAheadSeconds(store: store), 120)
+        // On with 1 GB unless changed.
+        XCTAssertTrue(UsenetSettings.diskReadAhead(store: store))
+        XCTAssertEqual(UsenetSettings.diskReadAheadSizeMB(store: store), 1024)
+        XCTAssertEqual(UsenetSettings.diskReadAheadBytes(store: store), 1 << 30)
+        UsenetSettings.setDiskReadAheadSizeMB(4096, store: store)
+        XCTAssertEqual(UsenetSettings.diskReadAheadBytes(store: store), 4 << 30)
+        UsenetSettings.setDiskReadAheadSizeMB(3000, store: store)
+        XCTAssertEqual(UsenetSettings.diskReadAheadSizeMB(store: store), 1024)
+        UsenetSettings.setDiskReadAhead(false, store: store)
+        XCTAssertNil(UsenetSettings.diskReadAheadBytes(store: store))
     }
 
     func testUsenetStreamURLsAreNotTakenForTheLocalCache() {

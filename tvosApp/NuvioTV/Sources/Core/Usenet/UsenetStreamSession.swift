@@ -166,9 +166,9 @@ actor UsenetStreamSession {
     /// Bytes of video per second, once the player knows the duration.
     private var bytesPerSecond: Double?
 
-    /// Read Ahead on Disk: the read-ahead reaches its seconds of video past the memory one,
+    /// Read Ahead on Disk: the read-ahead reaches most of its budget past the memory one,
     /// and every article fetched stays on disk until the stream stops (the ones farthest
-    /// behind the playhead go first when its budget is full), so a seek into what was
+    /// behind the playhead go first when the budget is full), so a seek into what was
     /// downloaded doesn't download it again.
     private let diskReadAhead: UsenetDiskReadAhead?
     /// Articles on disk and their sizes.
@@ -553,6 +553,7 @@ actor UsenetStreamSession {
     private func lostOnDisk(_ index: Int) -> (task: Task<Data, Error>, started: Bool) {
         diskLoads[index] = nil
         if let bytes = onDisk.removeValue(forKey: index) { diskBytes -= Int64(bytes) }
+        rescan(from: index)
         if let task = inflight[index] { return (task, false) }
         return (startFetch(index, priority: .playback), true)
     }
@@ -702,27 +703,34 @@ actor UsenetStreamSession {
         return max(4, profile.readAheadBytes / max(1, part))
     }
 
-    /// How far the read-ahead reaches: the memory one, or with Read Ahead on Disk its
-    /// seconds of video once the player knows the duration, within the disk budget.
+    /// How far the read-ahead reaches: the memory one, or with Read Ahead on Disk the share
+    /// of its budget for reading ahead.
     private var aheadSegments: Int {
         guard diskActive, let diskReadAhead else { return readAheadSegments }
         return Self.diskAheadSegments(
-            bytesPerSecond: bytesPerSecond,
             partSize: layouts.first?.partSize ?? 716_800,
-            seconds: diskReadAhead.seconds,
             budgetBytes: diskReadAhead.budgetBytes,
             memory: readAheadSegments
         )
     }
 
-    static func diskAheadSegments(bytesPerSecond: Double?, partSize: Int64, seconds: Int,
-                                  budgetBytes: Int64, memory: Int) -> Int {
-        guard let bytesPerSecond, bytesPerSecond > 0, seconds > 0 else { return memory }
-        let part = Double(max(1, partSize))
-        let wanted = Int((bytesPerSecond * Double(seconds) / part).rounded(.up))
-        // Leave a fifth of the budget for what was already played.
-        let fits = Int(Double(budgetBytes) * 0.8 / part)
-        return max(memory, min(wanted, fits))
+    static func diskAheadSegments(partSize: Int64, budgetBytes: Int64, memory: Int) -> Int {
+        let fits = Int(Double(budgetBytes) * UsenetDiskReadAhead.aheadShare / Double(max(1, partSize)))
+        return max(memory, fits)
+    }
+
+    /// The read-ahead scan starts here: every article between the playhead and it is in
+    /// memory, on disk or on its way, so a disk read-ahead of thousands of articles isn't
+    /// walked again for every article read. Whatever may open a gap moves it back.
+    private var scanFrom = 0
+
+    private func have(_ index: Int) -> Bool {
+        cache[index] != nil || inflight[index] != nil || writing[index] != nil
+            || onDisk[index] != nil || diskLoads[index] != nil
+    }
+
+    private func rescan(from index: Int) {
+        scanFrom = min(scanFrom, index)
     }
 
     /// Prefetch slots: all connections but one, so a demand read after a seek
@@ -759,6 +767,7 @@ actor UsenetStreamSession {
         guard index != playhead || jumped else { return }
         playhead = index
         if jumped {
+            scanFrom = 0
             // A seek: read-ahead for the old position is no longer useful.
             let window = index...(index + aheadSegments)
             for (pending, task) in inflight where prefetching.contains(pending) && !window.contains(pending) {
@@ -784,17 +793,21 @@ actor UsenetStreamSession {
     private func prefetch(after index: Int) {
         let last = min(articleCount - 1, index + aheadSegments)
         guard index + 1 <= last else { return }
-        let memoryLast = index + readAheadSegments
-        for next in (index + 1)...last {
-            // What the disk holds of the memory read-ahead comes back into memory before
-            // the player asks for it.
-            if next <= memoryLast, cache[next] == nil, onDisk[next] != nil {
-                loadFromDisk(next)
-                continue
-            }
-            guard prefetching.count < prefetchSlots else { return }
-            startPrefetch(next)
+        // What the disk holds of the memory read-ahead comes back into memory before the
+        // player asks for it.
+        let memoryLast = min(last, index + readAheadSegments)
+        for next in (index + 1)...memoryLast where cache[next] == nil && onDisk[next] != nil {
+            loadFromDisk(next)
         }
+        var next = max(index + 1, scanFrom)
+        while next <= last {
+            if !have(next) {
+                guard prefetching.count < prefetchSlots else { break }
+                startPrefetch(next)
+            }
+            next += 1
+        }
+        scanFrom = next
     }
 
     private func startPrefetch(_ index: Int) {
@@ -818,6 +831,7 @@ actor UsenetStreamSession {
         guard inflight[index] == task else { return }
         clearInflight(index)
         guard prefetching.remove(index) != nil else { return }
+        if !have(index) { rescan(from: index) }
         prefetch(after: playhead)
     }
 
@@ -831,6 +845,7 @@ actor UsenetStreamSession {
               let oldest = cacheOrder.first(where: { $0 != index && !pinned.contains($0) }) {
             cacheOrder.removeAll { $0 == oldest }
             cachedBytes -= cache.removeValue(forKey: oldest)?.count ?? 0
+            if oldest > playhead, !have(oldest) { rescan(from: oldest) }
         }
     }
 
@@ -857,6 +872,7 @@ actor UsenetStreamSession {
         guard let bytes else {
             usenetLog.error("usenet: an article couldn't be written to disk, reading ahead in memory only")
             diskFailed = true
+            rescan(from: index)
             return
         }
         if onDisk[index] == nil { diskBytes += Int64(bytes) }
@@ -871,6 +887,7 @@ actor UsenetStreamSession {
         guard !evicted.isEmpty else { return }
         for index in evicted {
             if let bytes = onDisk.removeValue(forKey: index) { diskBytes -= Int64(bytes) }
+            if index > playhead { rescan(from: index) }
         }
         let store = diskReadAhead.store
         Task { await store.remove(evicted) }

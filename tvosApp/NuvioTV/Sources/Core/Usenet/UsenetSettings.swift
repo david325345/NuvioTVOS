@@ -111,20 +111,35 @@ enum UsenetSettings {
         store.set(profile.rawValue, forKey: profileKey)
     }
 
+    /// Read Ahead on Disk: on by default; off keeps the read-ahead in memory only (the
+    /// performance profile's size).
     static let diskReadAheadKey = "nuvio.tv.settings.integrations.usenetDiskReadAhead"
-    /// How far ahead of playback the read-ahead reaches on disk, in seconds of video; 0 keeps
-    /// it in memory only (the performance profile's size).
-    static let diskReadAheadOptions = [0, 60, 120, 300]
-    static let defaultDiskReadAheadSeconds = 120
+    static let diskReadAheadSizeKey = "nuvio.tv.settings.integrations.usenetDiskReadAheadSize"
+    /// How much of the disk a stream may use, in MB: most of it for reading ahead, the rest
+    /// for what was played.
+    static let diskReadAheadSizeOptions = [512, 1024, 2048, 4096, 8192]
+    static let defaultDiskReadAheadSizeMB = 1024
 
-    static func diskReadAheadSeconds(store: UserDefaults = ProfileSettings.current) -> Int {
-        guard store.object(forKey: diskReadAheadKey) != nil else { return defaultDiskReadAheadSeconds }
-        let value = store.integer(forKey: diskReadAheadKey)
-        return diskReadAheadOptions.contains(value) ? value : defaultDiskReadAheadSeconds
+    static func diskReadAhead(store: UserDefaults = ProfileSettings.current) -> Bool {
+        store.object(forKey: diskReadAheadKey) == nil ? true : store.bool(forKey: diskReadAheadKey)
     }
 
-    static func setDiskReadAheadSeconds(_ value: Int, store: UserDefaults = ProfileSettings.current) {
-        store.set(diskReadAheadOptions.contains(value) ? value : defaultDiskReadAheadSeconds, forKey: diskReadAheadKey)
+    static func setDiskReadAhead(_ value: Bool, store: UserDefaults = ProfileSettings.current) {
+        store.set(value, forKey: diskReadAheadKey)
+    }
+
+    static func diskReadAheadSizeMB(store: UserDefaults = ProfileSettings.current) -> Int {
+        let value = store.integer(forKey: diskReadAheadSizeKey)
+        return diskReadAheadSizeOptions.contains(value) ? value : defaultDiskReadAheadSizeMB
+    }
+
+    static func setDiskReadAheadSizeMB(_ value: Int, store: UserDefaults = ProfileSettings.current) {
+        store.set(diskReadAheadSizeOptions.contains(value) ? value : defaultDiskReadAheadSizeMB, forKey: diskReadAheadSizeKey)
+    }
+
+    /// The disk a stream may use, nil with Read Ahead on Disk off.
+    static func diskReadAheadBytes(store: UserDefaults = ProfileSettings.current) -> Int64? {
+        diskReadAhead(store: store) ? Int64(diskReadAheadSizeMB(store: store)) << 20 : nil
     }
 
     /// When on, your own servers are used even if the add-on sends its own.

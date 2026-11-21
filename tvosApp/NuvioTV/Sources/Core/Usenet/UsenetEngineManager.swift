@@ -116,9 +116,9 @@ final class UsenetEngineManager: ObservableObject {
             guard UsenetHealthCheck.isPlayable(health) else { throw UsenetError.releaseIncomplete }
 
             // Off the main thread: it clears what an earlier stream left on disk.
-            let diskSeconds = UsenetSettings.diskReadAheadSeconds()
+            let diskBytes = UsenetSettings.diskReadAheadBytes()
             let diskReadAhead = await Task.detached(priority: .userInitiated) {
-                UsenetDiskReadAhead.make(seconds: diskSeconds)
+                UsenetDiskReadAhead.make(sizeBytes: diskBytes)
             }.value
             let session = UsenetStreamSession(
                 source: source, pool: pool, profile: UsenetSettings.profile(), diskReadAhead: diskReadAhead
@@ -279,7 +279,9 @@ final class UsenetEngineManager: ObservableObject {
                 stats.missingArticles = sessionStats.missingArticles
                 stats.cacheHitRate = lookups > 0 ? Double(sessionStats.cacheHits) / Double(lookups) : nil
                 if stats != self.activeStats { self.activeStats = stats }
-                try? await Task.sleep(for: .seconds(1))
+                // Twice a second: the seek bar draws the read-ahead from these, and a seek
+                // changes it at once.
+                try? await Task.sleep(for: .milliseconds(500))
             }
         }
     }

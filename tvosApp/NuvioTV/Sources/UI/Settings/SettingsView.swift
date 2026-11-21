@@ -24248,7 +24248,8 @@ private struct UsenetSettingsSection: View {
     @State private var profile = UsenetSettings.profile().rawValue
     @State private var prefersOwnServers = UsenetSettings.prefersOwnServers()
     @State private var speedLimit = String(UsenetSettings.speedLimitMbps())
-    @State private var diskReadAhead = String(UsenetSettings.diskReadAheadSeconds())
+    @State private var diskReadAhead = UsenetSettings.diskReadAhead()
+    @State private var diskReadAheadSize = String(UsenetSettings.diskReadAheadSizeMB())
     @State private var syncToAccount = UsenetSettings.syncChoice() ?? false
 
     var body: some View {
@@ -24296,21 +24297,31 @@ private struct UsenetSettingsSection: View {
                 accentColor: accentColor
             )
 
-            SettingsChoiceRow(
+            SettingsToggleRow(
                 title: L10n.string("usenet_disk_read_ahead_title", fallback: "Read Ahead on Disk"),
                 subtitle: L10n.string(
                     "usenet_disk_read_ahead_subtitle",
-                    fallback: "Download this far ahead of playback into the Apple TV's cache, so skipping forward into it doesn't wait. What was downloaded stays until playback ends (up to 4 GB)."
+                    fallback: "Download ahead of playback into the Apple TV's cache, so skipping forward into it doesn't wait and a slower connection can build up a buffer. What was downloaded stays until playback ends. When off, only memory is used."
                 ),
-                selection: $diskReadAhead,
-                options: UsenetSettings.diskReadAheadOptions.map(String.init),
-                optionLabels: Dictionary(uniqueKeysWithValues: UsenetSettings.diskReadAheadOptions.map {
-                    (String($0), $0 == 0
-                        ? L10n.string("usenet_disk_read_ahead_off", fallback: "Off")
-                        : L10n.format("usenet_disk_read_ahead_minutes", fallback: "%d min", $0 / 60))
-                }),
+                isOn: $diskReadAhead,
                 accentColor: accentColor
             )
+
+            if diskReadAhead {
+                SettingsChoiceRow(
+                    title: L10n.string("usenet_disk_read_ahead_size_title", fallback: "Disk Read-Ahead Size"),
+                    subtitle: L10n.string(
+                        "usenet_disk_read_ahead_size_subtitle",
+                        fallback: "Most of it reads ahead, the rest keeps what was played for skipping back. 2 GB is about 6 minutes of a 1080p Blu-ray remux. At least 2 GB of the Apple TV stays free."
+                    ),
+                    selection: $diskReadAheadSize,
+                    options: UsenetSettings.diskReadAheadSizeOptions.map(String.init),
+                    optionLabels: Dictionary(uniqueKeysWithValues: UsenetSettings.diskReadAheadSizeOptions.map {
+                        (String($0), ByteCountFormatter.string(fromByteCount: Int64($0) << 20, countStyle: .memory))
+                    }),
+                    accentColor: accentColor
+                )
+            }
 
             SettingsToggleRow(
                 title: L10n.string("usenet_prefer_own_title", fallback: "Always Use My Servers"),
@@ -24347,7 +24358,10 @@ private struct UsenetSettingsSection: View {
             UsenetSettings.setSpeedLimitMbps(Int(value) ?? 0)
         }
         .onChange(of: diskReadAhead) { _, value in
-            UsenetSettings.setDiskReadAheadSeconds(Int(value) ?? UsenetSettings.defaultDiskReadAheadSeconds)
+            UsenetSettings.setDiskReadAhead(value)
+        }
+        .onChange(of: diskReadAheadSize) { _, value in
+            UsenetSettings.setDiskReadAheadSizeMB(Int(value) ?? UsenetSettings.defaultDiskReadAheadSizeMB)
         }
         .onReceive(NotificationCenter.default.publisher(for: .usenetServersChanged)) { _ in
             model.reload()

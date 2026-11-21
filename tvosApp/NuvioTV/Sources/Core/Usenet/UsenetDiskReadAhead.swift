@@ -53,34 +53,36 @@ actor UsenetDiskStore {
 }
 
 /// The disk read-ahead of a stream (Settings → Usenet → Read Ahead on Disk): where its
-/// articles go, how many seconds of video ahead of playback it reaches and how much of the
-/// disk it may use.
+/// articles go and how much of the disk they may use, most of it for reading ahead and the
+/// rest for what was played.
 struct UsenetDiskReadAhead: Sendable {
     let store: UsenetDiskStore
-    let seconds: Int
     let budgetBytes: Int64
 
-    /// At most this much disk for one stream, whatever the free space.
-    static let maxBytes: Int64 = 4 << 30
+    /// The largest size the setting offers.
+    static let maxBytes: Int64 = 8 << 30
     /// Below this much room it isn't worth it: memory only.
     static let minBytes: Int64 = 256 << 20
+    /// The share of the budget for reading ahead; the rest keeps what was played for seeking back.
+    static let aheadShare = 0.8
 
-    /// From the setting; nil when it is off or the disk lacks room (keeps the free space the
-    /// playback disk cache keeps).
-    static func make(seconds: Int, root: URL? = nil, freeSpace: Int64? = nil) -> UsenetDiskReadAhead? {
-        guard seconds > 0, let store = UsenetDiskStore.make(root: root) else { return nil }
+    /// For the chosen size (nil: off); nil when it is off or the disk lacks room (keeps the
+    /// free space the playback disk cache keeps).
+    static func make(sizeBytes: Int64?, root: URL? = nil, freeSpace: Int64? = nil) -> UsenetDiskReadAhead? {
+        guard let sizeBytes, sizeBytes > 0, let store = UsenetDiskStore.make(root: root) else { return nil }
         let free = freeSpace ?? PlaybackStreamDiskCache.volumeFreeSpace(at: store.directory)
-        let budget = budgetBytes(freeSpace: free)
+        let budget = budgetBytes(size: sizeBytes, freeSpace: free)
         guard budget >= minBytes else {
             try? FileManager.default.removeItem(at: store.directory)
             return nil
         }
-        return UsenetDiskReadAhead(store: store, seconds: seconds, budgetBytes: budget)
+        return UsenetDiskReadAhead(store: store, budgetBytes: budget)
     }
 
-    /// What a stream may use with `freeSpace` left on the disk (-1: unknown).
-    static func budgetBytes(freeSpace: Int64) -> Int64 {
-        guard freeSpace >= 0 else { return maxBytes }
-        return min(maxBytes, freeSpace - PlaybackStreamDiskCache.defaultFreeSpaceReserveBytes)
+    /// What a stream may use of `size` with `freeSpace` left on the disk (-1: unknown).
+    static func budgetBytes(size: Int64, freeSpace: Int64) -> Int64 {
+        let size = min(size, maxBytes)
+        guard freeSpace >= 0 else { return size }
+        return min(size, freeSpace - PlaybackStreamDiskCache.defaultFreeSpaceReserveBytes)
     }
 }
