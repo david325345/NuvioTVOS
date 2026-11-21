@@ -606,6 +606,8 @@ class DetailsViewModel: ObservableObject {
                 // Built now, with its Related row: the pictures MAL's relations lack (the card it
                 // opened from had no row to fill yet).
                 self.fillMALRelatedPictures(for: resolvedMeta, generation: requestGeneration)
+                // And an anime's reviews by the full title's ids (a Cinemeta card may lack them).
+                self.loadAnimeReviews(for: resolvedMeta, generation: requestGeneration)
 
                 // If streams were previously requested or prefetched for a non-canonical id ("tmdb:..."),
                 // reload them immediately with the resolved canonical stream id.
@@ -978,25 +980,32 @@ class DetailsViewModel: ObservableObject {
     }
 
     /// AniList's and MAL's reviews of an anime (AniList Reviews, MAL Reviews), apart from the
-    /// rest: an AniList, MAL or Kitsu title, or a Cinemeta anime the offline tables map. Asked once
-    /// a title (and again when a setting changes).
+    /// rest: an AniList, MAL or Kitsu title, or a Cinemeta anime the offline tables map. Asked with
+    /// the card the details opened from and again with the full title (its IMDb and TMDB ids), once
+    /// each per load; a try that found nothing doesn't keep the next one out. Kept while the
+    /// details stay on this load.
     private func loadAnimeReviews(for meta: NuvioMeta, generation: UInt64) {
         let wantsAniList = AnimeReviews.showsAniList
         let wantsMAL = AnimeReviews.showsMAL
         guard wantsAniList || wantsMAL else { return }
-        let request = "\(meta.id.lowercased())|\(wantsAniList)|\(wantsMAL)"
+        let request = [
+            String(generation), meta.id.lowercased(), meta.imdbId ?? "", meta.tmdbId.map(String.init) ?? "",
+            String(wantsAniList), String(wantsMAL),
+        ].joined(separator: "|")
         guard animeReviewsRequest != request else { return }
         animeReviewsRequest = request
         Task { @MainActor [weak self] in
-            async let aniList = AnimeReviews.aniList(for: meta)
-            async let mal = AnimeReviews.mal(for: meta)
-            let found = await (aniList, mal)
-            if !found.0.isEmpty, AnimeFind.aniListIcon == nil {
+            let found = await AnimeReviews.reviews(for: meta)
+            if !found.aniList.isEmpty, AnimeFind.aniListIcon == nil {
                 await AnimeFind.loadAniListIcon()
             }
-            guard let self, self.isCurrentRequest(metaId: meta.id, generation: generation) else { return }
-            if !found.0.isEmpty { self.uiState.aniListReviews = found.0 }
-            if !found.1.isEmpty { self.uiState.malReviews = found.1 }
+            guard let self, self.detailsRequestGeneration == generation else { return }
+            guard !found.aniList.isEmpty || !found.mal.isEmpty else {
+                if self.animeReviewsRequest == request { self.animeReviewsRequest = nil }
+                return
+            }
+            if !found.aniList.isEmpty { self.uiState.aniListReviews = found.aniList }
+            if !found.mal.isEmpty { self.uiState.malReviews = found.mal }
         }
     }
 

@@ -43,6 +43,43 @@ enum AnimeReviews {
         return mal
     }
 
+    // MARK: Both
+
+    struct Found {
+        var aniList: [TraktCommentReview] = []
+        var mal: [TraktCommentReview] = []
+    }
+
+    /// The reviews the settings ask for, the title's entries worked out once; what was found is
+    /// noted for Settings → AniList → Status.
+    static func reviews(for meta: NuvioMeta) async -> Found {
+        let wantsAniList = showsAniList
+        let wantsMAL = showsMAL
+        guard wantsAniList || wantsMAL else { return Found() }
+        let aniListID = await aniListEntry(for: meta)
+        var malID: Int?
+        if wantsMAL {
+            if let own = AnimeSource.entry(from: meta.id), own.source == .mal {
+                malID = own.id
+            } else if let aniListID, let mal = await AniListOfflineMaps.shared.entry(aniListID: aniListID)?.mal, mal > 0 {
+                malID = mal
+            }
+        }
+        async let fromAniList = aniListReviews(entry: wantsAniList ? aniListID : nil)
+        async let fromMAL = malReviews(entry: malID)
+        let found = Found(aniList: await fromAniList, mal: await fromMAL)
+
+        func part(_ name: String, wanted: Bool, entry: Int?, count: Int) -> String {
+            guard wanted else { return "\(name) off" }
+            guard let entry else { return "\(name) not mapped" }
+            return "\(name) \(entry): \(count) reviews"
+        }
+        AniListDiagnostics.note(.reviews, "\(meta.name) (\(meta.id)): "
+            + part("AniList", wanted: wantsAniList, entry: aniListID, count: found.aniList.count) + " · "
+            + part("MAL", wanted: wantsMAL, entry: malID, count: found.mal.count))
+        return found
+    }
+
     // MARK: AniList
 
     static let aniListQuery = """
@@ -56,10 +93,9 @@ enum AnimeReviews {
     }
     """
 
-    /// AniList's reviews of the anime (AniList Reviews on); none when it isn't mapped or AniList
-    /// can't answer.
-    static func aniList(for meta: NuvioMeta) async -> [TraktCommentReview] {
-        guard showsAniList, let id = await aniListEntry(for: meta),
+    /// AniList's reviews of an AniList entry; none for nil or when AniList can't answer.
+    static func aniListReviews(entry id: Int?) async -> [TraktCommentReview] {
+        guard let id,
               let data = try? await AniListClient.shared.query(
                   aniListQuery, variables: ["id": id, "perPage": limit], ttl: ttl, notesStatus: false
               ) else { return [] }
@@ -134,10 +170,10 @@ enum AnimeReviews {
 
     // MARK: MAL
 
-    /// MAL's reviews of the anime through Tenrai (MAL Reviews on; MAL's own API has none), the
-    /// most liked first; reviews MAL marks as spoilers are hidden until opened.
-    static func mal(for meta: NuvioMeta) async -> [TraktCommentReview] {
-        guard showsMAL, let id = await malEntry(for: meta),
+    /// MAL's reviews of a MAL entry through Tenrai (MAL's own API has none), the most liked first;
+    /// reviews MAL marks as spoilers are hidden until opened. None for nil.
+    static func malReviews(entry id: Int?) async -> [TraktCommentReview] {
+        guard let id,
               let data = try? await AniListClient.$isInteractive.withValue(true, operation: {
                   try await TenraiClient.shared.get(
                       "anime/\(id)/reviews", query: [("spoilers", "true"), ("preliminary", "true")], ttl: ttl
