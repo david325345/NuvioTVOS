@@ -2594,7 +2594,7 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
                     let totalElapsed = (now - watchdog.startTime) * 1000
                     let cacheMs = (watchdog.totalCacheWaitDuration + (watchdog.cacheWaitStartTime.map { now - $0 } ?? 0)) * 1000
                     let seekStateMs = (watchdog.seekingEndTime.flatMap { end in watchdog.seekingStartTime.map { (end - $0) * 1000 } }) ?? 0
-                    seekWatchdogLog("[SeekWatchdog][#\(watchdog.id)] ✅ Seek completed in \(String(format: "%.1f", totalElapsed))ms (seeking: \(String(format: "%.1f", seekStateMs))ms, cacheWait: \(String(format: "%.1f", cacheMs))ms) -> landed at \(positionMs)ms (target: \(watchdog.targetMs)ms, demuxerCached: \(cached)s)")
+                    seekWatchdogLog("[SeekWatchdog][#\(watchdog.id)] ✅ Seek completed in \(String(format: "%.1f", totalElapsed))ms (seeking: \(String(format: "%.1f", seekStateMs))ms, cacheWait: \(String(format: "%.1f", cacheMs))ms) -> landed at \(positionMs)ms (target: \(watchdog.targetMs)ms, demuxerCacheEnd: \(cacheEnd ?? 0)s)")
                     activeSeekWatchdog = nil
                 } else {
                     activeSeekWatchdog = watchdog
