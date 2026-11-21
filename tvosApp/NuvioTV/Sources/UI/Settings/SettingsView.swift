@@ -482,7 +482,7 @@ enum SettingsKey {
         aniListHideCinemetaDuplicates, aniListEpisodeDetails, aniListAdult,
         aniListClientID, aniListScrobble, aniListScrobbleCinemeta, aniListListRows, aniListOtherAddons, aniListCatalogs,
         malEnabled, malClientID, malEpisodeRatings, malScrobble, malAdult, malCatalogs, malDetailsButton, aniListDetailsButton, malPlusStatus, aniListPlusStatus, malSeriesScore, aniListScore,
-        malTitles, malSearch,
+        malTitles, malSearch, aniListFindInMenu, malFindInMenu,
         mdbListEnabled, mdbListApiKey, mdbListUseImdb, mdbListUseTmdb,
         mdbListUseTomatoes, mdbListUseMetacritic, mdbListUseTrakt,
         mdbListUseLetterboxd, mdbListUseAudience,
@@ -6767,6 +6767,7 @@ private struct MALOptionsSheet: View {
     @AppStorage(SettingsKey.malTitles) private var malTitles = true
     @AppStorage(SettingsKey.malSearch) private var malSearch = true
     @AppStorage(SettingsKey.aniListOtherAddons) private var convertsIDs = true
+    @AppStorage(SettingsKey.malFindInMenu) private var findInMenu = true
     @AppStorage(SettingsKey.aniListTitleLanguage) private var titleLanguage = AniListSettings.TitleLanguage.romaji.rawValue
     @AppStorage(SettingsKey.aniListSeasonMode) private var seasonMode = AniListSettings.SeasonMode.merged.rawValue
     @AppStorage(SettingsKey.aniListEpisodeDetails) private var episodeDetails = true
@@ -6873,6 +6874,17 @@ private struct MALOptionsSheet: View {
                 title: L10n.string("settings_mal_search", fallback: "Search MAL"),
                 subtitle: L10n.string("settings_mal_search_subtitle", fallback: "Anime from MyAnimeList among the search results (with AniList on, those AniList didn't find)"),
                 isOn: $malSearch,
+                accentColor: accentColor,
+                isAvailable: malTitles
+            )
+
+            SettingsToggleRow(
+                title: L10n.string("settings_mal_find_in_menu", fallback: "Find on MyAnimeList"),
+                subtitle: L10n.string(
+                    "settings_mal_find_in_menu_subtitle",
+                    fallback: "In a card's long-press menu: an anime from Cinemeta or TMDB, or an AniList title, opens as the MyAnimeList title it maps to"
+                ),
+                isOn: $findInMenu,
                 accentColor: accentColor,
                 isAvailable: malTitles
             )
@@ -7343,6 +7355,7 @@ private struct AniListOptionsSheet: View {
     @AppStorage(SettingsKey.aniListSeasonMode) private var seasonMode = AniListSettings.SeasonMode.merged.rawValue
     @AppStorage(SettingsKey.aniListHomeRows) private var homeRows = true
     @AppStorage(SettingsKey.aniListSearch) private var search = true
+    @AppStorage(SettingsKey.aniListFindInMenu) private var findInMenu = true
     @AppStorage(SettingsKey.aniListHideCinemetaDuplicates) private var hideCinemetaDuplicates = false
     @AppStorage(SettingsKey.aniListEpisodeDetails) private var episodeDetails = true
     @AppStorage(SettingsKey.malEnabled) private var malEnabled = false
@@ -7566,6 +7579,17 @@ private struct AniListOptionsSheet: View {
                 isOn: $hideCinemetaDuplicates,
                 accentColor: accentColor,
                 isAvailable: enabled && search
+            )
+
+            SettingsToggleRow(
+                title: L10n.string("settings_anilist_find_in_menu", fallback: "Find on AniList"),
+                subtitle: L10n.string(
+                    "settings_anilist_find_in_menu_subtitle",
+                    fallback: "In a card's long-press menu: an anime from Cinemeta or TMDB, or a MyAnimeList title, opens as the AniList title it maps to"
+                ),
+                isOn: $findInMenu,
+                accentColor: accentColor,
+                isAvailable: enabled
             )
         }
     }

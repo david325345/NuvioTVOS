@@ -943,6 +943,16 @@ struct ContentView: View {
             creatingParty = false; choosingPartySource = false
         }
         .onOpenURL(perform: handleDeepLink)
+        // "Find on AniList / MyAnimeList" in a card's long-press menu.
+        .onReceive(NotificationCenter.default.publisher(for: AnimeFind.openNotification).receive(on: RunLoop.main)) { note in
+            guard let id = note.userInfo?["id"] as? String, let type = note.userInfo?["type"] as? String else { return }
+            switch activeScreen {
+            case .login, .profileSelection:
+                return
+            default:
+                openDetailsRoot(id: id, type: type)
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
             watchPartyOwner.suspendForInactivity()
         }
