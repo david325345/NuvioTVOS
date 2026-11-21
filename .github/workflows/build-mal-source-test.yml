@@ -79,4 +79,7 @@ jobs:
             -only-testing:NuvioTVTests/MALSourceTests \
             -only-testing:NuvioTVTests/KitsuSourceTests \
             -only-testing:NuvioTVTests/AnimeReviewsTests \
-            -only-testing:NuvioTVTests/MdbListScrobbleTests/testPreservingEnrichmentKeepsShownRatingsBesideTheTitlesOwnScore
+            -only-testing:NuvioTVTests/MdbListScrobbleTests/testPreservingEnrichmentKeepsShownRatingsBesideTheTitlesOwnScore \
+            -only-testing:NuvioTVTests/PlaybackBackendPolicyTests/testAddonSubtitleOfAHigherRankedLanguageReplacesAnAutomaticChoice \
+            -only-testing:NuvioTVTests/PlaybackBackendPolicyTests/testLateAddonCzechReplacesTheFilesEnglishButNotAManualChoice \
+            -only-testing:NuvioTVTests/UsenetSourceTests
