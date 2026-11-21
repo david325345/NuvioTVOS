@@ -743,24 +743,68 @@ enum MALSource {
 
     // MARK: Related row pictures
 
-    /// Pictures of a title's related entries: MyAnimeList names relations without a picture,
-    /// so each one missing is asked once the details are on screen (at most 12, behind the
-    /// viewer's requests) and kept for the session. True when any was found.
-    @discardableResult
-    static func fillRelatedPictures(metaID: String) async -> Bool {
-        let missing = AniListTitleIndex.related(metaID: metaID)
-            .filter { $0.posterURL == nil }
-            .compactMap { AnimeSource.malID(from: $0.id) }
-        var found = false
-        for id in missing.prefix(12) {
+    /// Pictures of a title's related entries, which MyAnimeList names without one. With a MAL
+    /// Client ID, MAL's own API gives the pictures of all of an entry's related entries in one
+    /// request (one per season tab); what it doesn't give, Tenrai is asked for one by one, in the
+    /// row's order and ahead of the Home rows, at most 40. `found` is called as pictures come in
+    /// (at most once a second, and at the end) to draw the row again; they are kept for the
+    /// session, and the answers on disk.
+    static func fillRelatedPictures(metaID: String, entryIDs: [Int], found: @escaping @MainActor () -> Void) async {
+        var missing = missingPictures(metaID: metaID)
+        guard !missing.isEmpty else { return }
+        var unshown = false
+        var shownAt = Date.distantPast
+
+        if MALOfficialClient.isAvailable {
+            for id in entryIDs {
+                if Task.isCancelled || missing.isEmpty { break }
+                guard let data = try? await MALOfficialClient.shared.get("anime/\(id)", query: [("fields", officialFields)], ttl: AniListService.airingTTL),
+                      let anime = try? decoder.decode(MALOfficialAnime.self, from: data) else { continue }
+                for related in anime.relatedAnime ?? [] {
+                    guard let node = related.node, missing.contains(node.id),
+                          let poster = node.mainPicture?.large ?? node.mainPicture?.medium else { continue }
+                    RelatedPictures.store(node.id, poster: poster, year: nil)
+                    missing.removeAll { $0 == node.id }
+                    unshown = true
+                }
+                if unshown, Date().timeIntervalSince(shownAt) >= 1 {
+                    unshown = false
+                    shownAt = Date()
+                    await found()
+                }
+            }
+        }
+
+        for id in missing.prefix(40) {
             if Task.isCancelled { break }
-            guard let data = try? await TenraiClient.shared.get("anime/\(id)", ttl: AniListService.finishedTTL),
-                  let details = try? decoder.decode(TenraiOne<TenraiDetails>.self, from: data).data,
+            let data = try? await AniListClient.$isInteractive.withValue(true) {
+                try await TenraiClient.shared.get("anime/\(id)", ttl: AniListService.finishedTTL)
+            }
+            guard let data, let details = try? decoder.decode(TenraiOne<TenraiDetails>.self, from: data).data,
                   let poster = picture(details.images) else { continue }
             RelatedPictures.store(id, poster: poster, year: details.year ?? details.aired?.prop?.from?.year)
-            found = true
+            unshown = true
+            if Date().timeIntervalSince(shownAt) >= 1 {
+                unshown = false
+                shownAt = Date()
+                await found()
+            }
         }
-        return found
+        if unshown { await found() }
+    }
+
+    /// The MAL entries of the Related row still without a picture, in the row's order.
+    static func missingPictures(metaID: String) -> [Int] {
+        AniListTitleIndex.related(metaID: metaID)
+            .filter { $0.posterURL == nil }
+            .compactMap { AnimeSource.malID(from: $0.id) }
+    }
+
+    /// A MyAnimeList title's entries, tab by tab: its episodes' MAL entries, then its own.
+    static func entryIDs(of meta: NuvioMeta) -> [Int] {
+        var seen = Set<Int>()
+        let ids = (meta.videos ?? []).compactMap { AnimeSource.malID(from: $0.id) } + [AnimeSource.malID(from: meta.id)].compactMap { $0 }
+        return ids.filter { seen.insert($0).inserted }
     }
 
     /// Pictures found for related MAL entries, for the session.
