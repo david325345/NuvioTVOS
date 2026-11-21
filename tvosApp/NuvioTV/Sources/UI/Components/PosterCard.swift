@@ -3922,6 +3922,19 @@ struct TitleActionsMenuContent: View {
                 }
             }
         }
+        if let target = animeTargets?.kitsu {
+            Button {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.30) {
+                    AnimeFind.open(target, type: meta.type)
+                }
+            } label: {
+                Label {
+                    Text(L10n.string("action_find_on_kitsu", fallback: "Find on Kitsu"))
+                } icon: {
+                    Image("rating_kitsu").renderingMode(.original)
+                }
+            }
+        }
     }
 
     private func toggleLibrary(currentlyInLibrary: Bool) {
