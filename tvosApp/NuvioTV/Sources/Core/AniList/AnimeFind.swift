@@ -1,4 +1,4 @@
-import Foundation
+import SwiftUI
 import UIKit
 
 extension SettingsKey {
@@ -117,5 +117,20 @@ enum AnimeFind {
             if values.count > 2000 { values.removeAll() }
             values[key] = targets
         }
+    }
+}
+
+/// NuvioTVApp's root view: deep links (`onOpenURL`) and what `AnimeFind.open` asks for.
+struct AnimeFindOpening: ViewModifier {
+    let openURL: (URL) -> Void
+    let open: (String, String) -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onOpenURL(perform: openURL)
+            .onReceive(NotificationCenter.default.publisher(for: AnimeFind.openNotification).receive(on: RunLoop.main)) { note in
+                guard let id = note.userInfo?["id"] as? String, let type = note.userInfo?["type"] as? String else { return }
+                open(id, type)
+            }
     }
 }
