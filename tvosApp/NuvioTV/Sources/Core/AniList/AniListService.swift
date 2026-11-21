@@ -796,13 +796,22 @@ enum AniListService {
     /// - a Cinemeta/TMDB anime the offline tables know: the film, or the first season (the
     ///   franchise's main entry; one IMDb title stands for every season).
     /// One small request, kept a day.
+    /// The anime scores beside the others: a MyAnimeList or Kitsu title's own, else AniList's
+    /// (AniList Score), and Kitsu's (Kitsu Score) for any anime.
     static func ratings(for meta: NuvioMeta) async -> [NuvioExternalRating] {
+        async let kitsu = kitsuRatings(for: meta)
+        let own = await sourceRatings(for: meta)
+        return own + (await kitsu)
+    }
+
+    private static func sourceRatings(for meta: NuvioMeta) async -> [NuvioExternalRating] {
         if AnimeSource.isMALTitle(meta.id) {
             // A MyAnimeList title: its entry's own MAL score, ahead of MDBList's copy.
             return (meta.externalRatings ?? []).filter { $0.source == MdbListDetailsService.providerMyAnimeList }
         }
         if AnimeSource.isKitsuTitle(meta.id) {
-            // A Kitsu title: its entry's Kitsu score.
+            // A Kitsu title: its entry's Kitsu score (Kitsu Score on).
+            guard KitsuSettings.showsScore, AddonRatingsService.isSourceEnabled(AniListMetaBuilder.kitsuRatingSource) else { return [] }
             return (meta.externalRatings ?? []).filter { $0.source == AniListMetaBuilder.kitsuRatingSource }
         }
         guard AniListSettings.showsScore, AddonRatingsService.isSourceEnabled(AniListMetaBuilder.ratingSource) else { return [] }
@@ -825,6 +834,38 @@ enum AniListService {
     }
 
     static let scoreTTL: TimeInterval = 24 * 3600
+
+    /// Kitsu's score (Settings → Kitsu → Kitsu Score) of an anime from Cinemeta, AniList or
+    /// MyAnimeList: the Kitsu entry the offline tables map it to, its score kept a day. Needs
+    /// neither Kitsu nor MyAnimeList on. A Kitsu title carries its own.
+    static func kitsuRatings(for meta: NuvioMeta) async -> [NuvioExternalRating] {
+        guard KitsuSettings.showsScore, AddonRatingsService.isSourceEnabled(AniListMetaBuilder.kitsuRatingSource),
+              !AnimeSource.isKitsuTitle(meta.id),
+              let kitsu = await kitsuEntry(for: meta),
+              let data = try? await KitsuClient.shared.get("anime/\(kitsu)", query: [("fields[anime]", "averageRating")], ttl: scoreTTL),
+              let anime = KitsuSource.document(data)?.first,
+              let score = anime.attributes?.averageRating,
+              let rating = AniListMetaBuilder.kitsuRating(entry: kitsu, score: Int(score.rounded())) else { return [] }
+        return [rating]
+    }
+
+    /// The Kitsu entry of an anime by the offline tables only: a `kitsu:` id's own, else the one
+    /// of the AniList entry its id (or Cinemeta's, TMDB's) maps to.
+    static func kitsuEntry(for meta: NuvioMeta) async -> Int? {
+        let maps = AniListOfflineMaps.shared
+        let own = AnimeSource.entry(from: meta.id)
+        if let own, own.source == .kitsu { return own.id }
+        let aniList: Int?
+        if let own, own.source == .mal {
+            aniList = await maps.aniListID(mal: own.id)
+        } else if let own {
+            aniList = own.id
+        } else {
+            aniList = await mappedEntry(for: meta)
+        }
+        guard let aniList, let kitsu = await maps.entry(aniListID: aniList)?.kitsu, kitsu > 0 else { return nil }
+        return kitsu
+    }
 
     /// The AniList entry a Cinemeta/TMDB title stands for, by the offline tables only (no
     /// request): the film, or the entry with TheTVDB's first episode, or the only entry.

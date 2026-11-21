@@ -362,6 +362,9 @@ enum AddonRatingsService {
         if !includesDisabled, !isSourceEnabled(AniListMetaBuilder.ratingSource, defaults: defaults) {
             items = items.filter { normalizedSourceKey(sourceGetter($0)) != AniListMetaBuilder.ratingSource }
         }
+        if !includesDisabled, !isSourceEnabled(AniListMetaBuilder.kitsuRatingSource, defaults: defaults) {
+            items = items.filter { normalizedSourceKey(sourceGetter($0)) != AniListMetaBuilder.kitsuRatingSource }
+        }
         let order = savedRatingOrder(defaults: defaults)
         guard !order.isEmpty else { return items }
         let orderMap = Dictionary(uniqueKeysWithValues: order.enumerated().map { ($0.element.lowercased(), $0.offset) })
@@ -857,6 +860,7 @@ enum AddonRatingsService {
             HeroRatingSourceOption(id: "audience", displayName: "Audience Score", addonName: nil),
             HeroRatingSourceOption(id: "myanimelist", displayName: "MyAnimeList", addonName: nil),
             HeroRatingSourceOption(id: AniListMetaBuilder.ratingSource, displayName: "AniList", addonName: nil),
+            HeroRatingSourceOption(id: AniListMetaBuilder.kitsuRatingSource, displayName: "Kitsu", addonName: nil),
             HeroRatingSourceOption(id: "tvdb", displayName: "TVDB", addonName: nil)
         ]
     }
@@ -892,6 +896,7 @@ enum AddonRatingsService {
         case "audience": return "Audience"
         case "myanimelist", "mal": return "MAL"
         case AniListMetaBuilder.ratingSource: return "AniList"
+        case AniListMetaBuilder.kitsuRatingSource: return "Kitsu"
         case "tvdb": return "TVDB"
         default: return customName ?? sourceId.capitalized
         }
@@ -978,6 +983,7 @@ enum AddonRatingsService {
         case "audience": return "Audience 95%"
         case "myanimelist", "mal": return "MAL 8.7"
         case AniListMetaBuilder.ratingSource: return "AniList 84%"
+        case AniListMetaBuilder.kitsuRatingSource: return "Kitsu 82%"
         case "tvdb": return "TVDB 8.8"
         case "csfd": return "ČSFD 86%"
         case "douban": return "Douban 8.4"
@@ -1026,6 +1032,7 @@ enum AddonRatingsService {
             "nuvio.tv.settings.integrations.mdbList",
             "nuvio.tv.settings.integrations.aniList",
             "nuvio.tv.settings.integrations.mal",
+            "nuvio.tv.settings.integrations.kitsu",
             "nuvio.tv.settings.integrations.tmdb"
         ]
         let relevantSettings = defaults.dictionaryRepresentation()
@@ -1293,6 +1300,9 @@ enum AddonRatingsService {
                 ? AniListSettings.isEnabled(in: defaults)
                 : defaults.bool(forKey: SettingsKey.aniListScore)
             return scoreEnabled && isSourceEnabled(normalized, defaults: defaults)
+        }
+        if normalized == AniListMetaBuilder.kitsuRatingSource {
+            return KitsuSettings.showsScore(in: defaults) && isSourceEnabled(normalized, defaults: defaults)
         }
         guard isSourceEnabled(normalized, defaults: defaults) else { return false }
         if let key = mdblistSettings[normalized] {

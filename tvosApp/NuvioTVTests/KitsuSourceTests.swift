@@ -91,13 +91,13 @@ final class KitsuSourceTests: XCTestCase {
          ],
          "included":[
           {"id":"20","type":"characters","attributes":{"canonicalName":"Himmel","image":{"original":"h.jpg"}}},
-          {"id":"21","type":"characters","attributes":{"canonicalName":"Frieren","image":{"original":"f.jpg"}}},
+          {"id":"21","type":"characters","attributes":{"canonicalName":"Frieren","malId":1000,"image":{"original":"f.jpg"}}},
           {"id":"30","type":"characterVoices","attributes":{"locale":"ja_jp"},"relationships":{"person":{"data":{"type":"people","id":"40"}}}},
           {"id":"31","type":"characterVoices","attributes":{"locale":"en"},"relationships":{"person":{"data":{"type":"people","id":"41"}}}},
           {"id":"32","type":"characterVoices","attributes":{"locale":"ja_jp"},"relationships":{"person":{"data":{"type":"people","id":"42"}}}},
           {"id":"40","type":"people","attributes":{"name":"Nobuhiko Okamoto","image":{"original":"o.jpg"}}},
           {"id":"41","type":"people","attributes":{"name":"Mallorie Rodak"}},
-          {"id":"42","type":"people","attributes":{"name":"Atsumi Tanezaki","image":{"original":"t.jpg"}}}
+          {"id":"42","type":"people","attributes":{"name":"Atsumi Tanezaki","malId":2000,"image":{"original":"t.jpg"}}}
          ]}
         """#
         let document = try XCTUnwrap(KitsuSource.document(Data(json.utf8)))
@@ -108,6 +108,38 @@ final class KitsuSourceTests: XCTestCase {
         XCTAssertEqual(people.first?.aniListStaffID, 42)
         XCTAssertEqual(people.first?.aniListStaffImage, "t.jpg")
         XCTAssertEqual(people.first?.peopleSource, "kitsu")
+
+        // MyAnimeList's pictures by the MAL ids Kitsu gives, Kitsu's where MAL has none.
+        let mal = #"""
+        {"data":[
+          {"character":{"mal_id":1000,"name":"Frieren","images":{"jpg":{"image_url":"https://cdn.myanimelist.net/images/characters/frieren.jpg"}}},
+           "role":"Main","voice_actors":[{"person":{"mal_id":2000,"name":"Tanezaki, Atsumi","images":{"jpg":{"image_url":"https://cdn.myanimelist.net/images/voiceactors/tanezaki.jpg"}}},"language":"Japanese"}]},
+          {"character":{"mal_id":1001,"name":"Nobody","images":{"jpg":{"image_url":"https://cdn.myanimelist.net/images/questionmark_23.gif"}}},
+           "role":"Supporting","voice_actors":[]}
+         ]}
+        """#
+        let pictures = KitsuSource.malPictures(from: Data(mal.utf8))
+        XCTAssertNil(pictures.characters[1001], "MAL's stand-in is no picture")
+        let withMAL = KitsuSource.people(from: document, malPictures: pictures)
+        XCTAssertEqual(withMAL.first?.profileURL, "https://cdn.myanimelist.net/images/characters/frieren.jpg")
+        XCTAssertEqual(withMAL.first?.aniListStaffImage, "https://cdn.myanimelist.net/images/voiceactors/tanezaki.jpg")
+        XCTAssertEqual(withMAL.last?.profileURL, "h.jpg")
+    }
+
+    func testKitsuScoreFollowsKitsuUntilSwitched() {
+        let store = UserDefaults(suiteName: "KitsuSourceTests.score")!
+        store.removePersistentDomain(forName: "KitsuSourceTests.score")
+        XCTAssertFalse(KitsuSettings.showsScore(in: store))
+        store.set(true, forKey: SettingsKey.kitsuEnabled)
+        XCTAssertTrue(KitsuSettings.showsScore(in: store))
+        store.set(false, forKey: SettingsKey.kitsuScore)
+        XCTAssertFalse(KitsuSettings.showsScore(in: store))
+        store.set(false, forKey: SettingsKey.kitsuEnabled)
+        store.set(true, forKey: SettingsKey.kitsuScore)
+        XCTAssertTrue(KitsuSettings.showsScore(in: store), "works with Kitsu off")
+        XCTAssertEqual(AniListMetaBuilder.kitsuRating(entry: 7, score: 82)?.source, "kitsu")
+        XCTAssertNil(AniListMetaBuilder.kitsuRating(entry: 7, score: 0))
+        XCTAssertEqual(AddonRatingsService.heroRatingDisplayName(for: "kitsu"), "Kitsu")
     }
 
     func testKitsuCardsAreKitsuTitlesWithKitsusScore() throws {
