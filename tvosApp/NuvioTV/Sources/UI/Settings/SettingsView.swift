@@ -7760,6 +7760,7 @@ private struct AniListOptionsSheet: View {
     @State private var statusText = ""
     @State private var homeStatusText = ""
     @State private var searchStatusText = ""
+    @State private var reviewsStatusText = ""
     /// Test build only: the pictures of the last AniList title.
     @State private var pictureLogText = AniListPictureLog.text()
     @State private var accountStatusText = ""
@@ -8248,6 +8249,15 @@ private struct AniListOptionsSheet: View {
             }
 
             SettingsActionRow(
+                title: L10n.string("settings_anilist_status_reviews", fallback: "Reviews"),
+                subtitle: reviewsStatusText,
+                value: L10n.string("settings_anilist_status_refresh", fallback: "Refresh"),
+                accentColor: accentColor
+            ) {
+                Task { await refreshStatus() }
+            }
+
+            SettingsActionRow(
                 title: L10n.string("settings_anilist_status_account", fallback: "Your List"),
                 subtitle: accountStatusText,
                 value: L10n.string("settings_anilist_status_refresh", fallback: "Refresh"),
@@ -8320,6 +8330,7 @@ private struct AniListOptionsSheet: View {
         statusText = await AniListService.statusText()
         homeStatusText = AniListService.homeStatusText()
         searchStatusText = AniListService.searchStatusText()
+        reviewsStatusText = AniListDiagnostics.text(.reviews)
         pictureLogText = AniListPictureLog.text()
         accountStatusText = AniListSettings.isEnabled ? AniListDiagnostics.text(.account) : "Off"
         accountName = AniListAccount.login?.viewerName
