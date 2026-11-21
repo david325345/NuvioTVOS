@@ -12,8 +12,11 @@ struct UsenetStreamStats: Equatable, Sendable {
     var bufferedAheadBytes: Int64 = 0
     /// The same in seconds of video, once the player knows the duration.
     var bufferedAheadSeconds: Double?
-    /// Articles kept on disk (Read Ahead on Disk).
+    /// Articles kept on disk (Read Ahead on Disk), what they may use now and what tvOS
+    /// reports free (-1: unknown).
     var diskBytes: Int64 = 0
+    var diskBudgetBytes: Int64 = 0
+    var diskFreeBytes: Int64 = -1
     var cacheHitRate: Double?
     var missingArticles = 0
     var fallbackArticles = 0
@@ -51,14 +54,23 @@ struct UsenetStreamStats: Equatable, Sendable {
     /// HUD line 2: what the article cache holds and what went missing.
     var cacheLine: String {
         var parts = ["ahead \(bufferedFormatted)"]
-        if diskBytes > 0 {
-            parts.append("disk " + ByteCountFormatter.string(fromByteCount: diskBytes, countStyle: .file))
-        }
         if let cacheHitRate { parts.append("hit \(Int((cacheHitRate * 100).rounded()))%") }
         parts.append("missing \(missingArticles)")
         if fallbackArticles > 0 { parts.append("backup \(fallbackArticles)") }
         if reconnects > 0 { parts.append("reconnect \(reconnects)") }
         return parts.joined(separator: " · ")
+    }
+
+    /// HUD line 3 with Read Ahead on Disk: what it holds, what it may use now and what tvOS
+    /// reports free; nil when it is off.
+    var diskLine: String? {
+        guard diskBudgetBytes > 0 || diskBytes > 0 else { return nil }
+        var line = ByteCountFormatter.string(fromByteCount: diskBytes, countStyle: .file)
+            + " of " + ByteCountFormatter.string(fromByteCount: diskBudgetBytes, countStyle: .file)
+        if diskFreeBytes >= 0 {
+            line += " · tvOS free " + ByteCountFormatter.string(fromByteCount: diskFreeBytes, countStyle: .file)
+        }
+        return line
     }
 
     var summary: String { connectionLine + " · " + cacheLine }
@@ -276,6 +288,8 @@ final class UsenetEngineManager: ObservableObject {
                 stats.bufferedAheadBytes = sessionStats.bufferedAheadBytes
                 stats.bufferedAheadSeconds = sessionStats.bufferedAheadSeconds
                 stats.diskBytes = sessionStats.diskBytes
+                stats.diskBudgetBytes = sessionStats.diskBudgetBytes
+                stats.diskFreeBytes = sessionStats.diskFreeBytes
                 stats.missingArticles = sessionStats.missingArticles
                 stats.cacheHitRate = lookups > 0 ? Double(sessionStats.cacheHits) / Double(lookups) : nil
                 if stats != self.activeStats { self.activeStats = stats }

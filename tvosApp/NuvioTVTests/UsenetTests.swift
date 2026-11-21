@@ -794,19 +794,26 @@ final class UsenetSourceTests: XCTestCase {
         XCTAssertFalse(afterStop, "nothing is written once the stream stopped")
     }
 
-    func testDiskReadAheadNeedsTheSettingAndRoom() throws {
+    func testDiskReadAheadFollowsTheFreeSpace() throws {
         let gib: Int64 = 1 << 30
-        XCTAssertEqual(UsenetDiskReadAhead.budgetBytes(size: 2 * gib, freeSpace: -1), 2 * gib)
-        XCTAssertEqual(UsenetDiskReadAhead.budgetBytes(size: 2 * gib, freeSpace: 3 * gib), gib)
-        XCTAssertEqual(UsenetDiskReadAhead.budgetBytes(size: 2 * gib, freeSpace: 50 * gib), 2 * gib)
-        XCTAssertEqual(UsenetDiskReadAhead.budgetBytes(size: 64 * gib, freeSpace: 500 * gib), UsenetDiskReadAhead.maxBytes)
+        // Unknown free space: the chosen size.
+        XCTAssertEqual(UsenetDiskReadAhead.budgetBytes(size: 2 * gib, holding: 0, freeSpace: -1), 2 * gib)
+        // 2.6 GB reported free: 1.6 GB of it, keeping 1 GB free.
+        XCTAssertEqual(UsenetDiskReadAhead.budgetBytes(size: 8 * gib, holding: 0, freeSpace: 2 * gib + gib / 2 + gib / 10),
+                       gib + gib / 2 + gib / 10)
+        // What it already holds counts: the budget doesn't shrink as it writes.
+        XCTAssertEqual(UsenetDiskReadAhead.budgetBytes(size: 8 * gib, holding: gib, freeSpace: gib + gib / 2 + gib / 10),
+                       gib + gib / 2 + gib / 10)
+        // Plenty of room: the chosen size; none: nothing.
+        XCTAssertEqual(UsenetDiskReadAhead.budgetBytes(size: 2 * gib, holding: 0, freeSpace: 100 * gib), 2 * gib)
+        XCTAssertEqual(UsenetDiskReadAhead.budgetBytes(size: 2 * gib, holding: 0, freeSpace: gib / 2), 0)
 
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("usenet-disk-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
-        XCTAssertNil(UsenetDiskReadAhead.make(sizeBytes: nil, root: root, freeSpace: 50 * gib))
-        XCTAssertNil(UsenetDiskReadAhead.make(sizeBytes: 2 * gib, root: root, freeSpace: 2 * gib + 100 << 20))
-        let readAhead = try XCTUnwrap(UsenetDiskReadAhead.make(sizeBytes: 2 * gib, root: root, freeSpace: 10 * gib))
-        XCTAssertEqual(readAhead.budgetBytes, 2 * gib)
+        XCTAssertNil(UsenetDiskReadAhead.make(sizeBytes: nil, root: root))
+        XCTAssertEqual(try XCTUnwrap(UsenetDiskReadAhead.make(sizeBytes: 2 * gib, root: root)).sizeBytes, 2 * gib)
+        XCTAssertEqual(try XCTUnwrap(UsenetDiskReadAhead.make(sizeBytes: 500 * gib, root: root)).sizeBytes,
+                       UsenetDiskReadAhead.maxBytes)
     }
 
     func testDiskReadAheadSetting() {
@@ -817,8 +824,18 @@ final class UsenetSourceTests: XCTestCase {
         XCTAssertEqual(UsenetSettings.diskReadAheadBytes(store: store), 1 << 30)
         UsenetSettings.setDiskReadAheadSizeMB(4096, store: store)
         XCTAssertEqual(UsenetSettings.diskReadAheadBytes(store: store), 4 << 30)
+        // Any size in the range, typed in GB.
         UsenetSettings.setDiskReadAheadSizeMB(3000, store: store)
+        XCTAssertEqual(UsenetSettings.diskReadAheadSizeMB(store: store), 3000)
+        UsenetSettings.setDiskReadAheadSizeMB(100_000, store: store)
         XCTAssertEqual(UsenetSettings.diskReadAheadSizeMB(store: store), 1024)
+        XCTAssertEqual(UsenetSettings.diskReadAheadSizeMB(typedGB: "3"), 3072)
+        XCTAssertEqual(UsenetSettings.diskReadAheadSizeMB(typedGB: "2,5 GB"), 2560)
+        XCTAssertEqual(UsenetSettings.diskReadAheadSizeMB(typedGB: "0.1"), 256)
+        XCTAssertEqual(UsenetSettings.diskReadAheadSizeMB(typedGB: "500"), 65_536)
+        XCTAssertNil(UsenetSettings.diskReadAheadSizeMB(typedGB: "lots"))
+        XCTAssertEqual(UsenetSettings.diskReadAheadGBText(2560), "2.5")
+        XCTAssertEqual(UsenetSettings.diskReadAheadGBText(3072), "3")
         UsenetSettings.setDiskReadAhead(false, store: store)
         XCTAssertNil(UsenetSettings.diskReadAheadBytes(store: store))
     }

@@ -112,8 +112,11 @@ struct UsenetSessionStats: Equatable, Sendable {
     /// The same in seconds of video, once the player knows the duration.
     var bufferedAheadSeconds: Double?
     var cachedBytes = 0
-    /// Articles kept on disk (Read Ahead on Disk).
+    /// Articles kept on disk (Read Ahead on Disk), what they may use now and what tvOS
+    /// reports free (-1: unknown).
     var diskBytes: Int64 = 0
+    var diskBudgetBytes: Int64 = 0
+    var diskFreeBytes: Int64 = -1
 }
 
 /// Serves byte ranges of the played file to the local HTTP server, fetching
@@ -179,9 +182,21 @@ actor UsenetStreamSession {
     /// Articles being read back from the disk.
     private var diskLoads: [Int: Task<Data, Error>] = [:]
     private var diskStopped = false
+    /// What the disk read-ahead may use now: the chosen size, as far as the free space allows
+    /// (checked again every few articles written).
+    private var diskBudgetBytes: Int64 = 0
+    private var diskFreeBytes: Int64 = -1
+    /// Articles written or read since the free space was last checked.
+    private var eventsSinceSpaceCheck = 0
+    private var spaceCheckRunning = false
+    static let spaceCheckEvery = 16
     /// A write failed (the disk is full): memory only from then on.
     private var diskFailed = false
-    private var diskActive: Bool { diskReadAhead != nil && !diskStopped && !diskFailed }
+    /// Reading ahead onto the disk: on, writing works, and the free space leaves it room.
+    private var diskActive: Bool {
+        diskReadAhead != nil && !diskStopped && !diskFailed
+            && diskBudgetBytes >= UsenetDiskReadAhead.minActiveBytes
+    }
 
     init(source: UsenetStreamSource, pool: UsenetConnectionPool, profile: UsenetMemoryProfile,
          diskReadAhead: UsenetDiskReadAhead? = nil,
@@ -190,6 +205,7 @@ actor UsenetStreamSession {
         self.pool = pool
         self.profile = profile
         self.diskReadAhead = diskReadAhead
+        self.diskBudgetBytes = diskReadAhead?.sizeBytes ?? 0
         self.onDamaged = onDamaged
         var layouts: [UsenetFileLayout] = []
         var bases: [Int] = []
@@ -234,6 +250,7 @@ actor UsenetStreamSession {
         }
         for index in warm where index >= 0 && index < articleCount { startPrefetch(index) }
         if let start = globalIndex(at: 0) { prefetch(after: start) }
+        checkDiskSpace()
     }
 
     /// Up to `maxLength` bytes starting at `offset`, never crossing an article
@@ -289,6 +306,8 @@ actor UsenetStreamSession {
         snapshot.bufferedAheadBytes = ahead
         snapshot.bufferedAheadSeconds = bytesPerSecond.map { Double(ahead) / $0 }
         snapshot.diskBytes = diskBytes
+        snapshot.diskBudgetBytes = diskReadAhead == nil ? 0 : diskBudgetBytes
+        snapshot.diskFreeBytes = diskFreeBytes
         return snapshot
     }
 
@@ -706,10 +725,10 @@ actor UsenetStreamSession {
     /// How far the read-ahead reaches: the memory one, or with Read Ahead on Disk the share
     /// of its budget for reading ahead.
     private var aheadSegments: Int {
-        guard diskActive, let diskReadAhead else { return readAheadSegments }
+        guard diskActive else { return readAheadSegments }
         return Self.diskAheadSegments(
             partSize: layouts.first?.partSize ?? 716_800,
-            budgetBytes: diskReadAhead.budgetBytes,
+            budgetBytes: diskBudgetBytes,
             memory: readAheadSegments
         )
     }
@@ -766,6 +785,7 @@ actor UsenetStreamSession {
         // article (a finished fetch moves it too).
         guard index != playhead || jumped else { return }
         playhead = index
+        noteDiskEvent()
         if jumped {
             scanFrom = 0
             // A seek: read-ahead for the old position is no longer useful.
@@ -868,7 +888,7 @@ actor UsenetStreamSession {
 
     private func diskWritten(_ index: Int, bytes: Int?) {
         writing[index] = nil
-        guard !diskStopped, let diskReadAhead else { return }
+        guard !diskStopped, diskReadAhead != nil else { return }
         guard let bytes else {
             usenetLog.error("usenet: an article couldn't be written to disk, reading ahead in memory only")
             diskFailed = true
@@ -877,10 +897,44 @@ actor UsenetStreamSession {
         }
         if onDisk[index] == nil { diskBytes += Int64(bytes) }
         onDisk[index] = bytes
-        guard diskBytes > diskReadAhead.budgetBytes else { return }
+        noteDiskEvent()
+        trimDisk()
+    }
+
+    /// What tvOS reports free decides how much of the chosen size the stream may use: it
+    /// grows when tvOS clears space and shrinks when something else fills the disk.
+    private func checkDiskSpace() {
+        guard let store = diskReadAhead?.store, !spaceCheckRunning, !diskStopped else { return }
+        spaceCheckRunning = true
+        eventsSinceSpaceCheck = 0
+        Task {
+            let free = await store.freeSpace()
+            self.diskSpaceChecked(free)
+        }
+    }
+
+    /// Every few articles written or played: also while the read-ahead waits for room.
+    private func noteDiskEvent() {
+        guard diskReadAhead != nil, !diskFailed else { return }
+        eventsSinceSpaceCheck += 1
+        if eventsSinceSpaceCheck >= Self.spaceCheckEvery { checkDiskSpace() }
+    }
+
+    private func diskSpaceChecked(_ free: Int64) {
+        spaceCheckRunning = false
+        guard !diskStopped, let diskReadAhead else { return }
+        diskFreeBytes = free
+        diskBudgetBytes = UsenetDiskReadAhead.budgetBytes(
+            size: diskReadAhead.sizeBytes, holding: diskBytes, freeSpace: free
+        )
+        trimDisk()
+    }
+
+    private func trimDisk() {
+        guard let store = diskReadAhead?.store, diskBytes > diskBudgetBytes else { return }
         let evicted = Self.diskEvictions(
             onDisk: onDisk,
-            budgetBytes: diskReadAhead.budgetBytes,
+            budgetBytes: diskBudgetBytes,
             keep: playhead...(playhead + aheadSegments),
             pinned: pinned
         )
@@ -889,7 +943,6 @@ actor UsenetStreamSession {
             if let bytes = onDisk.removeValue(forKey: index) { diskBytes -= Int64(bytes) }
             if index > playhead { rescan(from: index) }
         }
-        let store = diskReadAhead.store
         Task { await store.remove(evicted) }
     }
 
