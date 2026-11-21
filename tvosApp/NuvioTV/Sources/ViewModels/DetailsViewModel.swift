@@ -461,6 +461,8 @@ class DetailsViewModel: ObservableObject {
     /// The pictures a MyAnimeList title's Related row is waiting for (`fillMALRelatedPictures`).
     private var relatedPicturesTask: Task<Void, Never>?
     private var relatedPicturesRequest: String?
+    /// The anime reviews asked for this title (`loadAnimeReviews`).
+    private var animeReviewsRequest: String?
     private(set) var watchlistMutationTask: Task<Void, Never>?
     /// Invalidates every asynchronous completion from an older details load.
     /// This is intentionally separate from the content id: the same title can
@@ -680,6 +682,7 @@ class DetailsViewModel: ObservableObject {
         relatedPicturesTask?.cancel()
         relatedPicturesTask = nil
         relatedPicturesRequest = nil
+        animeReviewsRequest = nil
         uiState.isLoadingEnrichment = false
         prefetchedStreamId = nil
         prefetchedEpisode = nil
@@ -784,6 +787,8 @@ class DetailsViewModel: ObservableObject {
             guard self.detailsRequestGeneration == generation,
                   self.uiState.meta?.id == meta.id else { return }
             TVHomeDebugTrace.log("details.enrich.begin id=\(meta.id)")
+            // AniList's and MAL's reviews of an anime, whichever source the title is from.
+            self.loadAnimeReviews(for: meta, generation: generation)
             self.uiState.isLoadingEnrichment = true
             defer {
                 if self.detailsRequestGeneration == generation {
@@ -969,6 +974,29 @@ class DetailsViewModel: ObservableObject {
             }
             guard let self, self.relatedPicturesRequest == request else { return }
             self.relatedPicturesTask = nil
+        }
+    }
+
+    /// AniList's and MAL's reviews of an anime (AniList Reviews, MAL Reviews), apart from the
+    /// rest: an AniList, MAL or Kitsu title, or a Cinemeta anime the offline tables map. Asked once
+    /// a title (and again when a setting changes).
+    private func loadAnimeReviews(for meta: NuvioMeta, generation: UInt64) {
+        let wantsAniList = AnimeReviews.showsAniList
+        let wantsMAL = AnimeReviews.showsMAL
+        guard wantsAniList || wantsMAL else { return }
+        let request = "\(meta.id.lowercased())|\(wantsAniList)|\(wantsMAL)"
+        guard animeReviewsRequest != request else { return }
+        animeReviewsRequest = request
+        Task { @MainActor [weak self] in
+            async let aniList = AnimeReviews.aniList(for: meta)
+            async let mal = AnimeReviews.mal(for: meta)
+            let found = await (aniList, mal)
+            if !found.0.isEmpty, AnimeFind.aniListIcon == nil {
+                await AnimeFind.loadAniListIcon()
+            }
+            guard let self, self.isCurrentRequest(metaId: meta.id, generation: generation) else { return }
+            if !found.0.isEmpty { self.uiState.aniListReviews = found.0 }
+            if !found.1.isEmpty { self.uiState.malReviews = found.1 }
         }
     }
 
