@@ -1062,11 +1062,11 @@ class DetailsViewModel: ObservableObject {
 
     /// Ratings the Home hero already fetched for this title, so the Details
     /// ratings row is there on the first frame instead of popping in.
+    /// An anime title that carries its own score (AniList, MAL, Kitsu) gets the hero's others too.
     private func seedingCachedRatings(into meta: NuvioMeta) -> NuvioMeta {
-        guard meta.externalRatings?.isEmpty ?? true,
-              let cached = AddonRatingsService.cachedHomeHeroRatings(for: meta),
+        guard let cached = AddonRatingsService.cachedHomeHeroRatings(for: meta),
               !cached.isEmpty else { return meta }
-        return meta.withExternalRatings(cached)
+        return meta.addingRatings(cached)
     }
 
     private func applyCertification(_ certification: String?, for metaId: String, generation: UInt64) {
