@@ -287,6 +287,25 @@ struct NuvioMeta: Identifiable, Codable, Equatable, Hashable, Sendable {
         return Self.canonicalImdbID(from: id) ?? imdbId ?? id
     }
 
+    /// True when this metadata matches candidateId (direct id, imdbId, streamId, or tmdbId prefix).
+    func matches(id candidateId: String) -> Bool {
+        if id.caseInsensitiveCompare(candidateId) == .orderedSame {
+            return true
+        }
+        if let imdbId, imdbId.caseInsensitiveCompare(candidateId) == .orderedSame {
+            return true
+        }
+        if streamId.caseInsensitiveCompare(candidateId) == .orderedSame {
+            return true
+        }
+        if candidateId.hasPrefix("tmdb:"),
+           let tmdbNum = Int(candidateId.dropFirst(5)),
+           tmdbId == tmdbNum {
+            return true
+        }
+        return false
+    }
+
     /// Compact copy for watched / library-style persistence.
     /// Drops the full episode guide (can be huge) and non-finite ratings so a
     /// single bad `Double.nan` cannot make `JSONEncoder` silently drop the
@@ -468,17 +487,22 @@ struct NuvioMeta: Identifiable, Codable, Equatable, Hashable, Sendable {
     /// cast/director/writer credits) from a previously resolved `NuvioMeta` instance
     /// when merging with a newly fetched full `/meta` record that does not provide them.
     func preservingEnrichment(from existing: NuvioMeta?) -> NuvioMeta {
-        guard let existing, existing.id == id else { return self }
+        guard let existing, matches(id: existing.id) || existing.matches(id: id) else { return self }
         var resolved = self
-        if resolved.externalRatings == nil, let existingRatings = existing.externalRatings {
+        if let existingRatings = existing.externalRatings, !existingRatings.isEmpty {
+            // The ratings already shown (MDBList's, the add-ons') stay when the full title brings
+            // only its own, as an AniList title does with its AniList score.
+            resolved = resolved.addingRatings(existingRatings)
+        } else if resolved.externalRatings == nil, let existingRatings = existing.externalRatings {
             resolved = resolved.withExternalRatings(existingRatings)
         }
         let castToUse = (resolved.cast == nil || resolved.cast?.isEmpty == true) ? existing.cast : resolved.cast
         let directorToUse = (resolved.director == nil || resolved.director?.isEmpty == true) ? existing.director : resolved.director
         let writerToUse = (resolved.writer == nil || resolved.writer?.isEmpty == true) ? existing.writer : resolved.writer
         let certToUse = (resolved.certification == nil || resolved.certification?.isEmpty == true) ? existing.certification : resolved.certification
+        let genresToUse = (resolved.genres == nil || resolved.genres?.isEmpty == true) ? existing.genres : resolved.genres
 
-        if castToUse != resolved.cast || directorToUse != resolved.director || writerToUse != resolved.writer || certToUse != resolved.certification {
+        if castToUse != resolved.cast || directorToUse != resolved.director || writerToUse != resolved.writer || certToUse != resolved.certification || genresToUse != resolved.genres {
             resolved = NuvioMeta(
                 id: resolved.id,
                 name: resolved.name,
@@ -490,7 +514,7 @@ struct NuvioMeta: Identifiable, Codable, Equatable, Hashable, Sendable {
                 tmdbId: resolved.tmdbId,
                 type: resolved.type,
                 year: resolved.year,
-                genres: resolved.genres,
+                genres: genresToUse,
                 rating: resolved.rating,
                 releaseInfo: resolved.releaseInfo,
                 runtime: resolved.runtime,
@@ -511,6 +535,74 @@ struct NuvioMeta: Identifiable, Codable, Equatable, Hashable, Sendable {
             )
         }
         return resolved
+    }
+
+    func withImdbId(_ newImdbId: String?) -> NuvioMeta {
+        guard imdbId != newImdbId else { return self }
+        return NuvioMeta(
+            id: id,
+            name: name,
+            description: description,
+            posterUrl: posterUrl,
+            backgroundUrl: backgroundUrl,
+            logoUrl: logoUrl,
+            imdbId: newImdbId,
+            tmdbId: tmdbId,
+            type: type,
+            year: year,
+            genres: genres,
+            rating: rating,
+            releaseInfo: releaseInfo,
+            runtime: runtime,
+            cast: cast,
+            director: director,
+            writer: writer,
+            certification: certification,
+            country: country,
+            language: language,
+            released: released,
+            status: status,
+            videos: videos,
+            trailerYtIds: trailerYtIds,
+            externalRatings: externalRatings,
+            posterShape: posterShape,
+            isFromAddon: isFromAddon,
+            landscapePosterUrl: landscapePosterUrl
+        )
+    }
+
+    func withTmdbId(_ newTmdbId: Int?) -> NuvioMeta {
+        guard tmdbId != newTmdbId else { return self }
+        return NuvioMeta(
+            id: id,
+            name: name,
+            description: description,
+            posterUrl: posterUrl,
+            backgroundUrl: backgroundUrl,
+            logoUrl: logoUrl,
+            imdbId: imdbId,
+            tmdbId: newTmdbId,
+            type: type,
+            year: year,
+            genres: genres,
+            rating: rating,
+            releaseInfo: releaseInfo,
+            runtime: runtime,
+            cast: cast,
+            director: director,
+            writer: writer,
+            certification: certification,
+            country: country,
+            language: language,
+            released: released,
+            status: status,
+            videos: videos,
+            trailerYtIds: trailerYtIds,
+            externalRatings: externalRatings,
+            posterShape: posterShape,
+            isFromAddon: isFromAddon,
+            landscapePosterUrl: landscapePosterUrl
+        )
     }
 
     func withCertification(_ newCertification: String?) -> NuvioMeta {
@@ -544,6 +636,16 @@ struct NuvioMeta: Identifiable, Codable, Equatable, Hashable, Sendable {
             isFromAddon: isFromAddon,
             landscapePosterUrl: landscapePosterUrl
         )
+    }
+
+    /// This title's ratings, then `others` of the sources it has none of: its own score replaces
+    /// another's copy of it.
+    func addingRatings(_ others: [NuvioExternalRating]) -> NuvioMeta {
+        let own = externalRatings ?? []
+        let ownSources = Set(own.map { AddonRatingsService.normalizedSourceKey($0.source) })
+        let added = others.filter { !ownSources.contains(AddonRatingsService.normalizedSourceKey($0.source)) }
+        guard !added.isEmpty else { return self }
+        return withExternalRatings(own + added)
     }
 
     func withExternalRatings(_ ratings: [NuvioExternalRating]) -> NuvioMeta {
@@ -1765,6 +1867,24 @@ enum ContentReleasePolicy {
     }
 }
 
+/// Titles without the unreleased ones, worked out once per list: filtered in a computed
+/// property, every title's release date was checked several times on every redraw, which
+/// Search and Discover do on every focus move.
+final class ReleasedTitlesMemo {
+    private var revision = -1
+    private var hidesUnreleased = false
+    private(set) var titles: [NuvioMeta] = []
+    private(set) var ids: [String] = []
+
+    func update(_ source: [NuvioMeta], revision: Int, hideUnreleased: Bool) {
+        guard revision != self.revision || hideUnreleased != hidesUnreleased else { return }
+        self.revision = revision
+        hidesUnreleased = hideUnreleased
+        titles = hideUnreleased ? source.filter { !ContentReleasePolicy.isUnreleased($0) } : source
+        ids = titles.map(\.id)
+    }
+}
+
 /// Video stream information
 struct NuvioSubtitle: Identifiable, Codable, Equatable, Sendable {
     var id: String { url }
@@ -2228,6 +2348,189 @@ enum ContinueWatchingFeatureFlags {
     /// Next Up remains enabled in normal builds. Set this false only when
     /// isolating the cost of the Next Up metadata path.
     static let nextUpCardsEnabled = true
+}
+
+/// The one unwatched episode that may be revealed by the episode spoiler
+/// setting. Selection follows the full guide order and the furthest watched
+/// episode, so out-of-order watch history never reveals several later cards.
+enum EpisodeSpoilerPolicy {
+    static func completedLedgerEpisodeKeysByContentID() -> [String: Set<String>] {
+        completedLedgerEpisodeKeysByContentID(from: WatchProgressLedger.records())
+    }
+
+    static func completedLedgerEpisodeKeysByContentID(
+        from records: [WatchProgressRecord]
+    ) -> [String: Set<String>] {
+        var result: [String: Set<String>] = [:]
+        for record in records {
+            guard record.isSeries,
+                  record.isEpisode,
+                  WatchProgressLedger.isComplete(record),
+                  let season = record.season, season > 0,
+                  let episode = record.episode, episode > 0 else {
+                continue
+            }
+            let contentID = record.contentId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !contentID.isEmpty else { continue }
+            result[contentID, default: []].insert("\(season):\(episode)")
+        }
+        return result
+    }
+
+    static func completedLedgerEpisodeKeys(
+        for meta: NuvioMeta,
+        from records: [WatchProgressRecord]
+    ) -> Set<String> {
+        let contentIDs = exactProgressContentIDs(for: meta)
+        return records.reduce(into: Set<String>()) { result, record in
+            guard contentIDs.contains(record.contentId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()),
+                  record.isSeries,
+                  record.isEpisode,
+                  WatchProgressLedger.isComplete(record),
+                  let season = record.season, season > 0,
+                  let episode = record.episode, episode > 0 else {
+                return
+            }
+            result.insert("\(season):\(episode)")
+        }
+    }
+
+    /// Watch evidence for spoiler decisions uses stable IDs and completed
+    /// playback records. The catalog title/year fallback is intentionally
+    /// excluded because two different series can share a title.
+    static func watchedEpisodeKeys(
+        for meta: NuvioMeta,
+        in episodes: [NuvioVideo]?,
+        snapshot: WatchedSnapshot? = nil,
+        completedLedgerKeysByContentID: [String: Set<String>]? = nil,
+        includeAniList: Bool = true
+    ) -> Set<String> {
+        guard let episodes, !episodes.isEmpty else { return [] }
+        let snapshot = snapshot ?? WatchedStore.currentSnapshot()
+        var result = snapshot.watchedEpisodeKeys(meta: meta)
+        for episode in episodes where snapshot.episodeWatchCount(
+            meta: meta,
+            season: episode.season,
+            episode: episode.episode
+        ) > 0 {
+            result.insert(episodeKey(for: episode))
+        }
+        if includeAniList {
+            result.formUnion(AniListAccount.watchedEpisodeKeys(meta: meta))
+        }
+        result.formUnion(PlexWatched.watchedEpisodeKeys(meta: meta))
+
+        let ledgerKeys = completedLedgerKeysByContentID ?? completedLedgerEpisodeKeysByContentID()
+        return trustedWatchedEpisodeKeys(
+            for: meta,
+            exactEpisodeKeys: result,
+            completedLedgerKeysByContentID: ledgerKeys
+        )
+    }
+
+    static func trustedWatchedEpisodeKeys(
+        for meta: NuvioMeta,
+        exactEpisodeKeys: Set<String>,
+        completedLedgerKeysByContentID: [String: Set<String>]
+    ) -> Set<String> {
+        var result = exactEpisodeKeys
+        for contentID in exactProgressContentIDs(for: meta) {
+            result.formUnion(completedLedgerKeysByContentID[contentID] ?? [])
+        }
+        return result
+    }
+
+    static func revealableNextEpisodeKey(
+        in episodes: [NuvioVideo]?,
+        watchedEpisodeKeys: Set<String>,
+        guideIsOrdered: Bool = false
+    ) -> String? {
+        guard let episodes, !watchedEpisodeKeys.isEmpty else { return nil }
+
+        // Specials (season 0 or invalid numbering) are not part of the regular
+        // next-up sequence and must remain protected without explicit evidence.
+        let regularEpisodes = episodes.enumerated()
+            .filter { $0.element.season > 0 && $0.element.episode > 0 }
+        let ordered: [NuvioVideo]
+        if guideIsOrdered {
+            ordered = regularEpisodes.map(\.element)
+        } else {
+            ordered = regularEpisodes
+            .sorted { lhs, rhs in
+                if lhs.element.season != rhs.element.season {
+                    return lhs.element.season < rhs.element.season
+                }
+                if lhs.element.episode != rhs.element.episode {
+                    return lhs.element.episode < rhs.element.episode
+                }
+                return lhs.offset < rhs.offset
+            }
+            .map(\.element)
+        }
+        guard ordered.count > 1 else { return nil }
+
+        guard let furthestWatchedIndex = ordered.indices.last(where: {
+            watchedEpisodeKeys.contains(episodeKey(for: ordered[$0]))
+        }) else {
+            return nil
+        }
+
+        let nextIndex = furthestWatchedIndex + 1
+        guard ordered.indices.contains(nextIndex) else { return nil }
+        let predecessor = ordered[furthestWatchedIndex]
+        let nextEpisode = ordered[nextIndex]
+        let predecessorKey = episodeKey(for: predecessor)
+        let nextEpisodeKey = episodeKey(for: ordered[nextIndex])
+        guard watchedEpisodeKeys.contains(predecessorKey),
+              predecessorKey != nextEpisodeKey,
+              !watchedEpisodeKeys.contains(nextEpisodeKey),
+              isConsecutiveGuideSuccessor(nextEpisode, after: predecessor, in: ordered) else {
+            return nil
+        }
+        return nextEpisodeKey
+    }
+
+    static func isRevealableNextEpisode(
+        _ episode: NuvioVideo,
+        in episodes: [NuvioVideo]?,
+        watchedEpisodeKeys: Set<String>
+    ) -> Bool {
+        revealableNextEpisodeKey(in: episodes, watchedEpisodeKeys: watchedEpisodeKeys)
+            == episodeKey(for: episode)
+    }
+
+    static func episodeKey(for episode: NuvioVideo) -> String {
+        "\(episode.season):\(episode.episode)"
+    }
+
+    private static func exactProgressContentIDs(for meta: NuvioMeta) -> Set<String> {
+        var result = Set<String>()
+        for rawValue in [meta.id, meta.imdbId].compactMap({ $0 }) {
+            let normalized = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if !normalized.isEmpty { result.insert(normalized) }
+        }
+        if let tmdbID = meta.tmdbId {
+            result.insert(String(tmdbID))
+            result.insert("tmdb:\(tmdbID)")
+        }
+        return result
+    }
+
+    private static func isConsecutiveGuideSuccessor(
+        _ next: NuvioVideo,
+        after previous: NuvioVideo,
+        in ordered: [NuvioVideo]
+    ) -> Bool {
+        if next.season == previous.season {
+            return next.episode == previous.episode + 1
+        }
+        guard next.season == previous.season + 1, next.episode == 1 else { return false }
+        let previousSeasonEpisodes = ordered.filter { $0.season == previous.season }
+        guard previousSeasonEpisodes.last?.id == previous.id else { return false }
+        return previousSeasonEpisodes.enumerated().allSatisfy { index, episode in
+            episode.episode == index + 1
+        }
+    }
 }
 
 struct ContinueWatchingItem: Identifiable, Codable, Equatable, Sendable {
@@ -2821,6 +3124,8 @@ enum ContinueWatchingStore {
         // reading progress during this switch sees the new profile's rows.
         WatchProgressLedger.setActiveProfile(profileId)
         ContinueWatchingDismissStore.setActiveProfile(profileId)
+        // Plex cards Home merged belong to the previous profile.
+        PlexContinueWatchingMerge.reset()
         migrateLegacyHistoryIfNeeded()
         // Carry a pre-ledger install's history across, so upgrading users keep
         // their row and it becomes syncable.
@@ -2948,7 +3253,7 @@ enum ContinueWatchingStore {
         do {
             decoded = try makeDecoder().decode([ContinueWatchingItem].self, from: data)
         } catch {
-            return "stored file unreadable: \(diagnosticText(for: error))"
+            return "stored file unreadable: \(diagnosticText(for: error)); \(persistence)"
         }
         let kept = decoded.filter { shouldKeep(position: $0.position, duration: $0.duration) }
         let upNext = kept.filter(\.isUpNextEntry).count
@@ -3736,6 +4041,14 @@ enum ContinueWatchingStore {
     }
 
     private static func writeTopShelfFeedLocked(from selectedItems: [ContinueWatchingItem]) {
+        // Plex's titles in progress join the shelf as they join Home's row,
+        // and take the place Home's sort gives them.
+        var selectedItems = selectedItems
+        let withPlex = PlexContinueWatchingMerge.mergedWithLatest(into: selectedItems)
+        if !withPlex.elementsEqual(selectedItems, by: { $0.isContentEqual(to: $1) }) {
+            let preference = ProfileSettings.current.string(forKey: SettingsKey.continueWatchingSort) ?? "Default"
+            selectedItems = ContinueWatchingSortPolicy.sorted(withPlex, preference: preference)
+        }
         // Each entry keeps its place on Home's row, so the shelf can show both
         // sections as one row in that order.
         let allItems = Array(selectedItems.enumerated())
@@ -4547,6 +4860,12 @@ enum LibraryStore {
         return readEnvelopeLocked(forProfileId: activeProfileId).items
     }
 
+    static func items(forProfileId profileId: String?) -> [LibraryStoreItem] {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        return readEnvelopeLocked(forProfileId: profileId).items
+    }
+
     static func contains(metaId: String, type: String) -> Bool {
         cacheLock.lock()
         defer { cacheLock.unlock() }
@@ -5050,6 +5369,19 @@ struct NuvioCollectionFolder: Decodable, Identifiable, Equatable {
     }
 }
 
+fileprivate extension KeyedDecodingContainer {
+    /// An integer id that some clients save as text ("8687275"). A value that is
+    /// neither a number nor a numeric string reads as nil instead of throwing, so
+    /// one odd id cannot make a whole collection fail to load.
+    func decodeLenientInteger<T: FixedWidthInteger & Decodable>(_ type: T.Type, forKey key: Key) -> T? {
+        if let number = try? decodeIfPresent(T.self, forKey: key) { return number }
+        if let text = try? decodeIfPresent(String.self, forKey: key) {
+            return T(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return nil
+    }
+}
+
 struct NuvioCollectionSource: Decodable, Hashable {
     var provider: String
     var addonId: String?
@@ -5125,12 +5457,12 @@ struct NuvioCollectionSource: Decodable, Hashable {
         tmdbSourceType = try c.decodeIfPresent(String.self, forKey: .tmdbSourceType)
             ?? c.decodeIfPresent(String.self, forKey: .tmdb_source_type)
         title = try c.decodeIfPresent(String.self, forKey: .title)
-        tmdbId = try c.decodeIfPresent(Int.self, forKey: .tmdbId)
-            ?? c.decodeIfPresent(Int.self, forKey: .tmdb_id)
-        traktListId = try c.decodeIfPresent(Int64.self, forKey: .traktListId)
-            ?? c.decodeIfPresent(Int64.self, forKey: .trakt_list_id)
-        mdblistId = try c.decodeIfPresent(Int.self, forKey: .mdblistId)
-            ?? c.decodeIfPresent(Int.self, forKey: .mdblist_id)
+        tmdbId = c.decodeLenientInteger(Int.self, forKey: .tmdbId)
+            ?? c.decodeLenientInteger(Int.self, forKey: .tmdb_id)
+        traktListId = c.decodeLenientInteger(Int64.self, forKey: .traktListId)
+            ?? c.decodeLenientInteger(Int64.self, forKey: .trakt_list_id)
+        mdblistId = c.decodeLenientInteger(Int.self, forKey: .mdblistId)
+            ?? c.decodeLenientInteger(Int.self, forKey: .mdblist_id)
         mdblistSlug = try c.decodeIfPresent(String.self, forKey: .mdblistSlug)
             ?? c.decodeIfPresent(String.self, forKey: .mdblist_slug)
         mdblistUrl = try c.decodeIfPresent(String.self, forKey: .mdblistUrl)
@@ -6831,6 +7163,30 @@ enum LargePayloadStore {
 
     static func remove(key: String, directory: String) {
         removeAll(key: key, directory: directory, except: nil)
+    }
+
+    /// Every key stored in `directory`, on either tier.
+    static func keys(directory: String) -> Set<String> {
+        var keys = Set<String>()
+        for base in [applicationSupportBase, cachesBase] {
+            guard let url = base?.appendingPathComponent(directory, isDirectory: true),
+                  let names = try? FileManager.default.contentsOfDirectory(atPath: url.path) else { continue }
+            for name in names {
+                if let key = key(forFileName: name) { keys.insert(key) }
+            }
+        }
+        return keys
+    }
+
+    /// Reverses `fileName(forKey:)`.
+    private static func key(forFileName name: String) -> String? {
+        guard name.hasSuffix(".json") else { return nil }
+        var encoded = String(name.dropLast(5))
+            .replacingOccurrences(of: "_", with: "/")
+            .replacingOccurrences(of: "-", with: "+")
+        while encoded.count % 4 != 0 { encoded += "=" }
+        guard let data = Data(base64Encoded: encoded) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
     static func removeDirectory(_ directory: String) {
@@ -9199,14 +9555,14 @@ enum WatchedStore {
     /// have only episode rows after a Trakt pull, so the aggregate episode
     /// policy must be considered alongside an explicit title marker.
     static func isWatchedForDisplay(meta: NuvioMeta) -> Bool {
-        contains(meta: meta) || (meta.isSeries && hasSeriesWatchedState(meta))
+        contains(meta: meta) || (meta.isSeries && hasSeriesWatchedState(meta)) || PlexWatched.isWatched(meta: meta)
     }
 
     /// Catalog cards can use a provider-local id while the watched marker was
     /// saved from the canonical Details response. Fall back to the normalized
     /// series title/year in that case so the portrait checkmark still appears.
     static func containsCatalogTitle(meta: NuvioMeta) -> Bool {
-        currentSnapshot().containsCatalogTitle(meta: meta)
+        currentSnapshot().containsCatalogTitle(meta: meta) || PlexWatched.isWatched(meta: meta)
     }
 
     static func containsEpisode(metaId: String, season: Int, episode: Int) -> Bool {
@@ -12408,7 +12764,18 @@ enum ProfileSettings {
     private static let traktIsolationMigrationKey = "nuvio.tv.profile.settings.traktIsolation.v1"
     private static let simklIsolationMigrationKey = "nuvio.tv.profile.settings.simklIsolation.v1"
     private static let mdbListIsolationMigrationKey = "nuvio.tv.profile.settings.mdbListIsolation.v1"
+    private static let previousTrailerSoundMigrationKey = "nuvio.tv.profile.settings.trailerSound.v1"
+    private static let trailerSoundMigrationKey = "nuvio.tv.profile.settings.trailerSound.v2"
+    private static let trailerSoundLegacyFallbackKey = "nuvio.tv.profile.settings.trailerSound.legacyFallback"
     static let settingsChangedNotification = Notification.Name("nuvio.tv.profile.settings.changed")
+    /// Posted on the main thread after the active profile changes to another one
+    /// (or to none), so state kept across profiles can be reset.
+    static let activeProfileChangedNotification = Notification.Name("nuvio.tv.profile.active.changed")
+
+    private static func postActiveProfileChanged() {
+        let post = { NotificationCenter.default.post(name: activeProfileChangedNotification, object: nil) }
+        if Thread.isMainThread { post() } else { DispatchQueue.main.async(execute: post) }
+    }
 
     /// Values identifying connected external tracking/metadata accounts on the device.
     /// They are deliberately not copied when a new profile is created: a profile
@@ -12452,19 +12819,27 @@ enum ProfileSettings {
     static var activeProfileScope: String { activeProfileID ?? "default" }
 
     /// The suite backing a given profile id, or `.standard` when there is none.
-    /// `UserDefaults(suiteName:)` returns the same shared store for a name, so
-    /// repeated calls for one profile all read and write the same values.
+    /// Each profile's suite is created once and reused, so every call for a
+    /// profile returns the same object. ContentView passes this to
+    /// `.defaultAppStorage` in its body; a new object on every body run made
+    /// SwiftUI treat the storage as changed and redraw every `@AppStorage`
+    /// view (all rows and cards) each time ContentView re-rendered.
     ///
     /// This accessor must stay read-only. On upgrade, a profile suite may still
     /// contain a legacy oversized preference blob; writing the identity marker
     /// here would reach cfprefsd before `setActiveProfile` has purged it.
     static func store(for profileId: String?) -> UserDefaults {
-        guard let id = profileId, !id.isEmpty,
-              let suite = UserDefaults(suiteName: "\(suitePrefix).\(id)") else {
-            return .standard
-        }
+        guard let id = profileId, !id.isEmpty else { return .standard }
+        storesLock.lock()
+        defer { storesLock.unlock() }
+        if let cached = stores[id] { return cached }
+        guard let suite = UserDefaults(suiteName: "\(suitePrefix).\(id)") else { return .standard }
+        stores[id] = suite
         return suite
     }
+
+    private static let storesLock = NSLock()
+    nonisolated(unsafe) private static var stores: [String: UserDefaults] = [:]
 
     /// Point reads/writes at a profile. Called on launch and on every switch.
     /// Seeds the profile from the pre-profile global settings the first time it
@@ -12490,14 +12865,17 @@ enum ProfileSettings {
         // Profile selection remains active when disk migration fails. In that
         // case, skip preference mutations so an oversized legacy domain is not
         // sent back through cfprefsd.
+        let changed = activeProfileID != id
         current = suite
         activeProfileID = id
+        if changed { postActiveProfileChanged() }
         guard canMutatePreferences else { return }
 
         suite.set(primary, forKey: primaryProfileKey)
         migrateTraktIsolationIfNeeded(in: suite, isPrimary: primary)
         migrateSimklIsolationIfNeeded(in: suite, profileScope: id, isPrimary: primary)
         migrateMdbListIsolationIfNeeded(in: suite, profileScope: id, isPrimary: primary)
+        migrateTrailerSoundIfNeeded(in: suite)
         AISubtitleKeyStore.migrateLegacyKey(from: suite, profileScope: id)
         if needsSeed {
             AISubtitleKeyStore.migrateLegacyKey(from: .standard, profileScope: id)
@@ -12509,8 +12887,52 @@ enum ProfileSettings {
     }
 
     static func clearActiveProfile() {
+        let changed = activeProfileID != nil
         current = .standard
         activeProfileID = nil
+        if changed { postActiveProfileChanged() }
+    }
+
+    /// The old sound preference now belongs only to card previews. Copy its
+    /// value once into the new, broader trailer sound setting when a profile
+    /// first loads. Mark even profiles without the old key so a later card
+    /// preference change is never mistaken for upgrade data.
+    static func migrateTrailerSoundIfNeeded(in store: UserDefaults) {
+        guard !store.bool(forKey: trailerSoundMigrationKey) else { return }
+        if store.object(forKey: SettingsKey.trailerSound) == nil {
+            let previousMigrationAlreadyRan = store.bool(forKey: previousTrailerSoundMigrationKey)
+            let legacyValue = store.object(forKey: SettingsKey.trailerPreviewSound) as? Bool
+            if !previousMigrationAlreadyRan, let legacyValue {
+                store.set(legacyValue, forKey: SettingsKey.trailerSound)
+            } else {
+                store.set(false, forKey: SettingsKey.trailerSound)
+            }
+            store.set(true, forKey: trailerSoundLegacyFallbackKey)
+        }
+        store.set(true, forKey: trailerSoundMigrationKey)
+    }
+
+    /// A legacy account payload may arrive after profile activation. Import it
+    /// while the new setting is absent or still holds the local migration
+    /// fallback; subsequent syncs preserve the user's independent value.
+    static func importLegacyTrailerSoundIfNeeded(_ legacyValue: Bool, in store: UserDefaults) {
+        guard store.object(forKey: SettingsKey.trailerSound) == nil
+                || store.bool(forKey: trailerSoundLegacyFallbackKey) else { return }
+        store.set(legacyValue, forKey: SettingsKey.trailerSound)
+        store.removeObject(forKey: trailerSoundLegacyFallbackKey)
+    }
+
+    /// Called when the user changes Trailer Sound or a sync imports its new
+    /// key, so a later legacy import cannot replace the explicit preference.
+    static func markTrailerSoundExplicit(in store: UserDefaults) {
+        store.removeObject(forKey: trailerSoundLegacyFallbackKey)
+    }
+
+    /// Keep the default sound value exportable after Reset Settings removes
+    /// all published keys while the one-time migration marker remains.
+    static func resetTrailerSoundPreference(in store: UserDefaults) {
+        store.set(false, forKey: SettingsKey.trailerSound)
+        markTrailerSoundExplicit(in: store)
     }
 
     /// Returns whether a captured settings store still belongs to the active
@@ -12545,6 +12967,7 @@ enum ProfileSettings {
     static func eraseAll(profileIds: [String]) {
         current = .standard
         activeProfileID = nil
+        IPTVSourceStore.removeAllSources(profileIDs: profileIds)
         let simklTokenStorage = SimklKeychainTokenStorage()
         let mdbListTokenStorage = MdbListKeychainTokenStorage()
         for id in Set(profileIds) where !id.isEmpty {
@@ -12558,10 +12981,21 @@ enum ProfileSettings {
             AISubtitleKeyStore.remove(profileScope: id)
             Task { await AISubtitleTranslationCache.shared.removeAll(profileScope: id) }
             StreamBadgeSettingsStore.removeRules(for: id)
+            AniListAccount.removeLogin(for: id)
+            MALKeychain.remove(for: id)
             UserDefaults.standard.removePersistentDomain(forName: "\(suitePrefix).\(id)")
         }
         HomeCatalogPayloadStore.removeAll(in: .standard)
         AISubtitleKeyStore.remove(profileScope: "default")
+        // Keychain logins outlive the removed suites. Profile ids 1-6 and
+        // "guest" are reused by the next account, and Trakt falls back across
+        // "guest", "1" and "default", so the previous user's sessions would be
+        // restored without these.
+        TraktKeychainStorage.shared.clearAll()
+        AniListAccount.removeLogin(for: "default")
+        AniListAccount.clearStates()
+        MALKeychain.remove(for: "default")
+        Task { await MALAccount.lists.forget() }
         Task { await AISubtitleTranslationCache.shared.removeAll(profileScope: "default") }
         StreamBadgeSettingsStore.removeRules(for: "default")
         SimklAuthStore.clearAuth(
@@ -12578,17 +13012,34 @@ enum ProfileSettings {
         // Removing the suites no longer takes the sync caches with them — they
         // are files now, and would otherwise be inherited by the next account.
         SimklSyncCache.eraseAll()
+        // Interrupted Jellyfin syncs keep the server's library listing in checkpoint pages.
+        JellyfinSyncCheckpoints.eraseAll()
         LargePayloadStore.purgeLegacyOversizedPreferences(in: .standard)
         for key in SettingsKey.all {
             UserDefaults.standard.removeObject(forKey: key)
         }
+        // Recent searches were kept in `.standard` for every profile before they moved into
+        // each profile's suite (removed above with the suites).
+        UserDefaults.standard.removeObject(forKey: SearchHistoryStore.storageKey)
     }
 
     /// Clone the current profile's settings into a freshly created profile, then
     /// mark it seeded so the global migration never overwrites the copy.
     static func seedNewProfile(_ profileId: String, copyingFrom source: UserDefaults? = nil) {
         let destination = store(for: profileId)
-        copySettings(from: source ?? current, to: destination, includeProfileLocalIntegrationSettings: false)
+        let sourceStore = source ?? current
+        copySettings(from: sourceStore, to: destination, includeProfileLocalIntegrationSettings: false)
+        if destination.object(forKey: SettingsKey.trailerSound) == nil,
+           sourceStore.bool(forKey: previousTrailerSoundMigrationKey)
+                || sourceStore.bool(forKey: trailerSoundMigrationKey) {
+            // Older migration code could mark a profile initialized before its
+            // card preference changed, leaving Trailer Sound absent. Preserve
+            // the new setting's off default when cloning that profile.
+            destination.set(false, forKey: SettingsKey.trailerSound)
+            destination.set(true, forKey: trailerSoundLegacyFallbackKey)
+        } else if sourceStore.bool(forKey: trailerSoundLegacyFallbackKey) {
+            destination.set(true, forKey: trailerSoundLegacyFallbackKey)
+        }
         clearTraktProfileState(in: destination)
         clearSimklProfileState(in: destination, profileScope: profileId)
         clearMdbListProfileState(in: destination, profileScope: profileId)
@@ -12813,6 +13264,16 @@ struct CatalogBrowseUiState {
     var isLoadingMore: Bool = false
 }
 
+/// TMDB movie collection franchise (e.g. Marvel Cinematic Universe / Star Wars / Harry Potter).
+struct TmdbMovieCollection: Identifiable, Equatable {
+    let id: Int
+    let name: String
+    let overview: String?
+    let posterURL: String?
+    let backdropURL: String?
+    let items: [RelatedTitle]
+}
+
 /// UI state for details screen
 struct DetailsUiState {
     var isLoading: Bool = true
@@ -12829,6 +13290,8 @@ struct DetailsUiState {
     var isWatched: Bool = false
     /// Related titles under the cast row (TMDB, Trakt, or Simkl recommendations).
     var moreLikeThis: [RelatedTitle] = []
+    /// Movie collection franchise (TMDB movie series).
+    var collection: TmdbMovieCollection? = nil
     /// Production companies + networks from TMDB.
     var companies: [MetaCompany] = []
     /// TMDB creator/director and cast people, including profile photos.

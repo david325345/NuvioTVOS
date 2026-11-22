@@ -246,6 +246,7 @@ struct NativeSearchView: View {
     var onLongPress: ((NuvioMeta) -> Void)? = nil
 
     @AppStorage("nuvio.keyboard.detectedLayout") private var detectedKeyboardMode: TVOSKeyboardLayoutMode = .linear
+    @AppStorage(SettingsKey.useTopNavigation) private var useTopNavigation = false
 
     @FocusState private var focusedResultID: String?
     @FocusState private var focusedFilterID: String?
@@ -492,7 +493,9 @@ struct NativeSearchView: View {
                 .autocorrectionDisabled()
                 #if os(tvOS)
                 .toolbar(.hidden, for: .navigationBar)
-                .toolbar(.hidden, for: .tabBar)
+                // Hiding the tab bar suits the sidebar layout; the native top bar is the only
+                // way back to the other tabs, so it stays under the system's control there.
+                .toolbar(useTopNavigation ? .automatic : .hidden, for: .tabBar)
                 #endif
         }
     }
@@ -1016,6 +1019,7 @@ struct NativeSearchView: View {
                 }
                 .padding(.top, 16)
                 .padding(.horizontal, NativeSearchGridMetrics.gridContentInset)
+                .background(TVTopBarScrollAnchor())
             }
             .onChange(of: resultsScrollTopGeneration) { _, _ in
                 withAnimation(.easeInOut(duration: 0.2)) {
@@ -1250,6 +1254,7 @@ struct NativeSearchKeyboardHost: View {
 /// Dedicated `.searchable` host for tvOS Grid keyboard (multi-row vertical layout).
 /// Fixed width on the left with full vertical height to show all rows (a-f, g-l, m-r, s-x, y-z, space/clear).
 struct NativeSearchGridKeyboardHost: View {
+    @AppStorage(SettingsKey.useTopNavigation) private var useTopNavigation = false
     @Binding var text: String
     let prompt: String
     let isDisabled: Bool
@@ -1291,7 +1296,7 @@ struct NativeSearchGridKeyboardHost: View {
                 }
                 #if os(tvOS)
                 .toolbar(.hidden, for: .navigationBar)
-                .toolbar(.hidden, for: .tabBar)
+                .toolbar(useTopNavigation ? .automatic : .hidden, for: .tabBar)
                 #endif
         }
         .padding(.top, topPadding)

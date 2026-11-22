@@ -16,6 +16,27 @@ private actor RealDebridAvailabilityCache {
     private var cache: [String: (item: LocalDebridCachedItem?, expiresAt: Date)] = [:]
     private var lastRequestTime = Date.distantPast
     private let minimumRequestInterval: TimeInterval = 1.0 // Real-Debrid rate limit: 1 req/sec
+    private var isEndpointDisabled = false
+    private var disabledUntil = Date.distantPast
+
+    func isAvailable() -> Bool {
+        if isEndpointDisabled && Date() < disabledUntil {
+            return false
+        }
+        return true
+    }
+
+    func markEndpointDisabled(duration: TimeInterval = 3600) {
+        isEndpointDisabled = true
+        disabledUntil = Date().addingTimeInterval(duration)
+    }
+
+    func resetForTesting() {
+        cache = [:]
+        lastRequestTime = Date.distantPast
+        isEndpointDisabled = false
+        disabledUntil = Date.distantPast
+    }
 
     func lookup(hashes: [String]) -> (statuses: [String: LocalDebridCacheStatus], missing: [String]) {
         let now = Date()
@@ -92,6 +113,10 @@ struct LocalDebridService: Sendable {
         Dictionary(uniqueKeysWithValues: hashes.map { ($0, .unknown) })
     }
 
+    static func resetRealDebridAvailabilityCacheForTesting() async {
+        await RealDebridAvailabilityCache.shared.resetForTesting()
+    }
+
     // MARK: - TorBox
 
     private func checkTorboxCached(apiKey: String, hashes: [String]) async -> [String: LocalDebridCacheStatus]? {
@@ -135,6 +160,9 @@ struct LocalDebridService: Sendable {
     // MARK: - Real-Debrid
 
     private func checkRealDebridCached(apiKey: String, hashes: [String]) async -> [String: LocalDebridCacheStatus] {
+        guard await RealDebridAvailabilityCache.shared.isAvailable() else {
+            return unknownStatuses(for: hashes)
+        }
         let (cachedStatuses, missing) = await RealDebridAvailabilityCache.shared.lookup(hashes: hashes)
         if missing.isEmpty {
             return cachedStatuses
@@ -163,6 +191,11 @@ struct LocalDebridService: Sendable {
                 guard let http = response as? HTTPURLResponse else { continue }
                 if http.statusCode == 429 {
                     print("[LocalDebridService] Real-Debrid instantAvailability returned 429 (rate limited)")
+                    break
+                }
+                if http.statusCode == 403 {
+                    print("[LocalDebridService] Real-Debrid instantAvailability returned 403 (endpoint disabled or forbidden)")
+                    await RealDebridAvailabilityCache.shared.markEndpointDisabled()
                     break
                 }
                 guard 200..<300 ~= http.statusCode,

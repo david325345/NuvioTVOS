@@ -34,6 +34,12 @@ extension PlayerView {
         ZStack {
             Color.black.ignoresSafeArea()
 
+            // Lets tvOS widen the app past 16:9 while the player is up.
+            FullscreenPlaybackSceneMarker()
+                .frame(width: 0, height: 0)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+
             videoSurfaceLayer
             playerBottomFadeLayer
             postPlayRecommendationLayer
@@ -65,6 +71,13 @@ extension PlayerView {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .opacity(isPlayerBottomFadeVisible ? 1 : 0)
             .animation(.easeInOut(duration: 0.2), value: isPlayerBottomFadeVisible)
+    }
+
+    /// The post-play mini player has played the video to its end.
+    var isPostPlayMiniPlayerFinished: Bool {
+        viewModel.postPlayState.isVisible
+            && !viewModel.postPlayState.isTrailerPlaying
+            && viewModel.status == .ended
     }
 
     @ViewBuilder
@@ -140,7 +153,8 @@ extension PlayerView {
                 .ignoresSafeArea(edges: viewModel.postPlayState.isVisible ? [] : .all)
             }
 
-            if viewModel.postPlayState.isVisible && viewModel.postPlayState.canReturnToPlayer {
+            if viewModel.postPlayState.isVisible && viewModel.postPlayState.canReturnToPlayer,
+               !isPostPlayMiniPlayerFinished {
                 miniPlayerReturnButton
             }
         }
@@ -165,6 +179,10 @@ extension PlayerView {
             }
         }
         .shadow(color: Color.black.opacity(viewModel.postPlayState.isVisible ? 0.6 : 0), radius: 16)
+        // Once the video has ended there is nothing to return to: the
+        // recommendation keeps the screen without a frozen mini player.
+        .opacity(isPostPlayMiniPlayerFinished ? 0 : 1)
+        .animation(.easeOut(duration: 0.3), value: isPostPlayMiniPlayerFinished)
         .frame(
             maxWidth: .infinity,
             maxHeight: .infinity,
@@ -228,6 +246,7 @@ extension PlayerView {
         // Window-level trackpad capture for scrubbing. Active only during bare video / scrubbing,
         // never while transport controls or native menus are active so the Focus Engine can navigate.
         RemoteTouchCatcher(
+            allowsSimultaneousTap: { viewModel.status == .paused || viewModel.isScrubbing },
             isActive: {
                 PlayerWindowInputCapturePolicy.allowsCapture(
                     existingConditions: didReportPlaybackStarted
@@ -758,9 +777,15 @@ extension PlayerView {
                 }) {
                     NextEpisodeOverlay(
                         episode: next,
+                        isEpisodeWatched: trustedWatchedEpisodeKeys.contains(
+                            EpisodeSpoilerPolicy.episodeKey(for: next)
+                        ),
+                        isRevealableNextEpisode: revealableNextEpisodeSpoilerKey
+                            == EpisodeSpoilerPolicy.episodeKey(for: next),
                         isAdvancing: viewModel.isAdvancingEpisode,
                         isFocused: nextEpisodeFocused,
-                        isAutoPlayCancelled: viewModel.isAutoPlayCancelled
+                        isAutoPlayCancelled: viewModel.isAutoPlayCancelled,
+                        isShuffled: viewModel.isShufflingEpisodes
                     )
                 }
                 .buttonStyle(PosterCardButtonStyle())
@@ -883,7 +908,8 @@ extension PlayerView {
                 isNextEpisodeFocused: nextEpisodeFocused || cancelAutoPlayFocused,
                 requestedFocus: $requestedControlFocus,
                 onFocusSkipSegment: { focusSkipSegment() },
-                onFocusNextEpisode: { focusNextEpisode(allowWhenControlsVisible: true) }
+                onFocusNextEpisode: { focusNextEpisode(allowWhenControlsVisible: true) },
+                onRemoteBackAction: { handleRemoteBack() }
             )
             .offset(y: viewModel.showScenePanel ? -160 : 0)
             .opacity(shouldShowControls ? 1 : 0)

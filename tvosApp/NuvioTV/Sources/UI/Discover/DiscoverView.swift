@@ -514,11 +514,14 @@ private struct DiscoverCard: View {
     @AppStorage(SettingsKey.customPosterEnabledScreens) private var customPosterEnabledScreens = "all"
 
     private var customPosterArtworkURL: String? {
-        CustomPosterURLResolver.resolve(
+        let screens = customPosterURLPattern.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? customPosterEnabledScreens
+            : "all"
+        return CustomPosterURLResolver.resolve(
             pattern: customPosterURLPattern,
             meta: meta,
             screen: .search,
-            enabledScreens: customPosterEnabledScreens,
+            enabledScreens: screens,
             shape: meta.tileShape == .square ? "square" : "poster"
         )
     }
@@ -569,7 +572,7 @@ private struct DiscoverCard: View {
                 .overlay(
                     shape.stroke(showsFocusedAppearance ? focusBorderColor : .clear, lineWidth: focusHighlighter ? AppFocusOutline.emphasizedWidth : AppFocusOutline.width)
                 )
-                .shadow(color: .black.opacity(showsFocusedAppearance ? 0.5 : 0.2), radius: showsFocusedAppearance ? 16 : 6)
+                .shadow(color: .black.opacity(showsFocusedAppearance ? 0.5 : 0), radius: showsFocusedAppearance ? 16 : 0)
 
                 if posterLabels {
                     VStack(alignment: .leading, spacing: 2) {
@@ -597,7 +600,14 @@ private struct DiscoverCard: View {
             onOpenDetails: action
         )
         .onChange(of: focused) { _, isFocused in onFocusChange?(isFocused) }
-        .animation(smoothFocus ? .spring(response: 0.28, dampingFraction: 0.75) : nil, value: showsFocusedAppearance)
+        .animation(
+            smoothFocus
+                ? (AppleTVCapability.current.supportsLiquidGlass
+                    ? .spring(response: 0.28, dampingFraction: 0.75)
+                    : .easeOut(duration: 0.14))
+                : nil,
+            value: showsFocusedAppearance
+        )
     }
 
     private var focusBorderColor: Color {

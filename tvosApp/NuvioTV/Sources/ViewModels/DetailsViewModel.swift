@@ -451,6 +451,9 @@ class DetailsViewModel: ObservableObject {
     private(set) var prefetchedEpisode: NuvioVideo?
     private(set) var prefetchStartTime: Date?
     private(set) var requestedStreamId: String?
+    /// The stream id of what the viewer chose to play on this title. Once set,
+    /// pre-fetch may not load another episode's streams over it.
+    private(set) var chosenStreamId: String?
 
     private let repository: CatalogRepository
     private let streamDiscoveryMode: DetailsStreamDiscoveryMode
@@ -470,7 +473,7 @@ class DetailsViewModel: ObservableObject {
     private let deferredPreparationDelay: AsyncDelay
     private let injectedEnrichmentStarter: EnrichmentStarter?
     private let watchlistContext: @MainActor () -> SelectedLibraryMutationContext?
-    private let remoteWatchlistMutation: @MainActor (NuvioMeta, Bool) async -> Bool
+    private let remoteWatchlistMutation: @MainActor (NuvioMeta, Bool, SelectedLibraryMutationContext) async -> Bool
 
     init(
         repository: CatalogRepository,
@@ -482,8 +485,8 @@ class DetailsViewModel: ObservableObject {
         watchlistContext: @escaping @MainActor () -> SelectedLibraryMutationContext? = {
             SelectedLibraryMutationContext()
         },
-        remoteWatchlistMutation: @escaping @MainActor (NuvioMeta, Bool) async -> Bool = { meta, membership in
-            await SelectedLibraryService.setWatchlist(meta, isInWatchlist: membership)
+        remoteWatchlistMutation: @escaping @MainActor (NuvioMeta, Bool, SelectedLibraryMutationContext) async -> Bool = { meta, membership, context in
+            await SelectedLibraryService.setWatchlist(meta, isInWatchlist: membership, context: context)
         }
     ) {
         self.repository = repository
@@ -499,7 +502,9 @@ class DetailsViewModel: ObservableObject {
         id: String,
         type: String,
         relatedItemsSnapshot: [RelatedTitle]? = nil,
+        collectionSnapshot: TmdbMovieCollection? = nil,
         relatedPeopleSnapshot: [TmdbPersonMetadata]? = nil,
+        relatedCompaniesSnapshot: [MetaCompany]? = nil,
         simklRatingsSnapshot: SimklTitleRatings? = nil
     ) -> Task<Void, Never> {
         TVHomeDebugTrace.log("details.load.begin id=\(id) type=\(type)")
@@ -513,7 +518,15 @@ class DetailsViewModel: ObservableObject {
         prefetchedStreamId = nil
         prefetchedEpisode = nil
         prefetchStartTime = nil
-        requestedStreamId = nil
+        chosenStreamId = nil
+        if let requested = requestedStreamId {
+            let isSameTarget = requested == id
+                || (requested.hasPrefix("tmdb:") && id.hasPrefix("tmdb:"))
+                || (requested.hasPrefix("tt") && id.hasPrefix("tt"))
+            if !isSameTarget {
+                requestedStreamId = nil
+            }
+        }
         detailsRequestGeneration &+= 1
         let requestGeneration = detailsRequestGeneration
         let hasRelatedItemsSnapshot = relatedItemsSnapshot != nil
@@ -532,9 +545,11 @@ class DetailsViewModel: ObservableObject {
                 isLoading: false,
                 meta: seedingCachedRatings(into: cached),
                 error: nil,
-                isInWatchlist: LibraryStore.contains(metaId: cached.id, type: cached.type),
+                isInWatchlist: SelectedLibraryService.isInLibrary(meta: cached),
                 isWatched: WatchedStore.contains(meta: cached),
                 moreLikeThis: relatedItemsSnapshot ?? [],
+                collection: collectionSnapshot,
+                companies: relatedCompaniesSnapshot ?? [],
                 people: relatedPeopleSnapshot ?? [],
                 simklRatings: simklRatingsSnapshot
             )
@@ -552,11 +567,15 @@ class DetailsViewModel: ObservableObject {
                 isLoading: true,
                 error: nil,
                 moreLikeThis: relatedItemsSnapshot ?? [],
+                collection: collectionSnapshot,
+                companies: relatedCompaniesSnapshot ?? [],
                 people: relatedPeopleSnapshot ?? [],
                 simklRatings: simklRatingsSnapshot
             )
         } else {
             if let relatedItemsSnapshot { uiState.moreLikeThis = relatedItemsSnapshot }
+            if let collectionSnapshot { uiState.collection = collectionSnapshot }
+            if let relatedCompaniesSnapshot { uiState.companies = relatedCompaniesSnapshot }
             if let relatedPeopleSnapshot { uiState.people = relatedPeopleSnapshot }
             if let simklRatingsSnapshot { uiState.simklRatings = simklRatingsSnapshot }
         }
@@ -564,7 +583,10 @@ class DetailsViewModel: ObservableObject {
         let task = Task { [weak self] in
             guard let self else { return }
             do {
-                let meta = try await repository.getMetadata(id: id, type: type)
+                // The viewer waits on it: AniList asks go ahead of Home rows and lists.
+                let meta = try await AniListClient.$isInteractive.withValue(true) {
+                    try await repository.getMetadata(id: id, type: type)
+                }
                 guard !Task.isCancelled,
                       self.detailsRequestGeneration == requestGeneration else { return }
                 self.didLoadMetadataSuccessfully = true
@@ -575,11 +597,21 @@ class DetailsViewModel: ObservableObject {
                 )
                 var primaryState = self.uiState
                 primaryState.meta = resolvedMeta
-                primaryState.isInWatchlist = LibraryStore.contains(metaId: resolvedMeta.id, type: resolvedMeta.type)
+                primaryState.isInWatchlist = SelectedLibraryService.isInLibrary(meta: resolvedMeta)
                 primaryState.isWatched = WatchedStore.contains(meta: resolvedMeta)
                 primaryState.isLoading = false
                 primaryState.error = nil
                 self.uiState = primaryState
+
+                // If streams were previously requested or prefetched for a non-canonical id ("tmdb:..."),
+                // reload them immediately with the resolved canonical stream id.
+                if let requested = self.requestedStreamId {
+                    let canonical = Self.streamIdAfterMetadataLoad(requested: requested, metaStreamId: resolvedMeta.streamId)
+                    if canonical != requested {
+                        if self.chosenStreamId == requested { self.chosenStreamId = canonical }
+                        self.prepareStreams(forId: canonical, type: resolvedMeta.type, forceRefresh: true)
+                    }
+                }
 
                 // Present primary metadata immediately for instant smooth transition.
                 // Defer streams & heavy secondary enrichment until the screen transition
@@ -650,6 +682,7 @@ class DetailsViewModel: ObservableObject {
         prefetchedStreamId = nil
         prefetchedEpisode = nil
         prefetchStartTime = nil
+        chosenStreamId = nil
         requestedStreamId = nil
     }
 
@@ -680,14 +713,52 @@ class DetailsViewModel: ObservableObject {
         }
     }
 
+    static func isNonCanonicalStreamId(_ id: String) -> Bool {
+        id.hasPrefix("tmdb:") || id.hasPrefix("simkl:") || id.hasPrefix("trakt:") || id.hasPrefix("wetrakr:")
+    }
+
+    /// The id to ask add-ons by once the title's metadata has loaded, for
+    /// streams requested earlier as `requested`. An episode keeps its season
+    /// and episode: only the title part is replaced by the metadata's
+    /// canonical id. Asking by the series id alone returns streams for any
+    /// episode of the show.
+    static func streamIdAfterMetadataLoad(requested: String, metaStreamId: String) -> String {
+        let position = StreamsRepository.seasonEpisode(fromVideoId: requested)
+        if let season = position.season, let episode = position.episode {
+            guard !isNonCanonicalStreamId(metaStreamId) else { return requested }
+            let title = StreamsRepository.baseContentId(from: requested)
+            return title == metaStreamId ? requested : "\(metaStreamId):\(season):\(episode)"
+        }
+        if isNonCanonicalStreamId(requested) || (requested != metaStreamId && !isNonCanonicalStreamId(metaStreamId)) {
+            return metaStreamId
+        }
+        return requested
+    }
+
+    /// The viewer picked a movie or an episode to play.
+    func streamSelectionStarted(for streamId: String) {
+        chosenStreamId = streamId
+    }
+
+    /// Whether the streams on hand were loaded for `streamId`, by pre-fetch or
+    /// by an earlier pick.
+    func hasLoadedStreams(for streamId: String) -> Bool {
+        requestedStreamId == streamId && !uiState.streams.isEmpty
+    }
+
     func triggerStreamPreFetch(for meta: NuvioMeta) {
         let prefetchEnabled = (ProfileSettings.current.object(forKey: SettingsKey.backgroundStreamPreFetch) as? Bool) ?? true
         guard prefetchEnabled else { return }
-        guard prefetchedStreamId == nil else { return }
 
         guard let (targetStreamId, targetEpisode) = resolveDefaultPlayTarget(for: meta) else {
             return
         }
+        guard !Self.isNonCanonicalStreamId(targetStreamId) else { return }
+        guard prefetchedStreamId != targetStreamId else { return }
+        // The default episode can change after the viewer has picked one, when
+        // fuller metadata or progress arrives. Their streams stay.
+        guard chosenStreamId == nil || chosenStreamId == targetStreamId else { return }
+
         prefetchedStreamId = targetStreamId
         prefetchedEpisode = targetEpisode
         prefetchStartTime = Date()
@@ -712,6 +783,50 @@ class DetailsViewModel: ObservableObject {
         return (aniListRatings + mdbRatings + addonRatings).filter { seen.insert($0.source.lowercased()).inserted }
     }
 
+    /// `combinedRatings` as its parts arrive: MDBList's and the add-ons', and an anime's AniList
+    /// score, each shown when it comes instead of all waiting for the slowest. The AniList score
+    /// goes ahead of Home's AniList requests, which fill AniList's limit after a start. `update`
+    /// gets the ratings so far, and `complete` with the last part.
+    nonisolated static func progressiveRatings(
+        for meta: NuvioMeta,
+        update: @escaping @Sendable (_ ratings: [NuvioExternalRating], _ complete: Bool) async -> Void
+    ) async {
+        await withTaskGroup(of: (Int, [NuvioExternalRating]).self) { group in
+            group.addTask {
+                let scores = await AniListClient.$isInteractive.withValue(true) {
+                    await AniListService.ratings(for: meta)
+                }
+                return (0, scores)
+            }
+            group.addTask {
+                let asked = await AniListService.ratingsMeta(for: meta)
+                async let mdbTask = MdbListDetailsService.fetchRatings(forOptional: asked)
+                async let addonTask = AddonRatingsService.fetchRatings(forOptional: asked)
+                let (mdbRatings, addonRatings) = await (mdbTask, addonTask)
+                return (1, mdbRatings + addonRatings)
+            }
+            var parts: [Int: [NuvioExternalRating]] = [:]
+            for await (index, ratings) in group {
+                parts[index] = ratings
+                var seen = Set<String>()
+                let merged = ((parts[0] ?? []) + (parts[1] ?? [])).filter { seen.insert($0.source.lowercased()).inserted }
+                await update(merged, parts.count == 2)
+            }
+        }
+    }
+
+    /// The ratings row: a part so far beside what is shown (the hero's seeded ones, the title's
+    /// own), the whole when the last part arrives.
+    private func applyRatings(_ ratings: [NuvioExternalRating], complete: Bool, for metaId: String, generation: UInt64) {
+        guard !complete else {
+            applyMdbRatings(ratings, for: metaId, generation: generation)
+            return
+        }
+        guard isCurrentRequest(metaId: metaId, generation: generation), !ratings.isEmpty,
+              let currentMeta = uiState.meta else { return }
+        uiState.meta = currentMeta.withExternalRatings(ratings).addingRatings(currentMeta.externalRatings ?? [])
+    }
+
     /// Whether an AniList title is in the selected library (Trakt, Simkl, MDBList, WeTrakr), which
     /// keeps it under the IMDb/TMDB ids it maps to. nil = not known (or the local library).
     nonisolated static func aniListLibraryMembership(for meta: NuvioMeta) async -> Bool? {
@@ -724,9 +839,10 @@ class DetailsViewModel: ObservableObject {
         case .wetrakr:
             return await WeTrakrLibraryService.isInWatchlist(libraryMeta)
         default:
-            if LibraryStore.contains(metaId: meta.id, type: meta.type) { return true }
-            guard let imdb = libraryMeta.imdbId else { return nil }
-            return LibraryStore.contains(metaId: imdb, type: meta.type) ? true : nil
+            let inLib = await MainActor.run {
+                SelectedLibraryService.isInLibrary(meta: meta) || SelectedLibraryService.isInLibrary(meta: libraryMeta)
+            }
+            return inLib ? true : nil
         }
     }
 
@@ -755,19 +871,25 @@ class DetailsViewModel: ObservableObject {
             if AniListService.isAniListTitle(meta.id) {
                 // The ratings as for any title: AniList's own, then MDBList and the rating
                 // add-ons by the IMDb id it maps to.
-                async let ratingsTask = Self.combinedRatings(for: meta)
                 if !skipMoreLikeThisFetch {
-                    let extras = await AniListService.extras(metaID: meta.id)
-                    guard self.isCurrentRequest(metaId: meta.id, generation: generation) else { return }
-                    if !extras.people.isEmpty {
-                        self.uiState.people = extras.people
-                    }
-                    if !extras.recommendations.isEmpty {
-                        self.uiState.moreLikeThis = extras.recommendations
+                    // Apart from the ratings: when AniList's rate limit holds the cast back, it
+                    // waits for the limit without holding the ratings back.
+                    Task { @MainActor [weak self] in
+                        let extras = await AniListService.extras(metaID: meta.id)
+                        guard let self, self.isCurrentRequest(metaId: meta.id, generation: generation) else { return }
+                        if !extras.people.isEmpty {
+                            self.uiState.people = extras.people
+                        }
+                        if !extras.recommendations.isEmpty {
+                            self.uiState.moreLikeThis = extras.recommendations
+                        }
                     }
                 }
-                let ratings = await ratingsTask
-                self.applyMdbRatings(ratings, for: meta.id, generation: generation)
+                await Self.progressiveRatings(for: meta) { [weak self] ratings, complete in
+                    await MainActor.run {
+                        self?.applyRatings(ratings, complete: complete, for: meta.id, generation: generation)
+                    }
+                }
                 // In the selected library under the IMDb/TMDB ids it maps to.
                 if let member = await Self.aniListLibraryMembership(for: meta) {
                     self.applyMdbListWatchlistMembership(member, for: meta.id, generation: generation)
@@ -799,6 +921,16 @@ class DetailsViewModel: ObservableObject {
                     }
                 }
 
+                // 2b. TMDB Movie Collection (Chronological release order)
+                if !isSeries && TmdbDetailsService.useCollections {
+                    group.addTask {
+                        let collection = await TmdbDetailsService.fetchCollection(for: meta)
+                        await MainActor.run { [weak self] in
+                            self?.applyCollection(collection, for: meta.id, generation: generation)
+                        }
+                    }
+                }
+
                 // 3. TMDB Episodes (TV series)
                 if isSeries {
                     group.addTask {
@@ -827,11 +959,12 @@ class DetailsViewModel: ObservableObject {
                     }
                 }
 
-                // 4. External Ratings (MDBList & Add-ons)
+                // 4. External Ratings (MDBList & Add-ons, and an anime's AniList score)
                 group.addTask {
-                    let combinedRatings = await Self.combinedRatings(for: meta)
-                    await MainActor.run { [weak self] in
-                        self?.applyMdbRatings(combinedRatings, for: meta.id, generation: generation)
+                    await Self.progressiveRatings(for: meta) { [weak self] ratings, complete in
+                        await MainActor.run {
+                            self?.applyRatings(ratings, complete: complete, for: meta.id, generation: generation)
+                        }
                     }
                 }
 
@@ -918,6 +1051,11 @@ class DetailsViewModel: ObservableObject {
         }
     }
 
+    private func applyCollection(_ collection: TmdbMovieCollection?, for metaId: String, generation: UInt64) {
+        guard isCurrentRequest(metaId: metaId, generation: generation) else { return }
+        uiState.collection = collection
+    }
+
     private func applyComments(_ comments: [TraktCommentReview], for metaId: String, generation: UInt64) {
         guard isCurrentRequest(metaId: metaId, generation: generation) else { return }
         if !comments.isEmpty {
@@ -943,11 +1081,11 @@ class DetailsViewModel: ObservableObject {
 
     /// Ratings the Home hero already fetched for this title, so the Details
     /// ratings row is there on the first frame instead of popping in.
+    /// An AniList title, which carries its own AniList score, gets the hero's others too.
     private func seedingCachedRatings(into meta: NuvioMeta) -> NuvioMeta {
-        guard meta.externalRatings?.isEmpty ?? true,
-              let cached = AddonRatingsService.cachedHomeHeroRatings(for: meta),
+        guard let cached = AddonRatingsService.cachedHomeHeroRatings(for: meta),
               !cached.isEmpty else { return meta }
-        return meta.withExternalRatings(cached)
+        return meta.addingRatings(cached)
     }
 
     private func applyCertification(_ certification: String?, for metaId: String, generation: UInt64) {
@@ -1125,13 +1263,29 @@ class DetailsViewModel: ObservableObject {
     ///
     /// `forceRefresh` restarts discovery for the same key (explicit refresh).
     func prepareStreams(forId streamId: String, type: String, forceRefresh: Bool = false) {
-        requestedStreamId = streamId
         streamObserveTask?.cancel()
 
+        let targetId: String = {
+            if !Self.isNonCanonicalStreamId(streamId) { return streamId }
+            if let currentMeta = uiState.meta, currentMeta.matches(id: streamId), !Self.isNonCanonicalStreamId(currentMeta.streamId) {
+                return currentMeta.streamId
+            }
+            if let cachedStreamId = repository.cachedMetadata(for: streamId)?.streamId, !Self.isNonCanonicalStreamId(cachedStreamId) {
+                return cachedStreamId
+            }
+            if streamId.hasPrefix("tmdb:"),
+               let tmdbNum = Int(streamId.dropFirst(5)),
+               let cachedImdb = CinemetaCatalogRepository.cachedImdb(forTmdbId: tmdbNum, type: type) {
+                return cachedImdb
+            }
+            return streamId
+        }()
+        requestedStreamId = targetId
+
         if streamDiscoveryMode == .shared {
-            prepareSharedStreams(forId: streamId, type: type, forceRefresh: forceRefresh)
+            prepareSharedStreams(forId: targetId, type: type, forceRefresh: forceRefresh)
         } else {
-            prepareRepositoryStreams(forId: streamId, type: type)
+            prepareRepositoryStreams(forId: targetId, type: type)
         }
     }
 
@@ -1247,7 +1401,7 @@ class DetailsViewModel: ObservableObject {
     func refreshWatchlistAndWatchedStatus() {
         guard let meta = uiState.meta else { return }
         var updatedState = uiState
-        updatedState.isInWatchlist = LibraryStore.contains(metaId: meta.id, type: meta.type)
+        updatedState.isInWatchlist = SelectedLibraryService.isInLibrary(meta: meta)
         updatedState.isWatched = WatchedStore.contains(meta: meta)
         uiState = updatedState
     }
@@ -1257,6 +1411,7 @@ class DetailsViewModel: ObservableObject {
         if TraktSettingsStore.librarySourceMode == .local {
             watchlistMutationGeneration &+= 1
             uiState.isInWatchlist = LibraryStore.toggle(meta: meta)
+            TrackingAddonService.sendLibraryMembership(uiState.isInWatchlist, meta: meta)
             return
         }
 
@@ -1271,20 +1426,29 @@ class DetailsViewModel: ObservableObject {
         let mutationGeneration = watchlistMutationGeneration
         let requestGeneration = detailsRequestGeneration
         uiState.isInWatchlist = desiredMembership
-        let previousMutation = watchlistMutationTask
-        watchlistMutationTask = Task { @MainActor in
-            if let previousMutation { await previousMutation.value }
-            guard !Task.isCancelled, context.isCurrent else { return }
-            let succeeded = await remoteWatchlistMutation(meta, desiredMembership)
-            guard !Task.isCancelled, context.isCurrent,
-                  watchlistMutationGeneration == mutationGeneration,
-                  detailsRequestGeneration == requestGeneration,
-                  uiState.meta?.id == meta.id,
-                  uiState.meta?.type == meta.type else { return }
-            if !succeeded, uiState.isInWatchlist == desiredMembership {
-                uiState.isInWatchlist = !desiredMembership
+        // Runs after earlier changes to this title; tracking add-ons hear of it
+        // only once the library service confirms it.
+        let mutation = remoteWatchlistMutation
+        let owner = TrackingAddonLibraryChanges.Owner(
+            profileID: ProfileSettings.activeProfileID,
+            isCurrent: { context.isCurrent }
+        )
+        watchlistMutationTask = TrackingAddonLibraryChanges.perform(
+            desiredMembership,
+            meta: meta,
+            owner: owner,
+            mutation: { await mutation(meta, desiredMembership, context) },
+            completion: { [weak self] succeeded in
+                guard let self, !Task.isCancelled, context.isCurrent,
+                      self.watchlistMutationGeneration == mutationGeneration,
+                      self.detailsRequestGeneration == requestGeneration,
+                      self.uiState.meta?.id == meta.id,
+                      self.uiState.meta?.type == meta.type else { return }
+                if !succeeded, self.uiState.isInWatchlist == desiredMembership {
+                    self.uiState.isInWatchlist = !desiredMembership
+                }
             }
-        }
+        )
     }
 
     func toggleWatched(libraryContext: LibraryWatchedContext? = nil) {
@@ -1305,6 +1469,7 @@ class DetailsViewModel: ObservableObject {
         } else {
             uiState.isWatched = WatchedStore.toggle(meta: meta)
         }
+        TrackingAddonService.sendWatched(uiState.isWatched, meta: meta)
     }
 
     func setMdbListUserRating(_ rating: Int?) {

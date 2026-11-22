@@ -18,9 +18,16 @@ enum MALAccount {
         case noClientID
         case refused(String)
         case noAnswer
+        /// Logged out, or a newer login started, while MAL was answering.
+        case superseded
 
         var errorDescription: String? {
             switch self {
+            case .superseded:
+                return L10n.string(
+                    "account_login_superseded",
+                    fallback: "This login was replaced: you logged out or started another login meanwhile."
+                )
             case .noClientID: return "Fill in your MAL API client's Client ID first."
             case .refused(let reason): return "MyAnimeList refused the login: \(reason)"
             case .noAnswer: return "MyAnimeList didn't answer. Try again."
@@ -64,6 +71,9 @@ enum MALAccount {
     /// Trades MAL's code for the login and keeps it; answers the MAL user name.
     static func logIn(code: String, verifier: String, redirect: URL, clientID: String, now: Date = Date()) async throws -> String {
         guard !clientID.isEmpty else { throw Failure.noClientID }
+        // The profile that started the login, not whichever is active once MAL answers.
+        let profileScope = ProfileSettings.activeProfileScope
+        let generation = MALKeychain.beginLogin(for: profileScope)
         let token = try await tokens([
             "client_id": clientID,
             "grant_type": "authorization_code",
@@ -73,7 +83,9 @@ enum MALAccount {
         ], now: now)
         let name = await userName(token: token.accessToken) ?? "your account"
         let login = Login(accessToken: token.accessToken, refreshToken: token.refreshToken, expiresAt: token.expiresAt, userName: name, clientID: clientID)
-        MALKeychain.save(login, for: ProfileSettings.activeProfileScope)
+        guard MALKeychain.save(login, ifCurrent: generation, for: profileScope) else {
+            throw Failure.superseded
+        }
         await lists.forget()
         AniListSettings.notifyHomeChanged()
         return name
@@ -136,7 +148,10 @@ enum MALAccount {
 
     /// A current access token, renewed first when it runs out within five minutes.
     static func validToken(now: Date = Date()) async -> String? {
-        guard MALSettings.isEnabled, let login else { return nil }
+        // Captured before the refresh awaits: a profile switch meanwhile must not move this
+        // profile's renewed login onto the next one.
+        let profileScope = ProfileSettings.activeProfileScope
+        guard MALSettings.isEnabled, let login = MALKeychain.login(for: profileScope) else { return nil }
         if login.expiresAt.timeIntervalSince(now) > 300 { return login.accessToken }
         guard let renewed = try? await tokens([
             "client_id": login.clientID,
@@ -145,12 +160,24 @@ enum MALAccount {
         ], now: now) else {
             return login.expiresAt > now ? login.accessToken : nil
         }
-        var updated = login
-        updated.accessToken = renewed.accessToken
-        updated.refreshToken = renewed.refreshToken
-        updated.expiresAt = renewed.expiresAt
-        MALKeychain.save(updated, for: ProfileSettings.activeProfileScope)
-        return renewed.accessToken
+        return storeRenewed(renewed, replacing: login, for: profileScope)
+    }
+
+    /// Keeps a renewed login for the profile that asked for it. Logged out meanwhile: nothing is
+    /// saved. Logged in again or renewed by another call meanwhile: that newer login stays.
+    @discardableResult
+    /// The read and the save happen with no logout or login in between.
+    static func storeRenewed(_ renewed: Tokens, replacing login: Login, for profileScope: String) -> String? {
+        MALKeychain.loginGenerations.exclusive {
+            guard let current = MALKeychain.login(for: profileScope) else { return nil }
+            guard current.refreshToken == login.refreshToken else { return current.accessToken }
+            var updated = current
+            updated.accessToken = renewed.accessToken
+            updated.refreshToken = renewed.refreshToken
+            updated.expiresAt = renewed.expiresAt
+            MALKeychain.save(updated, for: profileScope)
+            return renewed.accessToken
+        }
     }
 
     // MARK: Calls
@@ -241,11 +268,11 @@ enum MALAccount {
 
     static func statusLabel(_ status: String?) -> String {
         switch status {
-        case "watching": return "Watching"
-        case "completed": return "Completed"
-        case "on_hold": return "On-Hold"
-        case "dropped": return "Dropped"
-        case "plan_to_watch": return "Plan to Watch"
+        case "watching": return L10n.string("anime_status_watching", fallback: "Watching")
+        case "completed": return L10n.string("anime_status_completed", fallback: "Completed")
+        case "on_hold": return L10n.string("anime_status_on_hold", fallback: "On-Hold")
+        case "dropped": return L10n.string("anime_status_dropped", fallback: "Dropped")
+        case "plan_to_watch": return L10n.string("anime_status_plan_to_watch", fallback: "Plan to Watch")
         default: return "MAL"
         }
     }
@@ -253,7 +280,7 @@ enum MALAccount {
     /// The details button's title: "Watching 5/12", "Plan to Watch", "Add" when not listed.
     static func buttonTitle(_ status: ListStatus?) -> String {
         guard let status else { return "MAL" }
-        guard let current = status.status else { return "Add" }
+        guard let current = status.status else { return L10n.string("action_add", fallback: "Add") }
         let label = statusLabel(current)
         if current == "plan_to_watch" || current == "completed" { return label }
         return status.episodes > 0 ? "\(label) \(status.watched)/\(status.episodes)" : "\(label) \(status.watched)"
@@ -355,12 +382,47 @@ actor MALListCache {
     func forget() { kept = [:] }
 }
 
-/// The MAL login in the Keychain, one per profile, never synced.
+/// Where MAL logins are kept: the Keychain in the app, memory in tests (the simulator test host
+/// has no usable Keychain).
+protocol MALLoginStorage: AnyObject {
+    func login(for profileScope: String) -> MALAccount.Login?
+    func save(_ login: MALAccount.Login, for profileScope: String)
+    func remove(for profileScope: String)
+}
+
+/// The MAL login, one per profile, never synced.
 enum MALKeychain {
+    static var storage: MALLoginStorage = MALKeychainLoginStorage()
+
+    static func login(for profileScope: String) -> MALAccount.Login? { storage.login(for: profileScope) }
+    static func save(_ login: MALAccount.Login, for profileScope: String) { storage.save(login, for: profileScope) }
+
+    /// See AccountLoginGenerations: a late answer can't restore a removed login
+    /// or replace a newer one.
+    static let loginGenerations = AccountLoginGenerations()
+
+    static func beginLogin(for profileScope: String) -> UInt64 {
+        loginGenerations.begin(for: profileScope)
+    }
+
+    /// Saves a new login only if no logout or newer login happened since `generation` began.
+    @discardableResult
+    static func save(_ login: MALAccount.Login, ifCurrent generation: UInt64, for profileScope: String) -> Bool {
+        loginGenerations.commit(generation, for: profileScope) { storage.save(login, for: profileScope) }
+    }
+
+    /// Removes a profile's login and stops any login still waiting for it.
+    static func remove(for profileScope: String) {
+        loginGenerations.invalidate(profileScope) { storage.remove(for: profileScope) }
+    }
+}
+
+/// The MAL login in the Keychain, one per profile, never synced.
+final class MALKeychainLoginStorage: MALLoginStorage {
     private static let service = "com.nuvio.tv.mal.auth"
 
-    static func login(for profileScope: String) -> MALAccount.Login? {
-        var query = base(profileScope)
+    func login(for profileScope: String) -> MALAccount.Login? {
+        var query = Self.base(profileScope)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: AnyObject?
@@ -368,9 +430,9 @@ enum MALKeychain {
         return try? JSONDecoder().decode(MALAccount.Login.self, from: data)
     }
 
-    static func save(_ login: MALAccount.Login, for profileScope: String) {
+    func save(_ login: MALAccount.Login, for profileScope: String) {
         guard let data = try? JSONEncoder().encode(login) else { return }
-        let query = base(profileScope)
+        let query = Self.base(profileScope)
         let attributes: [String: Any] = [kSecValueData as String: data]
         if SecItemUpdate(query as CFDictionary, attributes as CFDictionary) == errSecItemNotFound {
             var item = query
@@ -380,8 +442,8 @@ enum MALKeychain {
         }
     }
 
-    static func remove(for profileScope: String) {
-        SecItemDelete(base(profileScope) as CFDictionary)
+    func remove(for profileScope: String) {
+        SecItemDelete(Self.base(profileScope) as CFDictionary)
     }
 
     private static func base(_ profileScope: String) -> [String: Any] {
@@ -392,4 +454,11 @@ enum MALKeychain {
             kSecAttrSynchronizable as String: false,
         ]
     }
+}
+
+final class MALMemoryLoginStorage: MALLoginStorage {
+    private var values: [String: MALAccount.Login] = [:]
+    func login(for profileScope: String) -> MALAccount.Login? { values[profileScope] }
+    func save(_ login: MALAccount.Login, for profileScope: String) { values[profileScope] = login }
+    func remove(for profileScope: String) { values[profileScope] = nil }
 }

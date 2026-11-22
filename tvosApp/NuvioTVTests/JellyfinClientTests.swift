@@ -38,6 +38,163 @@ final class JellyfinClientTests: XCTestCase {
         session = URLSession(configuration: config)
     }
 
+    func testRetryAfterReadsSecondsAndHTTPDates() {
+        let now = Date(timeIntervalSince1970: 1_793_000_000)
+        XCTAssertEqual(JellyfinClient.retryAfterSeconds("3", now: now), 3)
+        XCTAssertEqual(JellyfinClient.retryAfterSeconds(" 120 ", now: now), 120)
+        let in90 = now.addingTimeInterval(90)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "GMT")
+        for format in ["EEE, dd MMM yyyy HH:mm:ss 'GMT'", "EEEE, dd-MMM-yy HH:mm:ss 'GMT'", "EEE MMM d HH:mm:ss yyyy"] {
+            formatter.dateFormat = format
+            let header = formatter.string(from: in90)
+            XCTAssertEqual(JellyfinClient.retryAfterSeconds(header, now: now) ?? -1, 90, accuracy: 1, header)
+        }
+        // A date already past means "now"; garbage and negatives are ignored.
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
+        XCTAssertEqual(JellyfinClient.retryAfterSeconds(formatter.string(from: now.addingTimeInterval(-60)), now: now), 0)
+        XCTAssertNil(JellyfinClient.retryAfterSeconds("soon", now: now))
+        XCTAssertNil(JellyfinClient.retryAfterSeconds("-5", now: now))
+        XCTAssertNil(JellyfinClient.retryAfterSeconds(nil, now: now))
+    }
+
+    func testRetryHonorsTheServerOrGivesUpWhenItAsksTooMuch() {
+        let now = Date(timeIntervalSince1970: 1_793_000_000)
+        XCTAssertEqual(JellyfinClient.retryDecision(retryAfter: "3", attempt: 0, now: now), .retry(after: 3))
+        XCTAssertEqual(JellyfinClient.retryDecision(retryAfter: "30", attempt: 0, now: now), .retry(after: 30))
+        // Retrying after 30 s when the server said 120 would only hit its limit again.
+        XCTAssertEqual(JellyfinClient.retryDecision(retryAfter: "120", attempt: 0, now: now), .giveUp(serverWait: 120))
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "GMT")
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
+        XCTAssertEqual(
+            JellyfinClient.retryDecision(retryAfter: formatter.string(from: now.addingTimeInterval(120)), attempt: 0, now: now),
+            .giveUp(serverWait: 120)
+        )
+        XCTAssertEqual(
+            JellyfinClient.retryDecision(retryAfter: formatter.string(from: now.addingTimeInterval(10)), attempt: 0, now: now),
+            .retry(after: 10)
+        )
+        // No header: back off 1, 2, 4, 8 ... capped at 30 s.
+        XCTAssertEqual(JellyfinClient.retryDecision(retryAfter: nil, attempt: 0, now: now), .retry(after: 1))
+        XCTAssertEqual(JellyfinClient.retryDecision(retryAfter: nil, attempt: 3, now: now), .retry(after: 8))
+        XCTAssertEqual(JellyfinClient.retryDecision(retryAfter: "soon", attempt: 1, now: now), .retry(after: 2))
+        XCTAssertEqual(JellyfinClient.retryDecision(retryAfter: nil, attempt: 10, now: now), .retry(after: 30))
+    }
+
+    func testALongServerWaitFailsAtOnceWithTryAgainLater() async {
+        var requests = 0
+        JellyfinMockURLProtocol.requestHandler = { request in
+            requests += 1
+            let response = HTTPURLResponse(
+                url: request.url!, statusCode: 429, httpVersion: nil, headerFields: ["Retry-After": "120"]
+            )!
+            return (response, Data())
+        }
+        let client = JellyfinClient(baseURL: baseURL, accessToken: "token", session: session)
+        do {
+            try await client.ping()
+            XCTFail("Expected a rate-limited error")
+        } catch let error as JellyfinClient.RateLimitedError {
+            XCTAssertEqual(error.retryAfter, 120)
+            XCTAssertTrue(error.localizedDescription.contains("2"))
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+        XCTAssertEqual(requests, 1)
+    }
+
+    func testAnOversizedRetryAfterFallsBackToTryAgainLater() async {
+        // Finite but far too large to convert to whole minutes.
+        let tryAgainLater = JellyfinClient.RateLimitedError(retryAfter: nil).errorDescription
+        for header in ["1e308", "99999999999999999999999999", "86401"] {
+            XCTAssertEqual(
+                JellyfinClient.retryDecision(retryAfter: header, attempt: 0),
+                .giveUp(serverWait: JellyfinClient.retryAfterSeconds(header)!),
+                header
+            )
+            let error = JellyfinClient.RateLimitedError(retryAfter: JellyfinClient.retryAfterSeconds(header))
+            XCTAssertNil(error.minutesToShow, header)
+            XCTAssertEqual(error.errorDescription, tryAgainLater, header)
+        }
+        XCTAssertEqual(JellyfinClient.RateLimitedError(retryAfter: 86_400).minutesToShow, 1_440)
+        XCTAssertEqual(JellyfinClient.RateLimitedError(retryAfter: 61).minutesToShow, 2)
+        XCTAssertNil(JellyfinClient.RateLimitedError(retryAfter: .infinity).minutesToShow)
+        XCTAssertNil(JellyfinClient.RateLimitedError(retryAfter: nil).minutesToShow)
+
+        // End to end: the request fails cleanly instead of crashing.
+        JellyfinMockURLProtocol.requestHandler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!, statusCode: 429, httpVersion: nil, headerFields: ["Retry-After": "1e308"]
+            )!
+            return (response, Data())
+        }
+        let client = JellyfinClient(baseURL: baseURL, accessToken: "token", session: session)
+        do {
+            try await client.ping()
+            XCTFail("Expected a rate-limited error")
+        } catch {
+            XCTAssertEqual(error.localizedDescription, tryAgainLater)
+        }
+    }
+
+    func testAShortServerWaitIsRetried() async throws {
+        var requests = 0
+        JellyfinMockURLProtocol.requestHandler = { request in
+            requests += 1
+            let status = requests == 1 ? 429 : 200
+            let response = HTTPURLResponse(
+                url: request.url!, statusCode: status, httpVersion: nil, headerFields: ["Retry-After": "0"]
+            )!
+            return (response, Data("{}".utf8))
+        }
+        let client = JellyfinClient(baseURL: baseURL, accessToken: "token", session: session)
+        try await client.ping()
+        XCTAssertEqual(requests, 2)
+    }
+
+    func testRunningOutOfRetriesSaysToTryAgain() async {
+        var requests = 0
+        JellyfinMockURLProtocol.requestHandler = { request in
+            requests += 1
+            let response = HTTPURLResponse(
+                url: request.url!, statusCode: 503, httpVersion: nil, headerFields: ["Retry-After": "0"]
+            )!
+            return (response, Data())
+        }
+        let client = JellyfinClient(baseURL: baseURL, accessToken: "token", session: session)
+        do {
+            try await client.ping()
+            XCTFail("Expected a rate-limited error")
+        } catch {
+            XCTAssertTrue(error is JellyfinClient.RateLimitedError, "\(error)")
+        }
+        XCTAssertEqual(requests, JellyfinClient.rateLimitRetryLimit + 1)
+    }
+
+    func testCancellingDuringTheWaitStopsAtOnce() async {
+        var requests = 0
+        JellyfinMockURLProtocol.requestHandler = { request in
+            requests += 1
+            let response = HTTPURLResponse(
+                url: request.url!, statusCode: 429, httpVersion: nil, headerFields: ["Retry-After": "20"]
+            )!
+            return (response, Data())
+        }
+        let client = JellyfinClient(baseURL: baseURL, accessToken: "token", session: session)
+        let started = Date()
+        let task = Task { try await client.ping() }
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        task.cancel()
+        let result = await task.result
+        if case .success = result { XCTFail("Expected cancellation") }
+        if case .failure(let error) = result { XCTAssertTrue(error is CancellationError, "\(error)") }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 5)
+        XCTAssertEqual(requests, 1)
+    }
+
     override func tearDown() {
         JellyfinMockURLProtocol.requestHandler = nil
         session = nil
@@ -245,6 +402,11 @@ final class JellyfinClientTests: XCTestCase {
                 """
                 return (response, Data(json.utf8))
             } else if path == "/Users/user-1/Items" {
+                let startIndex = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?
+                    .first(where: { $0.name == "StartIndex" })?.value ?? "0"
+                guard startIndex == "0" else {
+                    return (response, Data(#"{"Items":[]}"#.utf8))
+                }
                 let json = """
                 {
                     "Items": [
@@ -362,6 +524,64 @@ final class JellyfinClientTests: XCTestCase {
         XCTAssertEqual(progressUpdates, [24, 48, 50])
         XCTAssertEqual(items.first?.id, "item-0")
         XCTAssertEqual(items.last?.id, "item-49")
+    }
+
+    func testBareArrayPaginationContinuesUntilAnEmptyPage() async throws {
+        var requestedStartIndices: [String] = []
+        JellyfinMockURLProtocol.requestHandler = { request in
+            let url = request.url!
+            let startIndex = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+                .first(where: { $0.name == "StartIndex" })?.value ?? "0"
+            requestedStartIndices.append(startIndex)
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            let start = Int(startIndex) ?? 0
+            let items = (start..<min(start + 24, 50)).map { index in
+                ["Id": "movie-\(index)", "Name": "Movie \(index)", "Type": "Movie"]
+            }
+            return (response, try JSONSerialization.data(withJSONObject: items))
+        }
+
+        let client = JellyfinClient(baseURL: baseURL, accessToken: "test-token", session: session)
+        let items = try await client.items(userId: "user-1", libraryId: "lib-1")
+
+        XCTAssertEqual(items.count, 50)
+        XCTAssertEqual(requestedStartIndices, ["0", "24", "48", "50"], "Short bare-array pages may be server-capped")
+    }
+
+    func testItemsRejectMalformedItemsArray() async throws {
+        JellyfinMockURLProtocol.requestHandler = { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"Items":"not-an-array"}"#.utf8))
+        }
+
+        let client = JellyfinClient(baseURL: baseURL, accessToken: "test-token", session: session)
+        do {
+            _ = try await client.items(userId: "user-1", libraryId: "lib-1")
+            XCTFail("Malformed Items must fail instead of looking like an empty library")
+        } catch {
+            XCTAssertFalse(error.localizedDescription.isEmpty)
+        }
+    }
+
+    func testItemsRejectRepeatedPageWithoutForwardProgress() async throws {
+        var requestedStartIndices: [String] = []
+        JellyfinMockURLProtocol.requestHandler = { request in
+            let url = request.url!
+            let startIndex = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+                .first(where: { $0.name == "StartIndex" })?.value ?? "0"
+            requestedStartIndices.append(startIndex)
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"Items":[{"Id":"same","Name":"Same","Type":"Movie"}]}"#.utf8))
+        }
+
+        let client = JellyfinClient(baseURL: baseURL, accessToken: "test-token", session: session)
+        do {
+            _ = try await client.items(userId: "user-1", libraryId: "lib-1")
+            XCTFail("A repeated page should stop the pagination loop")
+        } catch let error as JellyfinClient.ClientError {
+            XCTAssertTrue(error.message.contains("repeated"))
+        }
+        XCTAssertEqual(requestedStartIndices, ["0", "1"])
     }
 
     func testEpisodesFetchesAndPaginatesShowsEpisodes() async throws {

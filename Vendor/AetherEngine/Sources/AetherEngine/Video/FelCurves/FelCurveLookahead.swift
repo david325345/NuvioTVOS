@@ -57,7 +57,16 @@ final class FelCurveLookahead {
     private(set) var scenesFailed = 0
     private(set) var conversionFailures = 0
 
-    init(videoStreamIndex: Int32, stream: UnsafeMutablePointer<AVStream>, framing: VideoNALFraming) {
+    /// True while the folded curves cannot reach the picture (AE#1018: a tvOS panel presenting HDR10 without
+    /// Dolby Vision gets the base layer, the RPU is not applied). Read at every GOP boundary; while it holds,
+    /// packets pass through converted with the stream's mapping, with no GOP held back and nothing decoded.
+    private let foldIsUnseen: () -> Bool
+    /// Pass-through while `foldIsUnseen` held at the last GOP boundary; folding resumes at a keyframe.
+    private(set) var bypassing = false
+
+    init(videoStreamIndex: Int32, stream: UnsafeMutablePointer<AVStream>, framing: VideoNALFraming,
+         foldIsUnseen: @escaping () -> Bool = { false }) {
+        self.foldIsUnseen = foldIsUnseen
         self.videoStreamIndex = videoStreamIndex
         self.stream = stream
         self.framing = framing
@@ -98,12 +107,51 @@ final class FelCurveLookahead {
             if isFolding == false || (!isVideo && buffered.isEmpty) {
                 return packet
             }
-            if isVideo, packet.pointee.flags & AV_PKT_FLAG_KEY != 0, bufferedHasVideo {
-                release()
+            if isVideo, packet.pointee.flags & AV_PKT_FLAG_KEY != 0 {
+                // The held GOP goes out first, then the gate is read: a keyframe is where the fold may leave
+                // or rejoin, in either direction, without splitting a GOP.
+                if bufferedHasVideo { release() }
+                updateBypass()
+            }
+            if bypassing {
+                convert(packet, luma: nil)
+                // A GOP released just above is still queued in `ready`; the keyframe must not overtake it.
+                if readyIndex < ready.count {
+                    ready.append(packet)
+                    continue
+                }
+                return packet
             }
             buffered.append(packet)
             if isVideo { bufferedHasVideo = true }
             if buffered.count >= Self.maxBufferedPackets { release() }
+        }
+    }
+
+    /// Re-reads `foldIsUnseen` where a GOP can start, so the fold leaves and rejoins at a keyframe.
+    private func updateBypass() {
+        let unseen = foldIsUnseen()
+        guard unseen != bypassing else { return }
+        bypassing = unseen
+        carried = nil
+        carriedValid = false
+        EngineLog.emit(unseen
+            ? "[FelCurves] fold paused: the panel presents HDR without Dolby Vision, so the RPU does not reach "
+              + "the picture; packets pass through with the stream's mapping, no GOP held back"
+            : "[FelCurves] fold resumed at a keyframe", category: .session)
+    }
+
+    private func convert(_ packet: UnsafeMutablePointer<AVPacket>, luma: FelCurve?) {
+        guard packet.pointee.stream_index == videoStreamIndex else { return }
+        // A refused RPU is dropped and the packet rebuilt without its enhancement layer, as on the plain
+        // route: the frame shows its HDR10 base. Logged once, since the producer skips its own conversion.
+        if !DoviRpuConverter.convertPacketToProfile81KeepingMapping(
+            packet, framing: framing, rewrite: luma.map { curve in { curve.apply(to: $0, component: 0) } }) {
+            conversionFailures += 1
+            if conversionFailures == 1 {
+                EngineLog.emit("[FelCurves] DV P7->8.1 conversion failed for a packet; dropped the RPU, "
+                               + "degrading affected frames to the HDR10 base", category: .session)
+            }
         }
     }
 
@@ -152,17 +200,7 @@ final class FelCurveLookahead {
         }
         let assignment = folds(for: frames)
         for (frame, fold) in zip(frames, assignment) {
-            let luma = fold?.luma(for: frame.info?.luma)
-            // A refused RPU is dropped and the packet rebuilt without its enhancement layer, as on the plain
-            // route: the frame shows its HDR10 base. Logged once, since the producer skips its own conversion.
-            if !DoviRpuConverter.convertPacketToProfile81KeepingMapping(
-                frame.packet, framing: framing, rewrite: luma.map { curve in { curve.apply(to: $0, component: 0) } }) {
-                conversionFailures += 1
-                if conversionFailures == 1 {
-                    EngineLog.emit("[FelCurves] DV P7->8.1 conversion failed for a packet; dropped the RPU, "
-                                   + "degrading affected frames to the HDR10 base", category: .session)
-                }
-            }
+            convert(frame.packet, luma: fold?.luma(for: frame.info?.luma))
         }
         ready.append(contentsOf: buffered)
         buffered.removeAll(keepingCapacity: true)
@@ -173,6 +211,13 @@ final class FelCurveLookahead {
     private func folds(for frames: [Frame]) -> [SceneFold?] {
         guard !frames.isEmpty else { return [] }
         let display = frames.indices.sorted { frames[$0].pts < frames[$1].pts }
+        // An undated picture can carry a scene change. Keep the stream's mapping for this GOP
+        // and start a fresh fit in the next one rather than carrying a curve across that boundary.
+        guard let spacing = Self.frameSpacing(forSortedTimestamps: display.map { frames[$0].pts }) else {
+            carried = nil
+            carriedValid = false
+            return Array(repeating: nil, count: frames.count)
+        }
         // A scene starts at a frame whose RPU raises scene_refresh_flag, and at the first frame shown at all.
         var starts: [Int] = display.filter { frames[$0].info?.sceneRefresh == true }
         if !starts.isEmpty { streamMarksScenes = true }
@@ -186,7 +231,7 @@ final class FelCurveLookahead {
 
         var fitted: [Int: SceneFold?] = [:]
         let needPictures = starts.filter { frames[$0].info?.carriesResidual == true && frames[$0].info?.luma != nil }
-        let decoded = needPictures.isEmpty ? [:] : decode(frames, wanted: Set(needPictures.map { frames[$0].pts }))
+        let decoded = needPictures.isEmpty ? [:] : decode(frames, wanted: Set(needPictures.map { frames[$0].pts }), spacing: spacing)
         for index in starts {
             guard let info = frames[index].info else {
                 fitted[index] = .some(nil)
@@ -229,12 +274,21 @@ final class FelCurveLookahead {
         let enhancement: CVPixelBuffer
     }
 
+    /// A missing time or unrepresentable gap cannot identify a scene's decoded pictures.
+    static func frameSpacing(forSortedTimestamps timestamps: [Int64]) -> Int64? {
+        guard timestamps.first != Int64.min else { return nil } // AV_NOPTS_VALUE
+        var minimum: Int64?
+        for (earlier, later) in zip(timestamps, timestamps.dropFirst()) where later > earlier {
+            let (gap, overflow) = later.subtractingReportingOverflow(earlier)
+            guard !overflow else { return nil }
+            minimum = min(minimum ?? gap, gap)
+        }
+        return minimum ?? 1
+    }
+
     /// Decodes both layers in decode order until every wanted picture has come out of both decoders.
-    private func decode(_ frames: [Frame], wanted: Set<Int64>) -> [Int64: PicturePair] {
+    private func decode(_ frames: [Frame], wanted: Set<Int64>, spacing: Int64) -> [Int64: PicturePair] {
         guard let base = openBaseDecoder() else { return [:] }
-        let sorted = frames.map(\.pts).sorted()
-        let gaps: [Int64] = zip(sorted, sorted.dropFirst()).map { $1 - $0 }.filter { $0 > 0 }
-        let spacing: Int64 = gaps.min() ?? 1
         pictures.begin(wanted: wanted, timeBase: timeBase, frameSpacing: spacing)
         defer { pictures.end() }
         let lastNeeded = frames.lastIndex { wanted.contains($0.pts) } ?? (frames.count - 1)

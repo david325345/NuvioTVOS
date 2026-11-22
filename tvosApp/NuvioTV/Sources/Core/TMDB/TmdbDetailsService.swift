@@ -17,11 +17,48 @@ struct MetaCompany: Identifiable, Equatable, Hashable {
 }
 
 struct TmdbPersonMetadata: Identifiable, Equatable, Hashable {
+    /// What kind of credit this person has. Separate from `role`, which for
+    /// cast is the character's name and so can be any text, "Creator" included.
+    enum Credit: Hashable {
+        case creator
+        case director
+        case cast
+    }
+
+    /// The role shown for a series' creators (TMDB's "created by").
+    static let creatorRole = "Creator"
+
     var id: String { tmdbId.map(String.init) ?? name }
     let name: String
+    /// Shown under the name: "Creator", "Director", or a cast member's character.
     let role: String?
     let profileURL: String?
     let tmdbId: Int?
+    /// Nil when the source doesn't say (AniList, fallbacks).
+    var credit: Credit? = nil
+    /// An AniList title's cast card is a character (`name`, `profileURL`) with its Japanese
+    /// voice actor (`role`): the ids and the actor's photo open their AniList page.
+    var aniListCharacterID: Int? = nil
+    var aniListStaffID: Int? = nil
+    var aniListStaffImage: String? = nil
+
+    /// Whether a click opens an AniList voice actor's or character's page.
+    var hasAniListPage: Bool { aniListStaffID != nil || aniListCharacterID != nil }
+
+    /// The role to show under the name: "Creator" and "Director" in the app's
+    /// language, decided by the credit type; a cast member's character name,
+    /// or any role from a source without a credit type, exactly as given.
+    var displayRole: String? {
+        switch credit {
+        case .creator:
+            return L10n.string("details_person_creator", fallback: "Creator")
+        case .director:
+            return L10n.string("details_director", fallback: "Director")
+        case .cast, nil:
+            let trimmed = role?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed?.isEmpty == false ? trimmed : nil
+        }
+    }
 }
 
 struct TmdbCreditMetadata {
@@ -77,6 +114,9 @@ struct RelatedTitle: Identifiable, Equatable {
     let rating: Double?
     let overview: String?
     let backdropURL: String?
+    /// Shown under the name in place of the type and year: an AniList role
+    /// ("Tanjiro Kamado · 2019").
+    let caption: String?
 
     init(
         id: String,
@@ -86,7 +126,8 @@ struct RelatedTitle: Identifiable, Equatable {
         year: String?,
         rating: Double?,
         overview: String?,
-        backdropURL: String? = nil
+        backdropURL: String? = nil,
+        caption: String? = nil
     ) {
         self.id = id
         self.type = type
@@ -96,6 +137,7 @@ struct RelatedTitle: Identifiable, Equatable {
         self.rating = rating
         self.overview = overview
         self.backdropURL = backdropURL
+        self.caption = caption
     }
 
     var asMeta: NuvioMeta {
@@ -172,6 +214,7 @@ enum TmdbDetailsService {
     private static let apiBase = URL(string: "https://api.themoviedb.org/3")!
     private static let imageBase = "https://image.tmdb.org/t/p/"
     private static let localizedDetailsCache = TmdbLocalizedDetailsCache()
+    private static let movieCollectionCache = TmdbMovieCollectionCache()
     private static let findCache = TmdbFindCache()
     private static let detailsCache = TmdbDetailsCache()
 
@@ -222,7 +265,7 @@ enum TmdbDetailsService {
         config.waitsForConnectivity = false
         config.requestCachePolicy = .useProtocolCachePolicy
         let totalRam = ProcessInfo.processInfo.physicalMemory
-        let isLegacyDevice = totalRam <= 2_500_000_000 // <= 2.5 GB (Apple TV HD)
+        let isLegacyDevice = totalRam <= 2_500_000_000 || !AppleTVCapability.current.supportsLiquidGlass
         config.urlCache = URLCache(
             memoryCapacity: isLegacyDevice ? (10 * 1024 * 1024) : (30 * 1024 * 1024),
             diskCapacity: isLegacyDevice ? (50 * 1024 * 1024) : (150 * 1024 * 1024),
@@ -234,6 +277,7 @@ enum TmdbDetailsService {
     static func clearCache() async {
         await findCache.clear()
         await localizedDetailsCache.clear()
+        await movieCollectionCache.clear()
         await detailsCache.clear()
         session.configuration.urlCache?.removeAllCachedResponses()
     }
@@ -312,6 +356,16 @@ enum TmdbDetailsService {
         }
 
         return nil
+    }
+
+    /// The TMDB id a plugin's `getStreams` receives for an IMDb title, as on
+    /// Android: any configured TMDB key is used, nil without one or a match.
+    static func pluginTmdbId(forImdb imdbId: String, mediaType: String) async -> Int? {
+        if requestContext == nil {
+            return await withRequestContext { await pluginTmdbId(forImdb: imdbId, mediaType: mediaType) }
+        }
+        guard apiKey != nil, imdbId.hasPrefix("tt") else { return nil }
+        return await findByImdb(imdbId, mediaTypeHint: mediaType)?.id
     }
 
     static func fetchCompanies(for meta: NuvioMeta) async -> [MetaCompany] {
@@ -447,7 +501,8 @@ enum TmdbDetailsService {
                     name: name,
                     role: "Director",
                     profileURL: imageURL(person.profilePath, size: "w500"),
-                    tmdbId: person.id
+                    tmdbId: person.id,
+                    credit: .director
                 )
             }
         let castPeople = (decoded.cast ?? [])
@@ -458,7 +513,8 @@ enum TmdbDetailsService {
                     name: name,
                     role: nonEmpty(person.character),
                     profileURL: imageURL(person.profilePath, size: "w500"),
-                    tmdbId: person.id
+                    tmdbId: person.id,
+                    credit: .cast
                 )
             }
 
@@ -486,9 +542,10 @@ enum TmdbDetailsService {
             guard let name = nonEmpty(creator.name) else { return nil }
             return TmdbPersonMetadata(
                 name: name,
-                role: "Creator",
+                role: TmdbPersonMetadata.creatorRole,
                 profileURL: imageURL(creator.profilePath, size: "w500"),
-                tmdbId: creator.id
+                tmdbId: creator.id,
+                credit: .creator
             )
         }
     }
@@ -504,6 +561,81 @@ enum TmdbDetailsService {
             mediaType: resolved.mediaType,
             limit: limit
         )
+    }
+
+    /// Fetches the TMDB movie collection franchise that this title belongs to,
+    /// sorted in chronological release order.
+    static func fetchCollection(for meta: NuvioMeta) async -> TmdbMovieCollection? {
+        if requestContext == nil {
+            return await withRequestContext { await fetchCollection(for: meta) }
+        }
+        guard useCollections, isEnabled, apiKey != nil else { return nil }
+        let isSeries = meta.isSeries || isSeries(meta.type)
+        guard !isSeries else { return nil }
+        guard let resolved = await resolveTmdbId(for: meta), resolved.mediaType == "movie" else { return nil }
+        guard let details = await fetchLocalizedDetails(tmdbId: resolved.id, mediaType: "movie"),
+              let belongs = details.belongsToCollection,
+              belongs.id > 0 else {
+            return nil
+        }
+        return await fetchCollectionDetails(collectionId: belongs.id, fallbackName: belongs.name)
+    }
+
+    private static func fetchCollectionDetails(
+        collectionId: Int,
+        fallbackName: String?
+    ) async -> TmdbMovieCollection? {
+        guard let apiKey else { return nil }
+        let cacheKey = "\(collectionId):\(preferredLanguage)"
+        let cacheGeneration = await movieCollectionCache.snapshotGeneration()
+        if let cached = await movieCollectionCache.value(for: cacheKey) {
+            return cached
+        }
+        var components = URLComponents(
+            url: apiBase.appendingPathComponent("collection/\(collectionId)"),
+            resolvingAgainstBaseURL: false
+        )!
+        components.queryItems = [
+            URLQueryItem(name: "api_key", value: apiKey),
+            URLQueryItem(name: "language", value: preferredLanguage)
+        ]
+        guard let url = components.url,
+              let (data, response) = try? await data(for: url),
+              let http = response as? HTTPURLResponse,
+              (200...299).contains(http.statusCode),
+              let decoded = try? JSONDecoder().decode(TmdbMovieCollectionResponse.self, from: data) else {
+            return nil
+        }
+
+        let sortedParts = (decoded.parts ?? []).sorted { a, b in
+            let dateA = a.releaseDate ?? ""
+            let dateB = b.releaseDate ?? ""
+            if dateA.isEmpty && dateB.isEmpty { return a.id < b.id }
+            if dateA.isEmpty { return false }
+            if dateB.isEmpty { return true }
+            return dateA < dateB
+        }
+
+        let items = sortedParts.compactMap { mapDiscoverItemFast($0, defaultType: "movie") }
+        guard !items.isEmpty else { return nil }
+
+        let name = (decoded.name ?? fallbackName)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let collectionName = (name?.isEmpty == false)
+            ? name!
+            : L10n.string("settings_tmdb_module_collections", fallback: "Collections")
+
+        let result = TmdbMovieCollection(
+            id: decoded.id,
+            name: collectionName,
+            overview: decoded.overview?.trimmingCharacters(in: .whitespacesAndNewlines),
+            posterURL: imageURL(decoded.posterPath, size: "w500"),
+            backdropURL: imageURL(decoded.backdropPath, size: "w1280"),
+            items: items
+        )
+
+        await movieCollectionCache.insert(result, for: cacheKey, ifGeneration: cacheGeneration)
+        return result
     }
 
     /// Fetches full season and episode listings from TMDB, enabling unreleased/TBD episodes
@@ -1760,6 +1892,33 @@ private actor TmdbFindCache {
     }
 }
 
+private actor TmdbMovieCollectionCache {
+    private var values = TmdbResponseCache<TmdbMovieCollection>(capacity: 128)
+    private var generation: UInt64 = 0
+
+    func snapshotGeneration() -> UInt64 {
+        generation
+    }
+
+    func value(for key: String) -> TmdbMovieCollection? {
+        values.value(for: key)
+    }
+
+    func insert(
+        _ value: TmdbMovieCollection,
+        for key: String,
+        ifGeneration expectedGeneration: UInt64
+    ) {
+        guard generation == expectedGeneration else { return }
+        values.insert(value, for: key)
+    }
+
+    func clear() {
+        generation &+= 1
+        values.removeAll()
+    }
+}
+
 private actor TmdbLocalizedDetailsCache {
     private var values = TmdbResponseCache<TmdbLocalizedDetailsResponse>(capacity: 256)
     private var generation: UInt64 = 0
@@ -1787,6 +1946,34 @@ private actor TmdbLocalizedDetailsCache {
     }
 }
 
+private struct TmdbBelongsToCollectionDTO: Decodable {
+    let id: Int
+    let name: String?
+    let posterPath: String?
+    let backdropPath: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, name
+        case posterPath = "poster_path"
+        case backdropPath = "backdrop_path"
+    }
+}
+
+private struct TmdbMovieCollectionResponse: Decodable {
+    let id: Int
+    let name: String?
+    let overview: String?
+    let posterPath: String?
+    let backdropPath: String?
+    let parts: [TmdbListItem]?
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, overview, parts
+        case posterPath = "poster_path"
+        case backdropPath = "backdrop_path"
+    }
+}
+
 private struct TmdbLocalizedDetailsResponse: Decodable {
     let title: String?
     let name: String?
@@ -1801,6 +1988,7 @@ private struct TmdbLocalizedDetailsResponse: Decodable {
     let genres: [TmdbGenreDTO]?
     let contentRatings: TmdbTvContentRatingsContainer?
     let releaseDates: TmdbMovieReleaseDatesContainer?
+    let belongsToCollection: TmdbBelongsToCollectionDTO?
 
     enum CodingKeys: String, CodingKey {
         case title, name, overview, genres, translations
@@ -1812,6 +2000,7 @@ private struct TmdbLocalizedDetailsResponse: Decodable {
         case images
         case contentRatings = "content_ratings"
         case releaseDates = "release_dates"
+        case belongsToCollection = "belongs_to_collection"
     }
 }
 
@@ -1898,6 +2087,149 @@ private struct TmdbCompanyDTO: Decodable {
     }
 }
 
+// MARK: - Surprise Me
+
+extension TmdbDetailsService {
+    /// TMDB's movie genre ids, with the English names Nuvio's catalogs use.
+    static let surpriseMeMovieGenres: [Int: String] = [
+        28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy", 80: "Crime",
+        99: "Documentary", 18: "Drama", 10751: "Family", 14: "Fantasy", 36: "History",
+        27: "Horror", 10402: "Music", 9648: "Mystery", 10749: "Romance", 878: "Sci-Fi",
+        10770: "TV Movie", 53: "Thriller", 10752: "War", 37: "Western",
+    ]
+
+    static func surpriseMeGenreID(for name: String, series: Bool = false) -> Int? {
+        let key = TasteProfile.normalized(name)
+        // TMDB joins some genres for TV: "Action & Adventure", "Sci-Fi & Fantasy", "War & Politics".
+        if series, let joined = ["adventure": 10759, "fantasy": 10765, "politics": 10768][key] { return joined }
+        let genres = series ? surpriseMeTVGenres : surpriseMeMovieGenres
+        return genres.first { TasteProfile.normalized($0.value) == key }?.key
+    }
+
+    /// Whether TMDB is turned on with a key in Settings > Integrations.
+    static var isAvailableForSurpriseMe: Bool { isEnabled && apiKey != nil }
+
+    /// Movies or series TMDB recommends to people who liked `meta`, of the same kind.
+    static func surpriseMeRecommendations(for meta: NuvioMeta) async -> [NuvioMeta] {
+        guard isEnabled, let apiKey, let resolved = await resolveTmdbId(for: meta) else { return [] }
+        if resolved.mediaType == "tv" {
+            return await surpriseMeTitles(
+                path: "tv/\(resolved.id)/recommendations", query: [:], apiKey: apiKey, type: "series"
+            )
+        }
+        return await surpriseMeMovies(path: "movie/\(resolved.id)/recommendations", query: [:], apiKey: apiKey)
+    }
+
+    /// The movie TMDB finds for a title the AI suggested, or nil when there is
+    /// no match. With a year, the release year must be within one year of it.
+    static func surpriseMeFindMovie(title: String, year: Int?) async -> NuvioMeta? {
+        guard isEnabled, let apiKey else { return nil }
+        var query = ["query": title, "include_adult": "false"]
+        if let year { query["year"] = String(year) }
+        var results = await surpriseMeMovies(path: "search/movie", query: query, apiKey: apiKey)
+        if results.isEmpty, year != nil {
+            // Release years differ between countries; try again without it.
+            query["year"] = nil
+            results = await surpriseMeMovies(path: "search/movie", query: query, apiKey: apiKey)
+        }
+        let wanted = title.lowercased().filter { $0.isLetter || $0.isNumber }
+        return results.first { meta in
+            let yearMatches = year == nil || meta.year.map { abs($0 - year!) <= 1 } == true
+            let name = meta.name.lowercased().filter { $0.isLetter || $0.isNumber }
+            return yearMatches && (name == wanted || results.count == 1)
+        } ?? results.first { meta in
+            year != nil && meta.year.map { abs($0 - year!) <= 1 } == true
+        }
+    }
+
+    /// Well-rated movies (or series) in any of `genres`, most popular first.
+    static func surpriseMeDiscover(genres: [String], page: Int = 1, series: Bool = false) async -> [NuvioMeta] {
+        guard isEnabled, let apiKey else { return [] }
+        let ids = Array(Set(genres.compactMap { surpriseMeGenreID(for: $0, series: series) })).sorted()
+        guard !ids.isEmpty else { return [] }
+        return await surpriseMeTitles(path: series ? "discover/tv" : "discover/movie", query: [
+            "with_genres": ids.map(String.init).joined(separator: "|"),
+            "sort_by": "popularity.desc",
+            "vote_average.gte": "6.5",
+            // Series get fewer votes than movies.
+            "vote_count.gte": series ? "150" : "300",
+            "page": String(max(1, page)),
+        ], apiKey: apiKey, type: series ? "series" : "movie")
+    }
+
+    /// TMDB's TV genre ids, with the names Nuvio's catalogs use.
+    static let surpriseMeTVGenres: [Int: String] = [
+        10759: "Action", 16: "Animation", 35: "Comedy", 80: "Crime", 99: "Documentary",
+        18: "Drama", 10751: "Family", 10762: "Kids", 9648: "Mystery", 10763: "News",
+        10764: "Reality", 10765: "Sci-Fi", 10766: "Soap", 10767: "Talk", 10768: "War", 37: "Western",
+    ]
+
+    /// The series TMDB finds for a title the AI suggested, or nil when there is
+    /// no match. With a year, the first air year must be within one year of it.
+    static func surpriseMeFindSeries(title: String, year: Int?) async -> NuvioMeta? {
+        guard isEnabled, let apiKey else { return nil }
+        var query = ["query": title, "include_adult": "false"]
+        if let year { query["first_air_date_year"] = String(year) }
+        var results = await surpriseMeTitles(path: "search/tv", query: query, apiKey: apiKey, type: "series")
+        if results.isEmpty, year != nil {
+            query["first_air_date_year"] = nil
+            results = await surpriseMeTitles(path: "search/tv", query: query, apiKey: apiKey, type: "series")
+        }
+        return bestMatch(in: results, title: title, year: year)
+    }
+
+    private static func bestMatch(in results: [NuvioMeta], title: String, year: Int?) -> NuvioMeta? {
+        let wanted = title.lowercased().filter { $0.isLetter || $0.isNumber }
+        func yearMatches(_ meta: NuvioMeta) -> Bool {
+            guard let year else { return true }
+            return meta.year.map { abs($0 - year) <= 1 } == true
+        }
+        return results.first { meta in
+            let name = meta.name.lowercased().filter { $0.isLetter || $0.isNumber }
+            return yearMatches(meta) && (name == wanted || results.count == 1)
+        } ?? results.first { year != nil && yearMatches($0) }
+    }
+
+    private static func surpriseMeMovies(path: String, query: [String: String], apiKey: String) async -> [NuvioMeta] {
+        await surpriseMeTitles(path: path, query: query, apiKey: apiKey, type: "movie")
+    }
+
+    private static func surpriseMeTitles(
+        path: String,
+        query: [String: String],
+        apiKey: String,
+        type: String
+    ) async -> [NuvioMeta] {
+        var components = URLComponents(url: apiBase.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "api_key", value: apiKey),
+            URLQueryItem(name: "language", value: preferredLanguage),
+        ] + query.sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) }
+        guard let url = components.url,
+              let (data, response) = try? await data(for: url),
+              let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+              let decoded = try? JSONDecoder().decode(TmdbPagedResults.self, from: data) else { return [] }
+        return decoded.results.compactMap { item in
+            let name = (item.title ?? item.name)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard item.id > 0, !name.isEmpty else { return nil }
+            return NuvioMeta(
+                id: "tmdb:\(item.id)",
+                name: name,
+                description: item.overview?.trimmingCharacters(in: .whitespacesAndNewlines),
+                posterUrl: imageURL(item.posterPath, size: "w500"),
+                backgroundUrl: imageURL(item.backdropPath, size: "w1280"),
+                tmdbId: item.id,
+                type: type,
+                year: (item.releaseDate ?? item.firstAirDate).flatMap { Int($0.prefix(4)) },
+                genres: (item.genreIds ?? []).compactMap {
+                    (type == "series" ? surpriseMeTVGenres : surpriseMeMovieGenres)[$0]
+                },
+                rating: item.voteAverage.flatMap { $0 > 0 ? $0 : nil }
+            )
+        }
+    }
+}
+
 private struct TmdbPagedResults: Decodable {
     let results: [TmdbListItem]
 }
@@ -1918,6 +2250,7 @@ private struct TmdbListItem: Decodable {
     let firstAirDate: String?
     let voteAverage: Double?
     let mediaType: String?
+    var genreIds: [Int]? = nil
 
     enum CodingKeys: String, CodingKey {
         case id, title, name, overview
@@ -1927,6 +2260,7 @@ private struct TmdbListItem: Decodable {
         case firstAirDate = "first_air_date"
         case voteAverage = "vote_average"
         case mediaType = "media_type"
+        case genreIds = "genre_ids"
     }
 }
 

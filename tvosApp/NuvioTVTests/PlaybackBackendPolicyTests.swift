@@ -197,6 +197,110 @@ final class PlaybackBackendPolicyTests: XCTestCase {
         XCTAssertFalse(shouldGrant(request, .aether, true), "One load can receive only one additional window")
     }
 
+    @MainActor
+    func testMPVStartupWatchdogGraceTracksCurrentOpeningEntryRatherThanUILoading() {
+        let coordinator = PlaybackSessionCoordinator(
+            engineSettingProvider: { "MPVKit" },
+            loadDispatcher: { _, _, _ in }
+        )
+        defer { coordinator.stopAll() }
+
+        let remoteVOD = PlaybackLoadRequest(videoURL: URL(string: "https://example.test/movie.mp4")!)
+        coordinator.load(remoteVOD)
+        let firstGeneration = coordinator.loadGeneration
+        let witness = coordinator.mpvController.loadfileOpenWitness
+        coordinator.mpvController.isPlayerLoading = false
+
+        XCTAssertFalse(coordinator.shouldGrantStartupWatchdogGrace(
+            generation: firstGeneration,
+            graceAlreadyGranted: false
+        ), "A dispatched request waiting for loadfile submission has no grace")
+
+        witness.arm(entryID: nil)
+        XCTAssertFalse(coordinator.shouldGrantStartupWatchdogGrace(
+            generation: firstGeneration,
+            graceAlreadyGranted: false
+        ), "A failed or unidentified loadfile submission cannot claim grace")
+
+        witness.arm(entryID: 41)
+        XCTAssertTrue(coordinator.shouldGrantStartupWatchdogGrace(
+            generation: firstGeneration,
+            graceAlreadyGranted: false
+        ), "A paused MPV loadfile entry still opening on a remote VOD receives grace")
+        XCTAssertFalse(coordinator.shouldGrantStartupWatchdogGrace(
+            generation: firstGeneration,
+            graceAlreadyGranted: true
+        ), "One load can receive only one additional window")
+
+        witness.finishOpening(entryID: 40)
+        XCTAssertTrue(coordinator.shouldGrantStartupWatchdogGrace(
+            generation: firstGeneration,
+            graceAlreadyGranted: false
+        ), "A stale terminal event cannot clear the current MPV entry")
+        witness.finishOpening(entryID: 41, redirectTo: 45)
+        XCTAssertEqual(witness.openingEntryID, 45, "REDIRECT moves the witness to its inserted playlist entry")
+        XCTAssertTrue(coordinator.shouldGrantStartupWatchdogGrace(
+            generation: firstGeneration,
+            graceAlreadyGranted: false
+        ), "A redirected entry remains eligible while it is still opening")
+        witness.finishOpening(entryID: 41)
+        XCTAssertTrue(coordinator.shouldGrantStartupWatchdogGrace(
+            generation: firstGeneration,
+            graceAlreadyGranted: false
+        ), "A stale source-entry terminal event cannot clear its redirect target")
+        witness.finishOpening(entryID: 45)
+        XCTAssertFalse(coordinator.shouldGrantStartupWatchdogGrace(
+            generation: firstGeneration,
+            graceAlreadyGranted: false
+        ), "FILE_LOADED clears grace for the redirected entry")
+
+        coordinator.load(remoteVOD)
+        let replacementGeneration = coordinator.loadGeneration
+        witness.reset()
+        witness.arm(entryID: 42)
+        witness.finishOpening(entryID: 41)
+        XCTAssertTrue(coordinator.shouldGrantStartupWatchdogGrace(
+            generation: replacementGeneration,
+            graceAlreadyGranted: false
+        ), "A stale prior-entry terminal event cannot clear a replacement load")
+
+        witness.finishOpening(entryID: 42)
+        XCTAssertFalse(coordinator.shouldGrantStartupWatchdogGrace(
+            generation: replacementGeneration,
+            graceAlreadyGranted: false
+        ), "A matching terminal event clears the replacement load")
+
+        for request in [
+            PlaybackLoadRequest(
+                videoURL: URL(string: "https://example.test/channel.ts")!,
+                isLiveStream: true
+            ),
+            PlaybackLoadRequest(
+                videoURL: URL(string: "https://example.test/event.mp4")!,
+                isSports: true
+            )
+        ] {
+            coordinator.load(request)
+            let generation = coordinator.loadGeneration
+            witness.reset()
+            witness.arm(entryID: 43)
+            XCTAssertFalse(coordinator.shouldGrantStartupWatchdogGrace(
+                generation: generation,
+                graceAlreadyGranted: false
+            ), "Live and sports requests keep the existing no-grace scope")
+        }
+
+        coordinator.load(remoteVOD)
+        let stoppingGeneration = coordinator.loadGeneration
+        witness.arm(entryID: 44)
+        coordinator.stopAll()
+        XCTAssertFalse(witness.isOpening, "Destroying MPV clears the open-entry witness")
+        XCTAssertFalse(coordinator.shouldGrantStartupWatchdogGrace(
+            generation: stoppingGeneration,
+            graceAlreadyGranted: false
+        ), "A stopped coordinator load cannot receive grace")
+    }
+
     func testDebridAndTorrentAcceptISOExtensions() {
         XCTAssertTrue(DebridVideo.isPlayable("Movie.1080p.BluRay.iso"))
         XCTAssertTrue(DebridVideo.isPlayable("Disc.IMG"))
@@ -307,6 +411,14 @@ final class PlaybackBackendPolicyTests: XCTestCase {
             ),
             .ignore
         )
+    }
+
+    func testMPVBufferedBarEndsWhereTheCacheReaches() {
+        // 16:01 played, cache up to 16:05: the bar ends at 16:05, not at 32:06.
+        XCTAssertEqual(MPVBufferedPosition.endMs(positionMs: 961_000, cacheEndMs: 965_500), 965_500)
+        // During a seek mpv has no cache end yet, or still the old one: the playhead.
+        XCTAssertEqual(MPVBufferedPosition.endMs(positionMs: 993_000, cacheEndMs: nil), 993_000)
+        XCTAssertEqual(MPVBufferedPosition.endMs(positionMs: 993_000, cacheEndMs: 965_500), 993_000)
     }
 
     func testMPVLifecycleRestoreWaitsForActiveAppAndSettledDisplay() {
@@ -1040,7 +1152,7 @@ final class PlaybackBackendPolicyTests: XCTestCase {
         XCTAssertEqual(translated, [7: "Hei"])
     }
 
-    func testOpenRouterBatchTranslatorDisablesReasoningForEveryModelAndPreservesCueIDs() async throws {
+    func testOpenRouterBatchTranslatorDisablesReasoningForOptionalModelsAndPreservesCueIDs() async throws {
         GeminiURLProtocolStub.handler = { request in
             XCTAssertEqual(request.url?.absoluteString, "https://openrouter.ai/api/v1/chat/completions")
             XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer test-api-key")
@@ -1052,6 +1164,7 @@ final class PlaybackBackendPolicyTests: XCTestCase {
             )
             let reasoning = try XCTUnwrap(requestJSON["reasoning"] as? [String: Any])
             XCTAssertEqual(reasoning["enabled"] as? Bool, false)
+            XCTAssertNil(reasoning["effort"])
             let response = HTTPURLResponse(
                 url: try XCTUnwrap(request.url),
                 statusCode: 200,
@@ -1089,6 +1202,130 @@ final class PlaybackBackendPolicyTests: XCTestCase {
 
             XCTAssertEqual(translated, [7: "Hei", 9: "Ha det"])
         }
+    }
+
+    func testOpenRouterBatchTranslatorUsesMinimalReasoningForModelsWithMandatoryReasoning() async throws {
+        GeminiURLProtocolStub.handler = { request in
+            XCTAssertEqual(request.url?.absoluteString, "https://openrouter.ai/api/v1/chat/completions")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer test-api-key")
+            XCTAssertNil(request.value(forHTTPHeaderField: "x-goog-api-key"))
+            XCTAssertEqual(request.httpMethod, "POST")
+            let requestBody = try XCTUnwrap(GeminiURLProtocolStub.body(from: request))
+            let requestJSON = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: requestBody) as? [String: Any]
+            )
+            let reasoning = try XCTUnwrap(requestJSON["reasoning"] as? [String: Any])
+            XCTAssertEqual(reasoning["effort"] as? String, "minimal")
+            XCTAssertNil(reasoning["enabled"])
+            let response = HTTPURLResponse(
+                url: try XCTUnwrap(request.url),
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            let payload = #"{"choices":[{"message":{"content":"```json\n[{\"id\":7,\"text\":\"Hei\"},{\"id\":9,\"text\":\"Ha det\"}]\n```"}}]}"#
+            return (response, Data(payload.utf8))
+        }
+        defer { GeminiURLProtocolStub.handler = nil }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [GeminiURLProtocolStub.self]
+
+        for model in [
+            "google/gemini-3.8-flash",
+            "google/gemini-3.7-flash",
+            "google/gemini-3.5-flash",
+            "google/gemini-2.5-pro",
+            "google/gemini-4-carbon",
+            "google/gemini-omni-1.2-flash",
+            "openai/o3-mini",
+            "deepseek/deepseek-r1",
+        ] {
+            let translated = try await OpenRouterSubtitleTranslator.translateBatch(
+                [
+                    .init(id: 7, text: "Hello"),
+                    .init(id: 9, text: "Goodbye"),
+                ],
+                to: "Norwegian",
+                model: model,
+                apiKey: "test-api-key",
+                session: URLSession(configuration: configuration)
+            )
+
+            XCTAssertEqual(translated, [7: "Hei", 9: "Ha det"])
+        }
+    }
+
+    func testOpenRouterSubtitleTranslatorRetriesWithMinimalReasoningWhenReasoningIsMandatory() async throws {
+        var attempts = 0
+        GeminiURLProtocolStub.handler = { request in
+            attempts += 1
+            let requestBody = try XCTUnwrap(GeminiURLProtocolStub.body(from: request))
+            let requestJSON = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: requestBody) as? [String: Any]
+            )
+            let reasoning = try XCTUnwrap(requestJSON["reasoning"] as? [String: Any])
+
+            if attempts == 1 {
+                XCTAssertEqual(reasoning["enabled"] as? Bool, false)
+                XCTAssertNil(reasoning["effort"])
+                let response = HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 400,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!
+                let errorPayload = #"{"error":{"message":"Reasoning is mandatory for this endpoint and cannot be disabled."}}"#
+                return (response, Data(errorPayload.utf8))
+            } else {
+                XCTAssertEqual(reasoning["effort"] as? String, "minimal")
+                XCTAssertNil(reasoning["enabled"])
+                let response = HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!
+                let payload = #"{"choices":[{"message":{"content":"```json\n[{\"id\":12,\"text\":\"Hallo verden\"}]\n```"}}]}"#
+                return (response, Data(payload.utf8))
+            }
+        }
+        defer { GeminiURLProtocolStub.handler = nil }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [GeminiURLProtocolStub.self]
+
+        let translated = try await OpenRouterSubtitleTranslator.translateBatch(
+            [.init(id: 12, text: "Hello world")],
+            to: "Norwegian",
+            model: "custom-unlisted-reasoning-model",
+            apiKey: "test-api-key",
+            session: URLSession(configuration: configuration)
+        )
+
+        XCTAssertEqual(attempts, 2)
+        XCTAssertEqual(translated, [12: "Hallo verden"])
+    }
+
+    func testOpenRouterMandatoryReasoningDetection() {
+        XCTAssertTrue(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("google/gemini-3.8-flash"))
+        XCTAssertTrue(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("google/gemini-3.5-flash-lite"))
+        XCTAssertTrue(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("gemini-3.0-pro"))
+        XCTAssertTrue(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("google/gemini-2.5-pro"))
+        XCTAssertTrue(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("google/gemini-2.5-pro-preview"))
+        XCTAssertTrue(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("google/gemini-4-carbon"))
+        XCTAssertTrue(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("google/gemini-omni-1.2-flash"))
+        XCTAssertTrue(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("google/gemini-pro-latest"))
+        XCTAssertTrue(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("google/gemini-flash-latest"))
+        XCTAssertTrue(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("openai/o3-mini"))
+        XCTAssertTrue(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("deepseek/deepseek-r1"))
+        XCTAssertTrue(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("moonshotai/kimi-k2-thinking"))
+
+        XCTAssertFalse(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("google/gemini-2.5-flash"))
+        XCTAssertFalse(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("google/gemini-2.5-flash-lite"))
+        XCTAssertFalse(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("google/gemini-2.0-flash"))
+        XCTAssertFalse(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("qwen/qwen3.7-flash"))
+        XCTAssertFalse(OpenRouterSubtitleTranslator.requiresMandatoryReasoning("anthropic/claude-haiku-4.5"))
     }
 
     func testAISubtitleCachePersistsAndSeparatesTranslationSettings() async {
@@ -2263,6 +2500,108 @@ final class PlaybackBackendPolicyTests: XCTestCase {
     }
 
     @MainActor
+    func testAddonSubtitleOfAHigherRankedLanguageReplacesAnAutomaticChoice() {
+        let languages = ["Czech", "English"]
+        let fileEnglish = SubtitleTrack(id: "2", name: "English", language: "eng", isSelected: true)
+        let fileCzech = SubtitleTrack(id: "3", name: "Czech", language: "cze", isSelected: true)
+        let english = NuvioSubtitle(url: "https://example.test/en.srt", language: "eng", label: "English")
+        let czech = NuvioSubtitle(url: "https://example.test/cs.srt", language: "cze", label: "Czech")
+        let czechToo = NuvioSubtitle(url: "https://example.test/cs-2.srt", language: "ces", label: "Czech")
+        let forcedCzech = NuvioSubtitle(url: "https://example.test/cs-forced.srt", language: "cze", label: "Czech Forced")
+        let addonEnglish = SubtitleTrack(
+            id: "4", name: "English", language: "eng", isSelected: true, externalFilename: english.url
+        )
+
+        XCTAssertEqual(PlayerViewModel.preferredSubtitleRank(of: fileEnglish, in: languages), 1)
+        XCTAssertEqual(PlayerViewModel.preferredSubtitleRank(of: czech, in: languages), 0)
+        XCTAssertNil(PlayerViewModel.preferredSubtitleRank(of: forcedCzech, in: languages))
+        XCTAssertNil(PlayerViewModel.preferredSubtitleRank(
+            of: SubtitleTrack(id: "off", name: "Off", language: "", isSelected: true), in: languages
+        ))
+
+        // The file's English, picked at load, gives way to Czech from an add-on; so does an
+        // add-on's English that came first.
+        for selected in [fileEnglish, addonEnglish] {
+            XCTAssertEqual(PlayerViewModel.betterRankedAddonSubtitle(
+                selected: selected, available: [english, czech, czechToo], onTheirWay: [], preferredLanguages: languages
+            )?.url, czech.url)
+        }
+        // Nothing preferred selected: the best one there is.
+        XCTAssertEqual(PlayerViewModel.betterRankedAddonSubtitle(
+            selected: nil, available: [english], onTheirWay: [], preferredLanguages: languages
+        )?.url, english.url)
+        // Czech stays; English, a forced Czech or a Czech already on its way don't replace anything.
+        XCTAssertNil(PlayerViewModel.betterRankedAddonSubtitle(
+            selected: fileCzech, available: [english, czech], onTheirWay: [], preferredLanguages: languages
+        ))
+        XCTAssertNil(PlayerViewModel.betterRankedAddonSubtitle(
+            selected: fileEnglish, available: [english, forcedCzech], onTheirWay: [], preferredLanguages: languages
+        ))
+        XCTAssertNil(PlayerViewModel.betterRankedAddonSubtitle(
+            selected: fileEnglish, available: [czech, czechToo], onTheirWay: [czechToo], preferredLanguages: languages
+        ))
+    }
+
+    @MainActor
+    func testLateAddonCzechReplacesTheFilesEnglishButNotAManualChoice() throws {
+        let savedSubtitleLanguages = ProfileSettings.current.string(forKey: SettingsKey.subtitleLanguages)
+        let savedSmartMatching = ProfileSettings.current.object(forKey: SettingsKey.smartSubtitleMatching)
+        let savedForcedSubtitles = ProfileSettings.current.object(forKey: SettingsKey.forcedSubtitles)
+        addTeardownBlock {
+            if let savedSubtitleLanguages {
+                ProfileSettings.current.set(savedSubtitleLanguages, forKey: SettingsKey.subtitleLanguages)
+            } else {
+                ProfileSettings.current.removeObject(forKey: SettingsKey.subtitleLanguages)
+            }
+            if let savedSmartMatching {
+                ProfileSettings.current.set(savedSmartMatching, forKey: SettingsKey.smartSubtitleMatching)
+            } else {
+                ProfileSettings.current.removeObject(forKey: SettingsKey.smartSubtitleMatching)
+            }
+            if let savedForcedSubtitles {
+                ProfileSettings.current.set(savedForcedSubtitles, forKey: SettingsKey.forcedSubtitles)
+            } else {
+                ProfileSettings.current.removeObject(forKey: SettingsKey.forcedSubtitles)
+            }
+        }
+        ProfileSettings.current.set(SubtitleLanguagePreferences.encode(["Czech", "English"]), forKey: SettingsKey.subtitleLanguages)
+        ProfileSettings.current.set(true, forKey: SettingsKey.smartSubtitleMatching)
+        ProfileSettings.current.set(true, forKey: SettingsKey.forcedSubtitles)
+
+        let aether = try XCTUnwrap(AetherPlaybackController())
+        let coordinator = PlaybackSessionCoordinator(
+            aetherController: aether,
+            aetherControllerFactory: { aether },
+            engineSettingProvider: { "Auto" },
+            loadDispatcher: { _, _, _ in }
+        )
+        let model = PlayerViewModel(sessionCoordinator: coordinator)
+        defer {
+            model.shutdown()
+            coordinator.stopAll()
+        }
+        coordinator.load(PlaybackLoadRequest(videoURL: URL(string: "https://example.test/late-addon-subtitles.mkv")!))
+        model.activeMeta = NuvioMeta(id: "tt-late-addon-subtitles", name: "Late add-on subtitles", type: "series")
+        model.audioTracks = [AudioTrack(id: "1", name: "Japanese", language: "jpn", isSelected: true)]
+        let fileEnglish = SubtitleTrack(id: "2", name: "English", language: "eng", isSelected: true)
+        model.subtitles = [SubtitleTrack(id: "off", name: "Off", language: "", isSelected: false), fileEnglish]
+
+        let english = NuvioSubtitle(url: "https://example.test/late-en.srt", language: "eng", label: "English")
+        model.mergeExternalSubtitles([english])
+        XCTAssertFalse(model.hasSelectedExternalSubtitle, "an add-on's English leaves the file's English")
+
+        let czech = NuvioSubtitle(url: "https://example.test/late-cs.srt", language: "cze", label: "Czech")
+        model.mergeExternalSubtitles([czech])
+        XCTAssertTrue(model.isExternalSubtitleSelected(czech), "Czech, ranked first, replaces the file's English")
+        XCTAssertTrue(model.pendingExternalSubtitles.contains { $0.url == czech.url })
+
+        model.selectSubtitle(fileEnglish)
+        let laterCzech = NuvioSubtitle(url: "https://example.test/late-cs-2.srt", language: "cze", label: "Czech")
+        model.mergeExternalSubtitles([laterCzech])
+        XCTAssertFalse(model.isExternalSubtitleSelected(laterCzech), "a manual choice stays")
+    }
+
+    @MainActor
     func testAutomaticSubtitlePolicyFollowsPreferredAudioLanguage() {
         let englishAudio = AudioTrack(id: "1", name: "English", language: "eng", isSelected: true)
         let japaneseAudio = AudioTrack(id: "2", name: "Japanese", language: "jpn", isSelected: true)
@@ -2274,7 +2613,7 @@ final class PlaybackBackendPolicyTests: XCTestCase {
                 preferredSubtitleLanguages: ["Spanish"],
                 allowForcedSubtitles: true
             ),
-            .forced(language: "English")
+            .preferredLanguages(["Spanish"])
         )
         XCTAssertEqual(
             PlayerViewModel.automaticSubtitlePolicy(
@@ -2290,9 +2629,27 @@ final class PlaybackBackendPolicyTests: XCTestCase {
                 selectedAudio: englishAudio,
                 preferredAudioLanguage: "English",
                 preferredSubtitleLanguages: ["English", "Arabic"],
+                allowForcedSubtitles: true
+            ),
+            .forced(language: "English")
+        )
+        XCTAssertEqual(
+            PlayerViewModel.automaticSubtitlePolicy(
+                selectedAudio: englishAudio,
+                preferredAudioLanguage: "English",
+                preferredSubtitleLanguages: ["English", "Arabic"],
                 allowForcedSubtitles: false
             ),
             .preferredLanguages(["English", "Arabic"])
+        )
+        XCTAssertEqual(
+            PlayerViewModel.automaticSubtitlePolicy(
+                selectedAudio: englishAudio,
+                preferredAudioLanguage: "English",
+                preferredSubtitleLanguages: [],
+                allowForcedSubtitles: true
+            ),
+            .forced(language: "English")
         )
         XCTAssertEqual(
             PlayerViewModel.automaticSubtitlePolicy(
@@ -2384,7 +2741,8 @@ final class PlaybackBackendPolicyTests: XCTestCase {
         model.selectAudio(japaneseAudio)
 
         XCTAssertEqual(ShowAudioLanguageStore.getLanguage(for: meta.id), "Japanese")
-        XCTAssertEqual(model.subtitles.first(where: { $0.isSelected })?.id, "4")
+        // Preferred subtitle language is English; foreign Japanese audio automatically receives full English subtitles.
+        XCTAssertEqual(model.subtitles.first(where: { $0.isSelected })?.id, "5")
 
         let manualFullSubtitle = model.subtitles.first(where: { $0.id == "5" })!
         model.selectSubtitle(manualFullSubtitle)

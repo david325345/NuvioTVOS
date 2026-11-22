@@ -41,7 +41,7 @@ public struct Profile: Equatable, Hashable, Identifiable {
 }
 
 /// Lightweight meta row used by Library and Search view-models.
-public struct StremioMeta: Equatable, Hashable, Identifiable {
+public struct StremioMeta: Equatable, Hashable, Identifiable, Sendable {
     public var id: String
     public var name: String
     public var contentType: String
@@ -225,6 +225,8 @@ public class ProfileManager {
         profiles.removeAll(where: { $0.id == id })
         try saveProfiles(profiles)
         try? ProfilePinStore.removePin(for: id)
+        ProfileAccountLogins.remove(for: id)
+        IPTVSourceStore.removeProfile(id)
     }
 
     public func updateProfileAvatar(id: String, avatarId: String) throws {
@@ -300,6 +302,10 @@ public class ProfileManager {
         let retainedIds = Set(profiles.map(\.id))
         for removedId in previousIds.subtracting(retainedIds) {
             try? ProfilePinStore.removePin(for: removedId)
+            // Deleted on another device: drop its AniList/MAL logins and stop
+            // any login still waiting for it.
+            ProfileAccountLogins.remove(for: removedId)
+            IPTVSourceStore.removeProfile(removedId)
         }
         if let activeId = UserDefaults.standard.string(forKey: Self.activePinKey),
            profiles.contains(where: { $0.id == activeId }) {

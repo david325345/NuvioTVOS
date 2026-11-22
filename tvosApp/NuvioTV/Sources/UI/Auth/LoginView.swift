@@ -293,7 +293,13 @@ struct LoginView: View {
                 }
             }
 
-            if let code = auth.qrCode, !code.isEmpty {
+            if let link = auth.qrManualEntryLink {
+                Text(L10n.format("auth_qr_manual_instruction", fallback: "Or go to %@ and enter", link))
+                    .font(.system(size: 20, weight: .medium))
+                    .foregroundColor(.white.opacity(0.7))
+            }
+
+            if let code = auth.qrDisplayCode {
                 Text(L10n.format("auth_qr_code", fallback: "Code: %@", code))
                     .font(.system(size: 24, weight: .semibold))
                     .foregroundColor(.white)
@@ -641,7 +647,7 @@ extension View {
     /// primary call-to-action.
     @ViewBuilder
     func loginGlassCapsule(highlighted: Bool, prominent: Bool = false) -> some View {
-        if #available(tvOS 26.0, *) {
+        if #available(tvOS 26.0, *), AppleTVCapability.current.supportsLiquidGlass {
             glassEffect(
                 highlighted
                     ? Glass.regular.tint(.white.opacity(0.92))
@@ -662,7 +668,7 @@ extension View {
     /// fallback for tvOS < 26 that keeps the previous translucent look.
     @ViewBuilder
     func loginGlassPanel() -> some View {
-        if #available(tvOS 26.0, *) {
+        if #available(tvOS 26.0, *), AppleTVCapability.current.supportsLiquidGlass {
             glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
         } else {
             background(.ultraThinMaterial)

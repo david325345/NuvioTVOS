@@ -35,6 +35,7 @@ struct PlayerControls: View {
     @Binding var requestedFocus: PlayerControlFocus?
     var onFocusSkipSegment: () -> Void = {}
     var onFocusNextEpisode: () -> Void = {}
+    var onRemoteBackAction: () -> Void = {}
 
     @FocusState private var focusedControl: PlayerControlFocus?
     @State private var isAuxiliaryCardFocusActive = false
@@ -49,6 +50,7 @@ struct PlayerControls: View {
     @AppStorage(SettingsKey.playerShowSubtitles) private var playerShowSubtitles = true
     @AppStorage(SettingsKey.playerShowAudio) private var playerShowAudio = true
     @AppStorage(SettingsKey.playerShowSpeed) private var playerShowSpeed = true
+    @AppStorage(SettingsKey.playerShowFinishTime) private var playerShowFinishTime = true
 
     var body: some View {
         ZStack {
@@ -58,7 +60,6 @@ struct PlayerControls: View {
                     bottomControls
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .onExitCommand(perform: handleExit)
             }
             .disabled(isNamingSubtitlePreset)
 
@@ -91,6 +92,20 @@ struct PlayerControls: View {
                     }
                 )
                 .transition(.opacity)
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            if playerShowFinishTime && !viewModel.isLiveStream && !isNamingSubtitlePreset {
+                PlayerEstimatedFinishTime(
+                    clock: viewModel.clock,
+                    playbackSpeed: Double(viewModel.playbackSpeed.rawValue),
+                    status: viewModel.status,
+                    isScrubbing: viewModel.isScrubbing,
+                    pendingSeekDelta: viewModel.pendingSeekDelta
+                )
+                .padding(.top, 50)
+                .padding(.horizontal, 60)
+                .allowsHitTesting(false)
             }
         }
         .onExitCommand(perform: handleExit)
@@ -337,19 +352,7 @@ struct PlayerControls: View {
             return
         }
         PlaybackTimelineRecorder.record(.controlsExitReceived, engine: viewModel.activeEngineKind)
-        if viewModel.isScrubbing {
-            viewModel.cancelScrub()
-        } else if focusedControl == nil,
-                  viewModel.showControls,
-                  viewModel.controlsAutoHideSuspended,
-                  !isAuxiliaryCardFocusActive,
-                  !isSkipSegmentFocused,
-                  !isNextEpisodeFocused {
-            // Native Menu owns focus until Back dismisses it.
-            return
-        } else {
-            viewModel.hideControls()
-        }
+        onRemoteBackAction()
     }
 
     private var isPlaybackStarted: Bool {
@@ -469,6 +472,7 @@ struct PlayerControls: View {
         }
 
         if viewModel.moveSuppressed { return }
+        if viewModel.isScrubbing && (direction == .up || direction == .down) { return }
 
         switch direction {
         case .up:
@@ -614,7 +618,8 @@ struct PlayerControls: View {
             ) {
                 viewModel.openSidePanel(.episodes)
             } icon: {
-                Image(systemName: "list.bullet")
+                // Shows that the series is playing in shuffle.
+                Image(systemName: viewModel.isShufflingEpisodes ? "shuffle" : "list.bullet")
             }
             .id("episodes_button")
 
@@ -748,6 +753,11 @@ struct PlayerControls: View {
                 },
                 onToggleReduceLoudSounds: {
                     viewModel.toggleReduceLoudSounds()
+                    viewModel.setControlsAutoHideSuspended(false)
+                    viewModel.scheduleControlsHide(after: 10.0)
+                },
+                onUpdateLoudnessTarget: {
+                    viewModel.updateLoudnessTarget()
                     viewModel.setControlsAutoHideSuspended(false)
                     viewModel.scheduleControlsHide(after: 10.0)
                 }
@@ -1257,6 +1267,10 @@ private struct PlayerAudioMenuButton: View, Equatable {
     let onSelectTrack: (AudioTrack) -> Void
     let onSetEnhanceDialogueMode: (EnhanceDialogueMode) -> Void
     let onToggleReduceLoudSounds: () -> Void
+    var onUpdateLoudnessTarget: (() -> Void)? = nil
+
+    @AppStorage(SettingsKey.loudnessNormalizer) private var loudnessNormalizer = false
+    @AppStorage(SettingsKey.loudnessTargetPreset) private var loudnessTargetPreset = "standard"
 
     static func == (lhs: PlayerAudioMenuButton, rhs: PlayerAudioMenuButton) -> Bool {
         lhs.isFocused == rhs.isFocused
@@ -1264,6 +1278,8 @@ private struct PlayerAudioMenuButton: View, Equatable {
             && lhs.enhanceDialogueMode == rhs.enhanceDialogueMode
             && lhs.isReduceLoudSoundsActive == rhs.isReduceLoudSoundsActive
             && lhs.orderedTracks == rhs.orderedTracks
+            && lhs.loudnessNormalizer == rhs.loudnessNormalizer
+            && lhs.loudnessTargetPreset == rhs.loudnessTargetPreset
     }
 
     var body: some View {
@@ -1295,6 +1311,43 @@ private struct PlayerAudioMenuButton: View, Equatable {
                             title: L10n.string("player_reduce_loud_sounds", fallback: "Reduce Loud Sounds"),
                             isSelected: isReduceLoudSoundsActive
                         )
+                    }
+
+                    if loudnessNormalizer {
+                        Menu {
+                            Button {
+                                loudnessTargetPreset = "standard"
+                                onUpdateLoudnessTarget?()
+                            } label: {
+                                audioMenuItem(
+                                    title: L10n.string("tvos_settings_loudness_standard", fallback: "Cinema / Standard (-24 LUFS)"),
+                                    isSelected: loudnessTargetPreset == "standard"
+                                )
+                            }
+                            Button {
+                                loudnessTargetPreset = "night"
+                                onUpdateLoudnessTarget?()
+                            } label: {
+                                audioMenuItem(
+                                    title: L10n.string("tvos_settings_loudness_night", fallback: "Night Listening (-20 LUFS)"),
+                                    isSelected: loudnessTargetPreset == "night"
+                                )
+                            }
+                            Button {
+                                loudnessTargetPreset = "boost"
+                                onUpdateLoudnessTarget?()
+                            } label: {
+                                audioMenuItem(
+                                    title: L10n.string("tvos_settings_loudness_boost", fallback: "Quiet Source Boost (-16 LUFS)"),
+                                    isSelected: loudnessTargetPreset == "boost"
+                                )
+                            }
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(L10n.string("tvos_settings_loudness_target", fallback: "Loudness Target"))
+                                Text(loudnessTargetPresetTitle(loudnessTargetPreset))
+                            }
+                        }
                     }
                 }
             }
@@ -1337,6 +1390,17 @@ private struct PlayerAudioMenuButton: View, Equatable {
             if isSelected {
                 Image(systemName: "checkmark")
             }
+        }
+    }
+
+    private func loudnessTargetPresetTitle(_ preset: String) -> String {
+        switch preset {
+        case "night":
+            return L10n.string("tvos_settings_loudness_night", fallback: "Night Listening (-20 LUFS)")
+        case "boost":
+            return L10n.string("tvos_settings_loudness_boost", fallback: "Quiet Source Boost (-16 LUFS)")
+        default:
+            return L10n.string("tvos_settings_loudness_standard", fallback: "Cinema / Standard (-24 LUFS)")
         }
     }
 
@@ -1498,6 +1562,44 @@ private struct SeekPreviewTimelineCard: View {
 }
 
 // MARK: - Isolated Timeline Bar
+
+enum PlayerFinishEstimate {
+    static func date(now: Date, position: Double, duration: Double, speed: Double) -> Date? {
+        guard position.isFinite, duration.isFinite, speed.isFinite,
+              duration > 0, speed > 0 else { return nil }
+        let remaining = max(0, duration - max(0, position)) / speed
+        guard remaining.isFinite, remaining <= 7 * 24 * 60 * 60 else { return nil }
+        return now.addingTimeInterval(remaining)
+    }
+}
+
+private struct PlayerEstimatedFinishTime: View {
+    @ObservedObject var clock: PlaybackClock
+    let playbackSpeed: Double
+    let status: PlayerStatus
+    let isScrubbing: Bool
+    let pendingSeekDelta: Double
+
+    var body: some View {
+        if status == .playing || status == .paused {
+            TimelineView(.periodic(from: .now, by: 30)) { _ in
+                let position = isScrubbing ? (clock.scrubTarget ?? clock.position) : clock.position + pendingSeekDelta
+                if let end = PlayerFinishEstimate.date(now: Date(), position: position, duration: clock.duration, speed: playbackSpeed) {
+                    let time = end.formatted(date: .omitted, time: .shortened)
+                    // One short label for movies and episodes, playing or paused (the time keeps
+                    // moving while paused), like the system player's "Ends at".
+                    let label = L10n.format("player_ends_at", fallback: "Ends at %@", time)
+                    Text(label)
+                        .font(.system(size: 19, weight: .medium))
+                        .foregroundColor(.white.opacity(0.76))
+                        .shadow(color: .black.opacity(0.9), radius: 4)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .accessibilityLabel(label)
+                }
+            }
+        }
+    }
+}
 
 private struct PlayerTimelineBar: View {
     @ObservedObject var clock: PlaybackClock
@@ -1705,7 +1807,7 @@ struct GlassControlsContainer<Content: View>: View {
     @ViewBuilder var content: Content
 
     var body: some View {
-        if #available(tvOS 26.0, *) {
+        if #available(tvOS 26.0, *), AppleTVCapability.current.supportsLiquidGlass {
             GlassEffectContainer(spacing: 28) { content }
         } else {
             content
@@ -1716,7 +1818,7 @@ struct GlassControlsContainer<Content: View>: View {
 extension View {
     @ViewBuilder
     func glassCircle() -> some View {
-        if #available(tvOS 26.0, *) {
+        if #available(tvOS 26.0, *), AppleTVCapability.current.supportsLiquidGlass {
             glassEffect(.regular.interactive(), in: .circle)
         } else {
             background(.ultraThinMaterial, in: Circle())
@@ -1725,7 +1827,7 @@ extension View {
 
     @ViewBuilder
     func glassCircleSurface() -> some View {
-        if #available(tvOS 26.0, *) {
+        if #available(tvOS 26.0, *), AppleTVCapability.current.supportsLiquidGlass {
             glassEffect(.regular, in: .circle)
         } else {
             background(.ultraThinMaterial, in: Circle())
@@ -1734,7 +1836,7 @@ extension View {
 
     @ViewBuilder
     func glassCapsule() -> some View {
-        if #available(tvOS 26.0, *) {
+        if #available(tvOS 26.0, *), AppleTVCapability.current.supportsLiquidGlass {
             glassEffect(.regular.interactive(), in: .capsule)
         } else {
             background(.ultraThinMaterial, in: Capsule())
@@ -1743,7 +1845,7 @@ extension View {
 
     @ViewBuilder
     func glassRoundedRect(cornerRadius: CGFloat) -> some View {
-        if #available(tvOS 26.0, *) {
+        if #available(tvOS 26.0, *), AppleTVCapability.current.supportsLiquidGlass {
             glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
         } else {
             background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius))
@@ -1764,7 +1866,7 @@ struct TvCardGlassBackground<S: InsettableShape>: ViewModifier {
                 .background(.ultraThinMaterial, in: shape)
                 .overlay(shape.stroke(Color.white, lineWidth: 2.5))
         } else {
-            if #available(tvOS 26.0, *) {
+            if #available(tvOS 26.0, *), AppleTVCapability.current.supportsLiquidGlass {
                 content
                     .background(Color.black.opacity(0.25), in: shape)
                     .background(Color.white.opacity(0.08), in: shape)
@@ -1786,13 +1888,18 @@ struct TvCardGlassBackground<S: InsettableShape>: ViewModifier {
 // the upcoming episode's thumbnail, and manual Play/Cancel Auto-Play actions.
 struct NextEpisodeOverlay: View {
     let episode: NuvioVideo
+    let isEpisodeWatched: Bool
+    let isRevealableNextEpisode: Bool
     let isAdvancing: Bool
     var isFocused: Bool
     let isAutoPlayCancelled: Bool
+    /// The series plays in shuffle: this is a random episode, not the following one.
+    var isShuffled: Bool = false
 
     @AppStorage(SettingsKey.cardCornerRadius) private var cardCornerRadiusSetting = AppCardStyle.defaultCornerRadiusRaw
     @AppStorage(SettingsKey.blurUnwatchedEpisodes) private var blurUnwatchedEpisodes = false
     @AppStorage(SettingsKey.hideUnwatchedEpisodeTitles) private var hideUnwatchedEpisodeTitles = false
+    @AppStorage(SettingsKey.revealNextEpisodeSpoilers) private var revealNextEpisodeSpoilers = false
 
     private var overlayCornerRadius: CGFloat {
         max(14, AppCardStyle.episodeCornerRadius(for: cardCornerRadiusSetting))
@@ -1803,7 +1910,9 @@ struct NextEpisodeOverlay: View {
     }
 
     private var episodeLine: String {
-        if hideUnwatchedEpisodeTitles {
+        if hideUnwatchedEpisodeTitles
+            && !isEpisodeWatched
+            && !(revealNextEpisodeSpoilers && isRevealableNextEpisode) {
             return "S\(episode.season) E\(episode.episode)"
         }
         return "S\(episode.season) E\(episode.episode) • \(episode.title)"
@@ -1822,7 +1931,9 @@ struct NextEpisodeOverlay: View {
             thumbnail
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(L10n.string("player_next_episode", fallback: "Next Episode"))
+                Text(isShuffled
+                    ? L10n.string("player_next_episode_shuffled", fallback: "🔀 Shuffle")
+                    : L10n.string("player_next_episode", fallback: "Next Episode"))
                     .font(.system(size: 21, weight: .semibold))
                     .foregroundColor(.white.opacity(0.62))
                 Text(episodeLine)
@@ -1873,9 +1984,15 @@ struct NextEpisodeOverlay: View {
             }
         }
         .frame(width: 158, height: 90)
-        .scaleEffect(blurUnwatchedEpisodes ? 1.08 : 1.0)
-        .blur(radius: blurUnwatchedEpisodes ? 14 : 0)
+        .scaleEffect(shouldBlurThumbnail ? 1.08 : 1.0)
+        .blur(radius: shouldBlurThumbnail ? 14 : 0)
         .clipShape(RoundedRectangle(cornerRadius: thumbCornerRadius, style: .continuous))
+    }
+
+    private var shouldBlurThumbnail: Bool {
+        blurUnwatchedEpisodes
+            && !isEpisodeWatched
+            && !(revealNextEpisodeSpoilers && isRevealableNextEpisode)
     }
 
     private var playButton: some View {
@@ -1959,11 +2076,14 @@ struct PlayerGlassCircleButtonBackground: ViewModifier {
     @ViewBuilder
     func body(content: Content) -> some View {
         if filled {
-            content.background(Color.white, in: Circle())
-        } else if #available(tvOS 26.0, *) {
-            content.glassEffect(.regular, in: Circle())
+            content
+                .background(Color.white, in: Circle())
+        } else if #available(tvOS 26.0, *), AppleTVCapability.current.supportsLiquidGlass {
+            content
+                .glassEffect(.regular, in: Circle())
         } else {
-            content.background(.ultraThinMaterial, in: Circle())
+            content
+                .background(.ultraThinMaterial, in: Circle())
         }
     }
 }
@@ -2387,12 +2507,12 @@ struct PlayerSettingsPanel: View {
             style = SubtitleStyle.current
             viewModel.setControlsAutoHideSuspended(true)
             DispatchQueue.main.async {
+                // Open on the tab row, at the top of the panel, instead of jumping down to the
+                // current subtitle language; that language stays selected in the list.
                 if let language = effectiveLanguage {
                     selectedLanguage = language
-                    focus = .language(language)
-                } else {
-                    focus = .noneRow
                 }
+                focus = .tab(tab)
             }
         }
         .onDisappear {
@@ -3659,18 +3779,18 @@ struct PlayerSettingsPanel: View {
                                 customShapeRow(shape)
                             }
 
-                            simpleRow(title: "Reset to defaults", isSelected: false, focusKey: .gestureReset) {
+                            simpleRow(title: L10n.string("player_gesture_reset_defaults", fallback: "Reset to defaults"), isSelected: false, focusKey: .gestureReset) {
                                 gestureBindings = .defaults
                                 PlayerGestureSettings.save(.defaults)
                                 gestureSensitivity = PlayerGestureSensitivity()
                                 viewModel.setGestureSensitivity(gestureSensitivity)
-                                gestureNote = "The ready-made gestures and the default sensitivity"
+                                gestureNote = L10n.string("player_gesture_reset_defaults_note", fallback: "The ready-made gestures and the default sensitivity")
                             }
                         }
 
                         Text(viewModel.isGestureExpert
-                             ? "With the controls hidden, a gesture with an action replaces what the player does with it (like click right = seek). With the controls shown or paused, a gesture with an action does it on top of what the controls do. With a double click or tap set, a single one waits to see whether a second one follows."
-                             : "Ready-made gestures that keep clear of what the player does itself. Turn on Expert mode to change them, draw your own and tune the sensitivity.")
+                             ? L10n.string("player_gesture_expert_description", fallback: "With the controls hidden, a gesture with an action replaces what the player does with it (like click right = seek). With the controls shown or paused, a gesture with an action does it on top of what the controls do. With a double click or tap set, a single one waits to see whether a second one follows.")
+                             : L10n.string("player_gesture_standard_description", fallback: "Ready-made gestures that keep clear of what the player does itself. Turn on Expert mode to change them, draw your own and tune the sensitivity."))
                             .font(.system(size: 20, weight: .medium))
                             .foregroundColor(.white.opacity(0.5))
                             .fixedSize(horizontal: false, vertical: true)
@@ -3684,7 +3804,7 @@ struct PlayerSettingsPanel: View {
                         }
 
                         if viewModel.isGestureExpert {
-                            Text("Sensitivity")
+                            Text(L10n.string("player_gesture_sensitivity_header", fallback: "Sensitivity"))
                                 .font(.system(size: 22, weight: .bold))
                                 .foregroundColor(.white.opacity(0.55))
                                 .padding(.top, 14)
@@ -4066,23 +4186,23 @@ private struct PlaybackLogsPage: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(spacing: 20) {
-                Text("Recent playback events · \(entries.count)")
+                Text(L10n.format("player_logs_recent_events", fallback: "Recent playback events · %d", entries.count))
                     .font(.system(size: 24, weight: .semibold))
                     .foregroundColor(.white.opacity(0.78))
 
-                Button(isRefreshPaused ? "Resume refresh" : "Pause refresh") {
+                Button(isRefreshPaused ? L10n.string("player_logs_resume_refresh", fallback: "Resume refresh") : L10n.string("player_logs_pause_refresh", fallback: "Pause refresh")) {
                     isRefreshPaused.toggle()
                 }
                 .buttonStyle(PosterCardButtonStyle())
 
-                Button("Clear logs") {
+                Button(L10n.string("player_logs_clear", fallback: "Clear logs")) {
                     PlaybackDiagnosticLogStore.shared.clear()
                     entries = []
                 }
                 .buttonStyle(PosterCardButtonStyle())
             }
 
-            Text("Recent playback events are shown here. For crash details, collect the Apple TV unified log in Console (subsystem com.pyksel.nuviotvos, category playback-diagnostics).")
+            Text(L10n.string("player_logs_description", fallback: "Recent playback events are shown here. For crash details, collect the Apple TV unified log in Console (subsystem com.pyksel.nuviotvos, category playback-diagnostics)."))
                 .font(.system(size: 20))
                 .foregroundColor(.white.opacity(0.55))
 

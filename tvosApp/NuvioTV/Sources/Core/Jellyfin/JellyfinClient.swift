@@ -15,7 +15,7 @@ struct JellyfinLibrary: Identifiable, Equatable {
 /// over its series'. `JellyfinLibraryResolver` groups these locally; nothing
 /// here is looked up against any other metadata source — the whole point of
 /// fetching this many fields directly is that Jellyfin never needs to be.
-struct JellyfinMediaItem: Equatable {
+struct JellyfinMediaItem: Codable, Equatable {
     let id: String
     let name: String
     /// `"Movie"`, `"Series"`, or `"Episode"`.
@@ -42,6 +42,13 @@ struct JellyfinMediaItem: Equatable {
     let indexNumber: Int?
     let container: String?
     let sizeBytes: Int64?
+}
+
+struct JellyfinItemsPage {
+    let items: [JellyfinMediaItem]
+    let startIndex: Int
+    let nextStartIndex: Int
+    let totalRecordCount: Int?
 }
 
 /// Thin REST client for one Jellyfin server. Stateless beyond the
@@ -226,18 +233,16 @@ struct JellyfinClient {
 
         init(from decoder: Decoder) throws {
             if let container = try? decoder.container(keyedBy: CodingKeys.self) {
-                self.Items = (try? container.decode([Item].self, forKey: .Items)) ?? []
-                self.TotalRecordCount = try? container.decode(Int.self, forKey: .TotalRecordCount)
-                self.StartIndex = try? container.decode(Int.self, forKey: .StartIndex)
-            } else if let singleContainer = try? decoder.singleValueContainer(),
-                      let array = try? singleContainer.decode([Item].self) {
-                self.Items = array
-                self.TotalRecordCount = array.count
-                self.StartIndex = 0
+                Items = try container.decode([Item].self, forKey: .Items)
+                TotalRecordCount = try container.decodeIfPresent(Int.self, forKey: .TotalRecordCount)
+                StartIndex = try container.decodeIfPresent(Int.self, forKey: .StartIndex)
             } else {
-                self.Items = []
-                self.TotalRecordCount = 0
-                self.StartIndex = 0
+                let singleContainer = try decoder.singleValueContainer()
+                Items = try singleContainer.decode([Item].self)
+                // A bare array has no pagination metadata. Its length is only
+                // this response's page size, not the server's full result count.
+                TotalRecordCount = nil
+                StartIndex = nil
             }
         }
 
@@ -299,14 +304,37 @@ struct JellyfinClient {
         libraryId: String,
         onPageFetched: ((Int) -> Void)? = nil
     ) async throws -> [JellyfinMediaItem] {
-        var allItems: [JellyfinMediaItem] = []
-        var seenIds = Set<String>()
-        var startIndex = 0
-        let pageSize = 100
-        var iteration = 0
+        try await fetchItems(userId: userId, libraryId: libraryId, startingAt: 0, seenItemIDs: []) { page in
+            onPageFetched?(page.nextStartIndex)
+        }
+    }
 
-        while iteration < 500 {
-            iteration += 1
+    /// Fetches pages starting at a saved server offset. The callback runs
+    /// after each response page has been decoded and mapped, so callers can
+    /// durably record it before another request begins.
+    func items(
+        userId: String,
+        libraryId: String,
+        startingAt: Int,
+        seenItemIDs: Set<String> = [],
+        onPageFetched: ((JellyfinItemsPage) throws -> Void)? = nil
+    ) async throws -> [JellyfinMediaItem] {
+        try await fetchItems(userId: userId, libraryId: libraryId, startingAt: startingAt, seenItemIDs: seenItemIDs, onPageFetched: onPageFetched)
+    }
+
+    private func fetchItems(
+        userId: String,
+        libraryId: String,
+        startingAt initialStartIndex: Int,
+        seenItemIDs initialSeenItemIDs: Set<String>,
+        onPageFetched: ((JellyfinItemsPage) throws -> Void)?
+    ) async throws -> [JellyfinMediaItem] {
+        var allItems: [JellyfinMediaItem] = []
+        var seenIds = initialSeenItemIDs
+        var startIndex = max(0, initialStartIndex)
+        let pageSize = 100
+
+        for _ in 0..<500 {
             try Task.checkCancellation()
 
             let (data, response) = try await get("Users/\(userId)/Items", query: [
@@ -321,8 +349,11 @@ struct JellyfinClient {
             try Self.validate(response, data: data)
 
             let payload = try JSONDecoder().decode(ItemsPayload.self, from: data)
+            if let reportedStartIndex = payload.StartIndex, reportedStartIndex != startIndex {
+                throw ClientError(message: "The server returned a library page for the wrong offset")
+            }
             if payload.Items.isEmpty {
-                break
+                return allItems
             }
 
             let pageItems = payload.Items.compactMap { item -> JellyfinMediaItem? in
@@ -331,20 +362,26 @@ struct JellyfinClient {
                 return Self.mapMediaItem(item)
             }
 
-            allItems.append(contentsOf: pageItems)
-            onPageFetched?(allItems.count)
+            guard !pageItems.isEmpty else {
+                throw ClientError(message: "The server repeated a library page without advancing results")
+            }
 
-            startIndex += payload.Items.count
+            allItems.append(contentsOf: pageItems)
+            let nextStartIndex = startIndex + payload.Items.count
+            try onPageFetched?(JellyfinItemsPage(
+                items: pageItems,
+                startIndex: startIndex,
+                nextStartIndex: nextStartIndex,
+                totalRecordCount: payload.TotalRecordCount
+            ))
+            startIndex = nextStartIndex
 
             if let total = payload.TotalRecordCount, startIndex >= total {
-                break
-            }
-            if payload.TotalRecordCount == nil && payload.Items.count < pageSize {
-                break
+                return allItems
             }
         }
 
-        return allItems
+        throw ClientError(message: "The server library exceeded the 500-page sync limit")
     }
 
     /// All episodes under one TV series, fetched hierarchically.
@@ -355,14 +392,34 @@ struct JellyfinClient {
         userId: String? = nil,
         onPageFetched: ((Int) -> Void)? = nil
     ) async throws -> [JellyfinMediaItem] {
-        var allEpisodes: [JellyfinMediaItem] = []
-        var seenIds = Set<String>()
-        var startIndex = 0
-        let pageSize = 100
-        var iteration = 0
+        try await fetchEpisodes(seriesId: seriesId, userId: userId, startingAt: 0, seenItemIDs: []) { page in
+            onPageFetched?(page.nextStartIndex)
+        }
+    }
 
-        while iteration < 500 {
-            iteration += 1
+    func episodes(
+        seriesId: String,
+        userId: String? = nil,
+        startingAt: Int,
+        seenItemIDs: Set<String> = [],
+        onPageFetched: ((JellyfinItemsPage) throws -> Void)? = nil
+    ) async throws -> [JellyfinMediaItem] {
+        try await fetchEpisodes(seriesId: seriesId, userId: userId, startingAt: startingAt, seenItemIDs: seenItemIDs, onPageFetched: onPageFetched)
+    }
+
+    private func fetchEpisodes(
+        seriesId: String,
+        userId: String?,
+        startingAt initialStartIndex: Int,
+        seenItemIDs initialSeenItemIDs: Set<String>,
+        onPageFetched: ((JellyfinItemsPage) throws -> Void)?
+    ) async throws -> [JellyfinMediaItem] {
+        var allEpisodes: [JellyfinMediaItem] = []
+        var seenIds = initialSeenItemIDs
+        var startIndex = max(0, initialStartIndex)
+        let pageSize = 100
+
+        for _ in 0..<500 {
             try Task.checkCancellation()
 
             var query: [String: String] = [
@@ -379,8 +436,11 @@ struct JellyfinClient {
             try Self.validate(response, data: data)
 
             let payload = try JSONDecoder().decode(ItemsPayload.self, from: data)
+            if let reportedStartIndex = payload.StartIndex, reportedStartIndex != startIndex {
+                throw ClientError(message: "The server returned an episode page for the wrong offset")
+            }
             if payload.Items.isEmpty {
-                break
+                return allEpisodes
             }
 
             let pageItems = payload.Items.compactMap { item -> JellyfinMediaItem? in
@@ -389,20 +449,26 @@ struct JellyfinClient {
                 return Self.mapMediaItem(item, fallbackSeriesId: seriesId, fallbackType: "Episode")
             }
 
-            allEpisodes.append(contentsOf: pageItems)
-            onPageFetched?(allEpisodes.count)
+            guard !pageItems.isEmpty else {
+                throw ClientError(message: "The server repeated an episode page without advancing results")
+            }
 
-            startIndex += payload.Items.count
+            allEpisodes.append(contentsOf: pageItems)
+            let nextStartIndex = startIndex + payload.Items.count
+            try onPageFetched?(JellyfinItemsPage(
+                items: pageItems,
+                startIndex: startIndex,
+                nextStartIndex: nextStartIndex,
+                totalRecordCount: payload.TotalRecordCount
+            ))
+            startIndex = nextStartIndex
 
             if let total = payload.TotalRecordCount, startIndex >= total {
-                break
-            }
-            if payload.TotalRecordCount == nil && payload.Items.count < pageSize {
-                break
+                return allEpisodes
             }
         }
 
-        return allEpisodes
+        throw ClientError(message: "The server episode list exceeded the 500-page sync limit")
     }
 
     // MARK: - Media URLs
@@ -428,7 +494,115 @@ struct JellyfinClient {
         }
         var request = URLRequest(url: url)
         request.setValue(Self.authorizationHeader(token: accessToken), forHTTPHeaderField: "Authorization")
-        return try await session.data(for: request)
+        // A library sync sends many requests in a row (one or more per series for
+        // episodes). Servers behind a reverse proxy or a hosted plan can answer
+        // 429 Too Many Requests, or 503 while busy. Wait and ask again instead of
+        // failing the whole sync, but never sooner than the server asked, and
+        // never for longer than we're willing to sit silently: then stop and say
+        // when to try again.
+        var attempt = 0
+        while true {
+            try Task.checkCancellation()
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  http.statusCode == 429 || http.statusCode == 503 else {
+                return (data, response)
+            }
+            let retryAfter = http.value(forHTTPHeaderField: "Retry-After")
+            guard attempt < Self.rateLimitRetryLimit else {
+                throw RateLimitedError(retryAfter: Self.retryAfterSeconds(retryAfter))
+            }
+            switch Self.retryDecision(retryAfter: retryAfter, attempt: attempt) {
+            case .retry(let delay):
+                attempt += 1
+                // Throws CancellationError at once if the sync is cancelled.
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            case .giveUp(let serverWait):
+                throw RateLimitedError(retryAfter: serverWait)
+            }
+        }
+    }
+
+    static let rateLimitRetryLimit = 5
+    /// The longest we wait before a retry. A server asking for more gets no
+    /// early retry (that would only hit its limit again); the request fails
+    /// with a "try again in" message instead.
+    static let maxRetryWait: TimeInterval = 30
+
+    enum RetryDecision: Equatable {
+        case retry(after: TimeInterval)
+        case giveUp(serverWait: TimeInterval)
+    }
+
+    /// The server's `Retry-After` when it sends one: wait exactly that long,
+    /// or give up when it's longer than `maxRetryWait`. Otherwise back off
+    /// 1, 2, 4, 8, 16 s.
+    static func retryDecision(retryAfter: String?, attempt: Int, now: Date = Date()) -> RetryDecision {
+        if let serverWait = retryAfterSeconds(retryAfter, now: now) {
+            return serverWait <= maxRetryWait ? .retry(after: serverWait) : .giveUp(serverWait: serverWait)
+        }
+        return .retry(after: min(pow(2, Double(max(0, attempt))), maxRetryWait))
+    }
+
+    /// Seconds from `now` that a `Retry-After` value asks for: either a number
+    /// of seconds or an HTTP date (RFC 9110: IMF-fixdate, or the obsolete
+    /// RFC 850 and asctime forms). A date in the past means now. Nil when
+    /// missing or unreadable.
+    static func retryAfterSeconds(_ value: String?, now: Date = Date()) -> TimeInterval? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespaces), !trimmed.isEmpty else { return nil }
+        if let seconds = TimeInterval(trimmed) {
+            return seconds.isFinite && seconds >= 0 ? seconds : nil
+        }
+        for formatter in httpDateFormatters {
+            if let date = formatter.date(from: trimmed) {
+                return max(0, date.timeIntervalSince(now))
+            }
+        }
+        return nil
+    }
+
+    private static let httpDateFormatters: [DateFormatter] = [
+        "EEE, dd MMM yyyy HH:mm:ss zzz",   // Sun, 06 Nov 1994 08:49:37 GMT
+        "EEEE, dd-MMM-yy HH:mm:ss zzz",    // Sunday, 06-Nov-94 08:49:37 GMT
+        "EEE MMM d HH:mm:ss yyyy",         // Sun Nov  6 08:49:37 1994
+    ].map { format in
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "GMT")
+        formatter.dateFormat = format
+        return formatter
+    }
+
+    /// The server keeps refusing requests (429/503) for longer than we wait.
+    struct RateLimitedError: LocalizedError, Equatable {
+        /// What the server asked for, in seconds, when it said.
+        let retryAfter: TimeInterval?
+
+        /// Longer waits than this (a day) get the generic message: a huge
+        /// minute count wouldn't help, and converting an oversized header
+        /// value to Int would trap.
+        static let longestWaitShown: TimeInterval = 24 * 60 * 60
+
+        /// Whole minutes to show, or nil for the generic "try again later".
+        var minutesToShow: Int? {
+            guard let retryAfter, retryAfter.isFinite, retryAfter > 0,
+                  retryAfter <= Self.longestWaitShown else { return nil }
+            return max(1, Int((retryAfter / 60).rounded(.up)))
+        }
+
+        var errorDescription: String? {
+            guard let minutes = minutesToShow else {
+                return L10n.string(
+                    "jellyfin_error_rate_limited",
+                    fallback: "The Jellyfin server is limiting requests. Try again later."
+                )
+            }
+            return L10n.format(
+                "jellyfin_error_rate_limited_minutes",
+                fallback: "The Jellyfin server is limiting requests. Try again in about %d min.",
+                minutes
+            )
+        }
     }
 
     private static func validate(_ response: URLResponse, data: Data) throws {

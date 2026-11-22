@@ -374,6 +374,8 @@ private struct CompanyBrowseScrollTransitionShadow: View {
 struct NetworkBrowseRail: View, Equatable {
     let rail: TmdbNetworkBrowseRail
     var externalFocus: FocusState<String?>.Binding? = nil
+    /// Names under the posters even with poster labels off (an AniList voice actor's roles).
+    var alwaysShowLabels = false
     /// tvOS doesn't scroll the rail: Core Animation moves the focused card under the title.
     var movesByCA = false
     /// Focus came to one of the rail's cards.
@@ -386,8 +388,8 @@ struct NetworkBrowseRail: View, Equatable {
     /// What the rail shows; `onSelect` is left out (closures can't be compared), so the page
     /// redrawing (loading, its scroll shadow) no longer rebuilds every card of every rail.
     static func == (lhs: NetworkBrowseRail, rhs: NetworkBrowseRail) -> Bool {
-        lhs.rail == rhs.rail
-            && (lhs.externalFocus == nil) == (rhs.externalFocus == nil)
+        lhs.rail == rhs.rail && (lhs.externalFocus == nil) == (rhs.externalFocus == nil)
+            && lhs.alwaysShowLabels == rhs.alwaysShowLabels
             && lhs.movesByCA == rhs.movesByCA
     }
 
@@ -409,6 +411,7 @@ struct NetworkBrowseRail: View, Equatable {
                         ForEach(Array(rail.items.enumerated()), id: \.element.id) { index, title in
                             ProductionBrowseCard(
                                 title: title,
+                                alwaysShowLabels: alwaysShowLabels,
                                 externalFocus: externalFocus,
                                 onFocus: {
                                     if focusedIndex != index { focusedIndex = index }
@@ -431,6 +434,7 @@ struct NetworkBrowseRail: View, Equatable {
                         ForEach(rail.items) { title in
                             ProductionBrowseCard(
                                 title: title,
+                                alwaysShowLabels: alwaysShowLabels,
                                 externalFocus: externalFocus,
                                 onSelect: {
                                     onSelect(title)
@@ -457,6 +461,8 @@ struct PersonBrowseView: View {
     /// Made once from `detail`: as a computed property it was made again (every title mapped)
     /// several times on every redraw.
     @State private var rails: [TmdbNetworkBrowseRail] = []
+    /// An AniList title's voice actor or character, from AniList instead of TMDB.
+    @State private var aniListPage: AniListPeople.Page? = nil
     @State private var isLoading = true
     @State private var scrollOffset: CGFloat = 0
     /// tvOS doesn't scroll the page: Core Animation moves it to the rail focus is in.
@@ -466,7 +472,7 @@ struct PersonBrowseView: View {
     @AppStorage(SettingsKey.amoled) private var amoled = false
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
 
-    private var displayName: String { detail?.name ?? person.name }
+    private var displayName: String { detail?.name ?? AniListPeople.name(for: person) ?? person.name }
 
     private static func makeRails(from detail: ScenePersonDetail?) -> [TmdbNetworkBrowseRail] {
         guard let detail else { return [] }
@@ -493,6 +499,7 @@ struct PersonBrowseView: View {
     }
 
     private var backdropURL: URL? {
+        if let aniListBackdrop = aniListPage?.backdropURL { return aniListBackdrop }
         let movieBackdrop = detail?.movies.compactMap(\.backdropURL).first
         let seriesBackdrop = detail?.series.compactMap(\.backdropURL).first
         return movieBackdrop ?? seriesBackdrop
@@ -538,6 +545,8 @@ struct PersonBrowseView: View {
                             NetworkBrowseRail(
                                 rail: rail,
                                 externalFocus: $focusedCardID,
+                                // Whom the voice actor plays in each title.
+                                alwaysShowLabels: person.hasAniListPage,
                                 movesByCA: true,
                                 onFocusRail: {
                                     railTops.move(to: rail.id, margin: TVBrowsePageMove.margin, toTop: rail.id == rails.first?.id)
@@ -580,10 +589,17 @@ struct PersonBrowseView: View {
         .onExitCommand(perform: onBack)
         .task(id: person.id) {
             isLoading = true
-            let provider = TmdbSceneCastProvider()
-            let loaded = await provider.fetchPersonDetail(for: person)
-            detail = loaded
-            rails = Self.makeRails(from: loaded)
+            if person.hasAniListPage {
+                let page = await AniListPeople.page(for: person)
+                aniListPage = page
+                detail = page?.detail
+                rails = page?.rails ?? []
+            } else {
+                let provider = TmdbSceneCastProvider()
+                let loaded = await provider.fetchPersonDetail(for: person)
+                detail = loaded
+                rails = Self.makeRails(from: loaded)
+            }
             isLoading = false
             if focusedCardID == nil, let firstID = rails.first?.items.first?.id {
                 focusedCardID = firstID
@@ -600,16 +616,22 @@ struct PersonBrowseView: View {
 
             if let backdropURL {
                 ZStack {
-                    AsyncImage(url: backdropURL) { phase in
-                        if case .success(let image) = phase {
-                            image
-                                .resizable()
-                                .scaledToFill()
+                    // An overlay of a fixed frame, so the picture never sets the page's width:
+                    // AniList's banner (about 4.75 : 1) filled to this height is wider than the
+                    // screen and pushed the whole page sideways.
+                    Color.clear
+                        .frame(maxWidth: .infinity, maxHeight: 520)
+                        .overlay {
+                            AsyncImage(url: backdropURL) { phase in
+                                if case .success(let image) = phase {
+                                    image
+                                        .resizable()
+                                        .scaledToFill()
+                                }
+                            }
                         }
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: 520)
-                    .clipped()
-                    .blur(radius: 8, opaque: true)
+                        .clipped()
+                        .blur(radius: 8, opaque: true)
 
                     GeometryReader { proxy in
                         LinearGradient(
@@ -660,6 +682,7 @@ struct PersonBrowseView: View {
                     .lineLimit(2)
 
                 let metaParts = [
+                    aniListPage?.nativeName,
                     detail?.birthInfo,
                     detail?.placeOfBirth
                 ].compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
@@ -689,7 +712,7 @@ struct PersonBrowseView: View {
                     .fill(Color.white.opacity(0.08))
                     .frame(width: 200, height: 280)
 
-                let profileURL = detail?.profileURL ?? person.profileURL.flatMap(URL.init)
+                let profileURL = detail?.profileURL ?? AniListPeople.portrait(for: person) ?? person.profileURL.flatMap(URL.init)
                 if let profileURL {
                     AsyncImage(url: profileURL) { phase in
                         switch phase {
@@ -721,10 +744,9 @@ struct PersonBrowseView: View {
     }
 
     private var categoryLabel: String {
-        if let role = person.role, !role.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return role
-        }
-        return "Cast & Crew"
+        AniListPeople.category(for: person)
+            ?? person.displayRole
+            ?? L10n.string("details_cast_and_crew", fallback: "Cast & Crew")
     }
 
     private var personFallback: some View {
@@ -845,8 +867,8 @@ struct ProductionBrowseCard: View {
                     )
                 )
                 .shadow(
-                    color: .black.opacity(isFocused ? 0.5 : 0.2),
-                    radius: isFocused ? 16 : 6
+                    color: .black.opacity(isFocused ? 0.5 : 0),
+                    radius: isFocused ? 16 : 0
                 )
 
                 if posterLabels || alwaysShowLabels {
@@ -870,7 +892,14 @@ struct ProductionBrowseCard: View {
             onOpenDetails: onSelect
         )
         .scaleEffect(isFocused ? 1.06 : 1)
-        .animation(smoothFocus ? .spring(response: 0.28, dampingFraction: 0.75) : nil, value: isFocused)
+        .animation(
+            smoothFocus
+                ? (AppleTVCapability.current.supportsLiquidGlass
+                    ? .spring(response: 0.28, dampingFraction: 0.75)
+                    : .easeOut(duration: 0.14))
+                : nil,
+            value: isFocused
+        )
         .zIndex(isFocused ? 1 : 0)
         .onChange(of: isFocused) { _, focused in
             if focused { onFocus?() }
@@ -878,6 +907,7 @@ struct ProductionBrowseCard: View {
     }
 
     private var subtitle: String {
+        if let caption = title.caption { return caption }
         var parts = [title.type == "series" ? "Series" : "Movie"]
         if let year = title.year { parts.append(year) }
         if let rating = title.rating, rating > 0 {

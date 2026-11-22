@@ -172,7 +172,7 @@ final class AniListTests: XCTestCase {
         let secondSeasonFirst = try XCTUnwrap(meta.videos?.first { $0.season == 2 && $0.episode == 1 })
         XCTAssertEqual(meta.canonicalEpisodeStreamId(for: secondSeasonFirst), "anilist:102:1")
 
-        XCTAssertEqual(AniListMetaBuilder.tabTitles(tabs, language: .romaji), [1: "TV · 2020", 2: "2nd Season · 2021"])
+        XCTAssertEqual(AniListMetaBuilder.tabTitles(tabs, language: .romaji), [1: "Season 1 · 2020", 2: "Season 2 · 2021"])
     }
 
     func testAFilmIsAMovieWithoutAnEpisodeNumber() throws {
@@ -298,7 +298,7 @@ final class AniListTests: XCTestCase {
         XCTAssertEqual(card.id, "anilist:101")
         XCTAssertEqual(card.name, "Monster Squad")
         XCTAssertEqual(card.posterUrl, "https://img/101.jpg")
-        XCTAssertEqual(card.backgroundUrl, "https://img/101b.jpg")
+        XCTAssertNil(card.backgroundUrl, "AniList's banner is no background")
         XCTAssertNil(card.imdbId)
         XCTAssertEqual(card.externalRatings?.first?.value, 82)
     }
@@ -425,7 +425,7 @@ final class AniListTests: XCTestCase {
         XCTAssertNil(response.mappings)
     }
 
-    func testTheBackgroundIsTheTVDBFanartBeforeAniListsBanner() throws {
+    func testTheBackgroundIsTheTVDBFanartAndNeverAniListsBanner() throws {
         let entries = try entries()
         let tabs = [try XCTUnwrap(entries[101]), try XCTUnwrap(entries[102])]
         let response = try decoder.decode(AniZipMappingsResponse.self, from: Data(aniZipJSON.utf8))
@@ -438,7 +438,7 @@ final class AniListTests: XCTestCase {
         XCTAssertEqual(meta.logoUrl, "https://tvdb/logo.png")
 
         let withoutAniZip = try XCTUnwrap(AniListMetaBuilder.meta(tabs: tabs, episodes: [:], language: .romaji))
-        XCTAssertEqual(withoutAniZip.backgroundUrl, "https://img/101b.jpg")
+        XCTAssertNil(withoutAniZip.backgroundUrl, "the details screen shows the poster")
         XCTAssertNil(withoutAniZip.logoUrl)
         XCTAssertEqual(AniListMetaBuilder.Artwork(tabs: tabs, aniZip: [:]), .empty)
     }

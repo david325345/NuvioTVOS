@@ -22,8 +22,21 @@ final class TraktKeychainStorage {
     private let service = "com.nuvio.tv.trakt.auth"
     private static let lock = NSLock()
     private static var stringCache: [String: String] = [:]
+    /// Strings the Keychain doesn't have, so they aren't looked for again until one is written.
+    /// With Trakt not set up, its client ID was looked for in the Keychain (for each profile
+    /// scope) every time something asked whether Trakt is signed in, which views do as they are
+    /// drawn, on the main thread; a Keychain query is a call into another process.
+    private static var missingStrings: Set<String> = []
     private static var sessionCache: [String: TraktStoredSession] = [:]
     private static var negativeCache: Set<String> = []
+
+    /// How a string is looked up in the Keychain. Tests count the lookups with their own (test
+    /// runs are unsigned and have no Keychain).
+    private let copyMatching: (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus
+
+    init(copyMatching: @escaping (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus = SecItemCopyMatching) {
+        self.copyMatching = copyMatching
+    }
 
     func clientID(for profileScope: String) -> String? {
         readString(accountType: "clientID", profileScope: profileScope)
@@ -105,6 +118,7 @@ final class TraktKeychainStorage {
     func clearAll() {
         Self.lock.withLock {
             Self.stringCache.removeAll()
+            Self.missingStrings.removeAll()
             Self.sessionCache.removeAll()
             Self.negativeCache.removeAll()
         }
@@ -116,20 +130,29 @@ final class TraktKeychainStorage {
 
     private func readString(accountType: String, profileScope: String) -> String? {
         let cacheKey = "\(accountType):\(profileScope)"
-        if let cached = Self.lock.withLock({ Self.stringCache[cacheKey] }), !cached.isEmpty {
+        let (cached, isMissing) = Self.lock.withLock {
+            (Self.stringCache[cacheKey], Self.missingStrings.contains(cacheKey))
+        }
+        if let cached, !cached.isEmpty {
             return cached
         }
+        if isMissing { return nil }
 
         var query = keychainQuery(for: profileScope, accountType: accountType)
         query[kSecReturnData as String] = kCFBooleanTrue
         query[kSecMatchLimit as String] = kSecMatchLimitOne
 
         var item: CFTypeRef?
-        if SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+        let status = copyMatching(query as CFDictionary, &item)
+        if status == errSecSuccess,
            let data = item as? Data,
            let str = String(data: data, encoding: .utf8), !str.isEmpty {
             Self.lock.withLock { Self.stringCache[cacheKey] = str }
             return str
+        }
+        // Only "not there" is remembered: a Keychain that can't be read now is asked again.
+        if status == errSecItemNotFound {
+            Self.lock.withLock { _ = Self.missingStrings.insert(cacheKey) }
         }
         return nil
     }
@@ -139,8 +162,10 @@ final class TraktKeychainStorage {
         Self.lock.withLock {
             if let value, !value.isEmpty {
                 Self.stringCache[cacheKey] = value
+                Self.missingStrings.remove(cacheKey)
             } else {
                 Self.stringCache.removeValue(forKey: cacheKey)
+                Self.missingStrings.insert(cacheKey)
             }
         }
         _ = SecItemDelete(keychainQuery(for: profileScope, accountType: accountType) as CFDictionary)
@@ -1049,6 +1074,21 @@ enum RemoteTrackingState {
         }
     }
 
+    /// Playback always reports to the authenticated Continue Watching source;
+    /// other authenticated trackers still require their explicit opt-in.
+    static func playbackScrobbleSources(
+        in store: UserDefaults = ProfileSettings.current
+    ) -> [TraktWatchProgressSource] {
+        let selectedSource = TraktSettingsStore.watchProgressSource(in: store)
+        return TraktWatchProgressSource.allCases.filter { source in
+            guard source != .nuvioSync else { return false }
+            if source == selectedSource {
+                return isProgressSourceAuthenticated(source, in: store)
+            }
+            return isScrobbleEnabled(for: source, in: store)
+        }
+    }
+
     static func availableProgressSources(
         in store: UserDefaults = ProfileSettings.current
     ) -> [TraktWatchProgressSource] {
@@ -1290,6 +1330,38 @@ enum TraktPollResult {
     case failed(String)
 }
 
+/// One Trakt token refresh per client and profile at a time. Home's rows, Details and sync each
+/// build their own `TraktAuthService`; without this, an expired token is refreshed several times
+/// in parallel with the same refresh token, and a late rejection of a used token could clear the
+/// session that the first refresh just renewed.
+private actor TraktRefreshCoordinator {
+    static let shared = TraktRefreshCoordinator()
+
+    private struct Entry {
+        let generation: Int
+        let task: Task<Bool, Never>
+    }
+
+    private var nextGeneration = 0
+    private var entries: [String: Entry] = [:]
+
+    func refresh(key: String, operation: @escaping () async -> Bool) async -> Bool {
+        if let existing = entries[key] {
+            return await existing.task.value
+        }
+        nextGeneration &+= 1
+        let generation = nextGeneration
+        let task = Task { await operation() }
+        entries[key] = Entry(generation: generation, task: task)
+
+        let result = await task.value
+        if entries[key]?.generation == generation {
+            entries.removeValue(forKey: key)
+        }
+        return result
+    }
+}
+
 final class TraktAuthService {
     private let session: URLSession
     private let store: UserDefaults
@@ -1434,6 +1506,15 @@ final class TraktAuthService {
     /// together after the response arrives.
     @MainActor
     func refreshTokenIfNeeded(force: Bool = false) async -> Bool {
+        let sessionKey = session === URLSession.shared ? "shared" : "\(ObjectIdentifier(session))"
+        return await TraktRefreshCoordinator.shared.refresh(
+            key: "\(sessionKey):\(clientID):\(TraktConfig.profileScope(in: store))"
+        ) { [self] in
+            await self.refreshTokenIfNeededUncoordinated(force: force)
+        }
+    }
+
+    private func refreshTokenIfNeededUncoordinated(force: Bool) async -> Bool {
         guard ProfileSettings.isActiveStore(store), hasRequiredCredentials() else { return false }
         let state = currentState()
         guard TraktAuthStore.isAuthenticated(in: store), let refreshToken = state.refreshToken else { return false }
@@ -1730,7 +1811,7 @@ struct TraktProgressService {
 
     private static let completionPercent = 90.0
     nonisolated private static let maxItems = 20
-    static let maxHomeContinueWatchingSeeds = 36
+    static let homeContinueWatchingBatchSize = 36
     /// Long enough to outlive an app relaunch plus Simkl's 20-second per-user
     /// scrobble lock. Kept to an hour so a checkpoint the server never confirms
     /// (for example the title was marked watched on another device) cannot linger
@@ -2147,15 +2228,29 @@ struct TraktProgressService {
         return displayedItems
     }
 
-    /// Resolve a bounded seed pool concurrently. Each result is restored to
-    /// candidate order before returning, regardless of completion order.
+    /// Resolve all Home candidates while bounding concurrent metadata requests.
     static func resolveContinueWatchingMetadata<Seed>(
         from seeds: [Seed],
-        candidateLimit: Int,
+        batchSize: Int,
         resolve: @escaping (Seed) async -> ContinueWatchingItem?
     ) async -> [ContinueWatchingItem]? {
-        guard candidateLimit > 0 else { return [] }
-        let candidates = Array(seeds.prefix(candidateLimit))
+        guard !Task.isCancelled else { return nil }
+        guard batchSize > 0 else { return [] }
+        var items: [ContinueWatchingItem] = []
+        for start in stride(from: 0, to: seeds.count, by: batchSize) {
+            let batch = seeds[start...].prefix(batchSize)
+            guard let resolved = await resolveContinueWatchingBatch(batch, resolve: resolve) else {
+                return nil
+            }
+            items.append(contentsOf: resolved)
+        }
+        return Task.isCancelled ? nil : items
+    }
+
+    private static func resolveContinueWatchingBatch<Seed>(
+        _ candidates: ArraySlice<Seed>,
+        resolve: @escaping (Seed) async -> ContinueWatchingItem?
+    ) async -> [ContinueWatchingItem]? {
         guard !Task.isCancelled else { return nil }
         let tasks = candidates.enumerated().map { index, seed in
             Task { @MainActor in
@@ -2179,7 +2274,7 @@ struct TraktProgressService {
     }
 
     /// Apply Home eligibility and title-level deduplication only after all
-    /// checkpoints are merged, then order and cap the visible row.
+    /// checkpoints are merged, then order the visible row.
     static func selectContinueWatchingItemsForDisplay(
         _ items: [ContinueWatchingItem],
         predicate: (ContinueWatchingItem) -> Bool,
@@ -2189,13 +2284,12 @@ struct TraktProgressService {
         let eligibleUniqueItems = items.filter {
             predicate($0) && seenMetaIDs.insert($0.meta.id).inserted
         }
-        let orderedItems = sort?(eligibleUniqueItems) ?? eligibleUniqueItems
-        return Array(orderedItems.prefix(maxItems))
+        return sort?(eligibleUniqueItems) ?? eligibleUniqueItems
     }
 
     /// Separate Upcoming is a presentation split performed after selection.
     /// Rank its combined pool by the default recency order so upcoming entries
-    /// still compete for the Home 20-item limit before `setContinueWatching` splits it.
+    /// are ordered before `setContinueWatching` splits the pool.
     static func sortContinueWatchingForDisplaySelection(
         _ items: [ContinueWatchingItem],
         preference: String
@@ -2289,6 +2383,8 @@ struct TraktProgressService {
             service: service
         )
 
+        async let droppedShowsRequest = fetchDroppedShowIDs(service: service)
+
         let (movies, episodes, watchedShows, episodeHistory) = await (
             moviesRequest,
             episodesRequest,
@@ -2307,9 +2403,12 @@ struct TraktProgressService {
             return nil
         }
 
+        let droppedShowIDs = await droppedShowsRequest
+        guard !Task.isCancelled else { return nil }
         var seeds =
             movies.orEmpty.compactMap { playbackSeed(from: $0, type: "movie") }
             + episodes.orEmpty.compactMap { playbackSeed(from: $0, type: "series") }
+                .filter { !droppedShowIDs.contains($0.contentID) }
         let playbackIDs = Set(seeds.map(\.contentID))
         let preferFurthestEpisode = UpNextEpisodeSelectionPolicy.prefersFurthestEpisode
 
@@ -2342,7 +2441,7 @@ struct TraktProgressService {
             }
             upNextSeedsByContentID[candidate.contentID] = candidate
         }
-        seeds.append(contentsOf: upNextSeedsByContentID.values)
+        seeds.append(contentsOf: upNextSeedsByContentID.values.filter { !droppedShowIDs.contains($0.contentID) })
 
         let cutoff: Date? = {
             let days = TraktSettingsStore.continueWatchingDaysCap
@@ -2369,7 +2468,7 @@ struct TraktProgressService {
         if displayPredicate != nil {
             guard let resolvedItems = await resolveContinueWatchingMetadata(
                 from: uniqueSeeds,
-                candidateLimit: maxHomeContinueWatchingSeeds,
+                batchSize: homeContinueWatchingBatchSize,
                 resolve: { seed in
                     let item = await makeItem(from: seed, repository: repository)
                     #if DEBUG
@@ -2411,10 +2510,21 @@ struct TraktProgressService {
             }
             items = indexedItems.sorted { $0.0 < $1.0 }.map(\.1)
         }
+        let traktDisplayPredicate = displayPredicate.map { predicate in
+            { (item: ContinueWatchingItem) in
+                let meta = item.meta
+                let isDropped = meta.type == "series" && (
+                    droppedShowIDs.contains(meta.id)
+                    || meta.imdbId.map { droppedShowIDs.contains($0) } == true
+                    || meta.tmdbId.map { droppedShowIDs.contains("tmdb:\($0)") } == true
+                )
+                return !isDropped && predicate(item)
+            }
+        }
         guard let resolvedItems = finalizeContinueWatchingFetch(
             items,
             context: context,
-            displayPredicate: displayPredicate,
+            displayPredicate: traktDisplayPredicate,
             displaySort: displaySort
         ) else {
             return nil
@@ -2423,6 +2533,28 @@ struct TraktProgressService {
         print("[ContinueWatching] Trakt provider returning \(resolvedItems.count) items")
         #endif
         return resolvedItems
+    }
+
+    private static func fetchDroppedShowIDs(service: TraktAuthService) async -> Set<String> {
+        let limit = 1_000
+        var page = 1
+        var ids = Set<String>()
+        while !Task.isCancelled {
+            guard let items = await fetchList(
+                TraktDroppedShowDTO.self,
+                path: "users/hidden/dropped?type=show&page=\(page)&limit=\(limit)",
+                service: service
+            ) else { break }
+            for item in items {
+                guard let showIDs = item.show?.ids else { continue }
+                if let imdb = showIDs.imdb, !imdb.isEmpty { ids.insert(imdb) }
+                if let tmdb = showIDs.tmdb { ids.insert("tmdb:\(tmdb)") }
+                if let trakt = showIDs.trakt { ids.insert("trakt:\(trakt)") }
+            }
+            if items.count < limit { break }
+            page += 1
+        }
+        return ids
     }
 
     private static func fetchList<Element: Decodable>(
@@ -2459,8 +2591,10 @@ struct TraktProgressService {
         limit: Int? = maxItems
     ) -> [ContinueWatchingItem] {
         pruneExpiredLocalCheckpoints()
+        let now = Date()
         let checkpoints = localPlaybackCheckpoints.filter {
             $0.profileId == profileId && $0.source == source
+                && now.timeIntervalSince($0.item.lastWatchedAt) <= localCheckpointLifetime
         }
         var merged = remoteItems
         var confirmedItems: [ContinueWatchingItem] = []
@@ -2636,7 +2770,7 @@ struct TraktProgressService {
             )
         }
 
-        var targets = RemoteTrackingState.activeScrobbleSources(in: store)
+        var targets = RemoteTrackingState.playbackScrobbleSources(in: store)
         if isPeriodicHeartbeat {
             targets.removeAll { $0 == .simkl }
         }
@@ -3176,12 +3310,7 @@ struct TraktProgressService {
     }
 
     private static func traktDate(_ value: String?) -> Date? {
-        guard let value, !value.isEmpty else { return nil }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: value) { return date }
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: value)
+        TraktISODate.parse(value)
     }
 
     private static func runtimeSeconds(for meta: NuvioMeta) -> Double {
@@ -4361,12 +4490,7 @@ struct TraktHistoryService {
     }
 
     private static func historyDate(_ value: String?) -> Date? {
-        guard let value, !value.isEmpty else { return nil }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: value) { return date }
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: value)
+        TraktISODate.parse(value)
     }
 }
 
@@ -4551,6 +4675,10 @@ struct TraktProgressIDsDTO: Decodable {
     let tmdb: Int?
 }
 
+private struct TraktDroppedShowDTO: Decodable {
+    let show: TraktProgressMediaDTO?
+}
+
 struct TraktWatchedShowDTO: Decodable {
     let lastWatchedAt: String?
     let show: TraktProgressMediaDTO?
@@ -4635,8 +4763,22 @@ struct TraktLibraryService {
     /// Trakt as the library source, add/remove the title from Trakt's watchlist
     /// instead of writing only to the hidden local library.
     static func setWatchlist(_ meta: NuvioMeta, isInWatchlist: Bool) async -> Bool {
+        guard let context = await MainActor.run(body: { TraktLibraryMutationContext() }) else {
+            return false
+        }
+        return await setWatchlist(meta, isInWatchlist: isInWatchlist, context: context)
+    }
+
+    /// Writes to the account `context` captured, and only while it is still
+    /// current (checked on the main actor right before the request), so a
+    /// change started on one profile or account never writes to another.
+    static func setWatchlist(
+        _ meta: NuvioMeta,
+        isInWatchlist: Bool,
+        context: TraktLibraryMutationContext
+    ) async -> Bool {
         guard let body = watchlistMutation(for: meta),
-              let context = await MainActor.run(body: { TraktLibraryMutationContext() }) else {
+              await MainActor.run(body: { context.isCurrent }) else {
             return false
         }
 
@@ -4877,12 +5019,7 @@ struct TraktLibraryService {
     }
 
     private static func traktDate(_ value: String?) -> Date? {
-        guard let value, !value.isEmpty else { return nil }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: value) { return date }
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: value)
+        TraktISODate.parse(value)
     }
 }
 

@@ -406,6 +406,36 @@ final class PlaybackSessionCoordinator: ObservableObject {
         )
     }
 
+    func shouldGrantStartupWatchdogGrace(generation: UInt64, graceAlreadyGranted: Bool) -> Bool {
+        guard loadGeneration == generation else { return false }
+        if shouldGrantDiscStartupWatchdogGrace(generation: generation, graceAlreadyGranted: graceAlreadyGranted) {
+            return true
+        }
+        guard !graceAlreadyGranted,
+              dispatchedLoadGeneration == generation,
+              let request = lastRequest,
+              !request.isLiveStream,
+              !request.isSports,
+              PlaybackBackendPolicy.isRemoteHTTP(request.videoURL.absoluteString) else {
+            return false
+        }
+        if activeBackend == .aether {
+            guard let progress = aetherController?.startupLoadCheckpointWitness,
+                  progress.ownerLoadGeneration == generation,
+                  let floor = progress.engineGenerationFloor,
+                  let pGen = progress.progressGeneration,
+                  pGen >= floor,
+                  let cp = progress.checkpoint,
+                  cp >= .containerOpened else {
+                return false
+            }
+            return true
+        } else if activeBackend == .mpv {
+            return mpvController.hasPendingLoadfileOpen
+        }
+        return false
+    }
+
     func hasDispatchedCurrentLoad(generation: UInt64) -> Bool {
         loadGeneration == generation && dispatchedLoadGeneration == generation
     }
@@ -420,7 +450,7 @@ final class PlaybackSessionCoordinator: ObservableObject {
             return
         }
         guard !didFallbackForCurrentURL else {
-            print("[PlaybackCoordinator] fallback already used for \(currentURLString ?? "?")")
+            print("[PlaybackCoordinator] fallback already used for \(currentURLString.flatMap(URL.init(string:)).map { AddonTransportUrls.diagnosticDescription(for: $0) } ?? "?")")
             return
         }
 

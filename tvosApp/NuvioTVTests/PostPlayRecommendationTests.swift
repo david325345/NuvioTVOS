@@ -175,6 +175,15 @@ private struct PlayerSurfacePresentationTestHost: View {
 }
 
 final class PostPlayRecommendationTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        L10n.reload(languageTag: "en")
+    }
+
+    override func tearDown() {
+        L10n.reload(languageTag: nil)
+        super.tearDown()
+    }
 
     @MainActor
     @available(tvOS 18.0, *)
@@ -629,6 +638,10 @@ final class PostPlayRecommendationTests: XCTestCase {
         XCTAssertFalse(state.isVisible)
         XCTAssertTrue(state.hasReturnedToPlayer)
         XCTAssertNil(state.countdownSeconds)
+        // Back in the video: the end of the file closes the player.
+        XCTAssertFalse(state.blocksNaturalCompletion)
+        XCTAssertFalse(PostPlayRecommendationUiState(hasReturnedToPlayer: true).blocksNaturalCompletion)
+        XCTAssertTrue(PostPlayRecommendationUiState(isLoadingRecommendation: true).blocksNaturalCompletion)
 
         // Paging to index 1 of 3
         var pagedState = PostPlayRecommendationUiState(

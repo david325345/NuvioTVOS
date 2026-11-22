@@ -1209,6 +1209,8 @@ struct StreamBadgeSettingsSnapshot: Equatable {
     var showFileSizeBadges: Bool
     var showAddonLogo: Bool
     var badgePlacement: StreamBadgePlacement
+    /// Draw `NuvioStreamBadge`s instead of the active badge pack's images.
+    var useNuvioBadges: Bool = false
 }
 
 /// Profile-scoped storage and URL importer for Android TV-compatible badges.
@@ -1248,6 +1250,7 @@ enum StreamBadgeSettingsStore {
         let storedPlacement = defaults.string(forKey: SettingsKey.streamBadgePlacement)
         let storedFileSize = defaults.object(forKey: SettingsKey.showFileSizeBadges) as? Bool ?? true
         let storedAddonLogo = defaults.object(forKey: SettingsKey.showAddonLogo) as? Bool ?? false
+        let storedNuvioBadges = defaults.bool(forKey: SettingsKey.streamNuvioBadges)
         let placement = StreamBadgePlacement(rawValue: storedPlacement ?? StreamBadgePlacement.bottom.rawValue) ?? .bottom
 
         let storedRulesValue = storedData != nil ? String(data: storedData!, encoding: .utf8) : nil
@@ -1257,7 +1260,8 @@ enum StreamBadgeSettingsStore {
            let cachedSnapshot,
            cachedSnapshot.showFileSizeBadges == storedFileSize,
            cachedSnapshot.showAddonLogo == storedAddonLogo,
-           cachedSnapshot.badgePlacement == placement {
+           cachedSnapshot.badgePlacement == placement,
+           cachedSnapshot.useNuvioBadges == storedNuvioBadges {
             return cachedSnapshot
         }
 
@@ -1272,7 +1276,8 @@ enum StreamBadgeSettingsStore {
             rules: rules,
             showFileSizeBadges: storedFileSize,
             showAddonLogo: storedAddonLogo,
-            badgePlacement: placement
+            badgePlacement: placement,
+            useNuvioBadges: storedNuvioBadges
         )
         cachedProfileScope = profileScope
         cachedRulesValue = storedRulesValue
@@ -1336,6 +1341,11 @@ enum StreamBadgeSettingsStore {
 
     static func setShowAddonLogo(_ enabled: Bool) {
         ProfileSettings.current.set(enabled, forKey: SettingsKey.showAddonLogo)
+        postChanged()
+    }
+
+    static func setUseNuvioBadges(_ enabled: Bool) {
+        ProfileSettings.current.set(enabled, forKey: SettingsKey.streamNuvioBadges)
         postChanged()
     }
 
@@ -1579,19 +1589,21 @@ enum StreamBadgeSizing {
             .first(where: { Double($0) != nil }) ?? "0"
         let number = Double(numberText.replacingOccurrences(of: ",", with: ".")) ?? 0
         let upper = token.uppercased()
-        let multiplier: Double = upper.contains("TB") ? 1_099_511_627_776 :
-            upper.contains("GB") ? 1_073_741_824 :
-            upper.contains("MB") ? 1_048_576 : 1_024
+        // Add-ons and Plex write decimal units (1 GB = 10^9 bytes).
+        let multiplier: Double = upper.contains("TB") ? 1_000_000_000_000 :
+            upper.contains("GB") ? 1_000_000_000 :
+            upper.contains("MB") ? 1_000_000 : 1_000
         let bytes = Int64(number * multiplier)
         return bytes > 0 ? bytes : nil
     }
 
     static func fileSizeLabel(for stream: NuvioStream) -> String? {
         guard let bytes = fileSizeBytes(for: stream) else { return nil }
-        let gib = Double(bytes) / 1_073_741_824
-        if gib >= 1 {
-            return String(format: "Size %.1f GB", gib)
+        // Decimal units, so the badge matches the size the source shows.
+        let gigabytes = Double(bytes) / 1_000_000_000
+        if gigabytes >= 1 {
+            return String(format: "Size %.1f GB", gigabytes)
         }
-        return "Size \(Int((Double(bytes) / 1_048_576).rounded())) MB"
+        return "Size \(Int((Double(bytes) / 1_000_000).rounded())) MB"
     }
 }

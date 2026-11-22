@@ -121,7 +121,9 @@ enum AniListMetaBuilder {
             name: title(media.title, language: language),
             description: plainText(media.description),
             posterUrl: media.coverImage?.extraLarge ?? media.coverImage?.large,
-            backgroundUrl: media.bannerImage,
+            // No background: AniList's banner is a thin strip, which a 16:9 background shows
+            // zoomed in to a few blurred shapes (see `background(artwork:)`).
+            backgroundUrl: nil,
             type: contentType(media),
             year: year(media),
             genres: media.genres,
@@ -208,7 +210,7 @@ enum AniListMetaBuilder {
             year: label.isEmpty ? nil : label,
             rating: media.averageScore.map { Double($0) / 10 },
             overview: plainText(media.description),
-            backdropURL: media.bannerImage
+            backdropURL: nil
         )
     }
 
@@ -230,17 +232,18 @@ enum AniListMetaBuilder {
     // MARK: Franchise
 
     /// The tabs of a series, first to last: from `start`, back along the prequels and forward
-    /// along the sequels, through TV / TV short / ONA entries only. `missing` are the next
-    /// entries to fetch before the chain is complete.
+    /// along the sequels. Only TV / TV short / ONA entries become tabs; up to two films, OVAs or
+    /// specials between two of them are passed through. `missing` are the next entries to fetch
+    /// before the chain is complete.
     static func chain(from start: Int, entries: [Int: AniListMedia]) -> (ids: [Int], missing: [Int]) {
         guard let first = entries[start], isTab(first) else { return ([start], []) }
         var ids = [start]
         var seen: Set<Int> = [start]
         var missing: [Int] = []
 
-        func step(from media: AniListMedia, relation: String, latest: Bool) -> AniListMedia? {
+        func related(_ media: AniListMedia, _ relation: String, latest: Bool, _ isWanted: (AniListMedia) -> Bool) -> AniListMedia? {
             let candidates = (media.relations?.edges ?? []).compactMap { edge -> AniListMedia? in
-                guard edge.relationType == relation, let node = edge.node, isTab(node), node.type != "MANGA" else { return nil }
+                guard edge.relationType == relation, let node = edge.node, node.type != "MANGA", isWanted(node) else { return nil }
                 return node
             }
             let ordered = candidates.sorted { lhs, rhs in
@@ -250,8 +253,30 @@ enum AniListMetaBuilder {
             return ordered.first { !seen.contains($0.id) }
         }
 
+        /// The next season in `relation`'s direction, also past a film, an OVA or a special
+        /// between two seasons (Goblin Slayer → Goblin's Crown → Goblin Slayer II), which stays
+        /// out of the tabs. `missing` is an entry on the way that isn't fetched yet.
+        func next(from media: AniListMedia, relation: String, latest: Bool) -> (season: AniListMedia?, missing: Int?) {
+            var current = media
+            var bridges = 0
+            while true {
+                if let season = related(current, relation, latest: latest, isTab) {
+                    return (season, nil)
+                }
+                guard bridges < maxBridges,
+                      let bridge = related(current, relation, latest: latest, isBridge) else { return (nil, nil) }
+                seen.insert(bridge.id)
+                bridges += 1
+                guard let full = entries[bridge.id] else { return (nil, bridge.id) }
+                current = full
+            }
+        }
+
         var cursor = first
-        while let previous = step(from: cursor, relation: "PREQUEL", latest: true) {
+        while true {
+            let step = next(from: cursor, relation: "PREQUEL", latest: true)
+            if let id = step.missing { missing.append(id) }
+            guard let previous = step.season else { break }
             seen.insert(previous.id)
             guard let full = entries[previous.id] else {
                 missing.append(previous.id)
@@ -261,16 +286,28 @@ enum AniListMetaBuilder {
             cursor = full
         }
         cursor = first
-        while let next = step(from: cursor, relation: "SEQUEL", latest: false) {
-            seen.insert(next.id)
-            guard let full = entries[next.id] else {
-                missing.append(next.id)
+        while true {
+            let step = next(from: cursor, relation: "SEQUEL", latest: false)
+            if let id = step.missing { missing.append(id) }
+            guard let following = step.season else { break }
+            seen.insert(following.id)
+            guard let full = entries[following.id] else {
+                missing.append(following.id)
                 break
             }
             ids.append(full.id)
             cursor = full
         }
         return (ids, missing)
+    }
+
+    /// Entries a season chain passes through without making them tabs: a film, an OVA or a
+    /// special between two seasons. At most `maxBridges` in a row.
+    static let bridgeFormats: Set<String> = ["MOVIE", "OVA", "SPECIAL"]
+    static let maxBridges = 2
+
+    static func isBridge(_ media: AniListMedia) -> Bool {
+        (media.type == nil || media.type == "ANIME") && media.format.map { bridgeFormats.contains($0) } ?? false
     }
 
     /// The season before `media`: its latest prequel that is a series (TV, TV Short or ONA).
@@ -425,10 +462,12 @@ enum AniListMetaBuilder {
         }
     }
 
-    /// The background of a title: TheTVDB's 16:9 fanart first, AniList's banner (a thin strip)
-    /// when there is none. Without either, the details screen shows the poster.
-    static func background(tabs: [AniListMedia], artwork: Artwork) -> String? {
-        artwork.background ?? tabs.first?.bannerImage ?? tabs.lazy.compactMap(\.bannerImage).first
+    /// The background of a title: a 16:9 picture (TheTVDB's fanart, TMDB's or Metahub's
+    /// backdrop), never AniList's banner. The banner is a strip about 4.75 : 1; filling the
+    /// screen zooms it about 2.7 times, to a few shapes that blur to one flat color. Without a
+    /// picture, the details screen shows the poster, as for any title without a background.
+    static func background(artwork: Artwork) -> String? {
+        artwork.background
     }
 
     /// A whole title: `tabs` are the entries of the series in order (one for a film, an OVA or
@@ -468,7 +507,7 @@ enum AniListMetaBuilder {
             name: title(root.title, language: language),
             description: plainText(root.description),
             posterUrl: root.coverImage?.extraLarge ?? root.coverImage?.large,
-            backgroundUrl: background(tabs: tabs, artwork: artwork),
+            backgroundUrl: background(artwork: artwork),
             logoUrl: artwork.logo,
             type: isFilm ? "movie" : "series",
             year: startYear,
@@ -509,31 +548,154 @@ enum AniListMetaBuilder {
             .map(\.title)
     }
 
-    /// Names of the tabs, by season number.
-    /// The tabs' names: each entry's own, without what it shares with the first ("Shingeki no
-    /// Kyojin Season 3 Part 2" → "Season 3 Part 2 · 2019"), the first by its format ("TV ·
-    /// 2013"). A title of one entry says what it is: "TV · 12 episodes · 2023". Never "Season N":
-    /// AniList's entries aren't seasons.
+    /// A tab's name and its year, which the season pills draw smaller.
+    struct TabLabel: Equatable {
+        let name: String
+        let year: Int?
+
+        var text: String {
+            [name, year.map { String($0) }].compactMap { $0 }.joined(separator: " · ")
+        }
+    }
+
+    /// Names of the tabs, by season number, as text ("Season 2 · 2021").
     static func tabTitles(_ tabs: [AniListMedia], language: AniListSettings.TitleLanguage) -> [Int: String] {
+        tabLabels(tabs, language: language).mapValues(\.text)
+    }
+
+    /// Names of the tabs, by season number. Each entry's name loses what it shares with the
+    /// first ("Shingeki no Kyojin Season 3 Part 2" → "Season 3 Part 2"), then:
+    /// - a rest that only numbers the entry ("2nd Season", "Season 2", "II", "2") is
+    ///   "Season N", and the first tab is then "Season 1";
+    /// - any other rest stays ("Yuukaku-hen", "The Final Season", "Season 3 Part 2");
+    /// - an entry that isn't TV or ONA says its format first ("Movie · Mugen Ressha-hen");
+    /// - the first tab, when the others aren't seasons, is its format ("TV").
+    /// A title of one entry says what it is: "TV · 12 episodes". The year stays apart.
+    static func tabLabels(_ tabs: [AniListMedia], language: AniListSettings.TitleLanguage) -> [Int: TabLabel] {
         let names = tabs.map { title($0.title, language: language) }
-        guard let base = names.first else { return [:] }
-        if tabs.count == 1, let only = tabs.first {
-            return [1: singleTitle(only)]
+        guard let base = names.first, let first = tabs.first else { return [:] }
+        if tabs.count == 1 {
+            return [1: TabLabel(name: singleName(first), year: year(first))]
         }
-        var titles: [Int: String] = [:]
-        for (index, media) in tabs.enumerated() {
-            let short = index == 0 ? "" : shortName(names[index], base: base)
-            let label = short.isEmpty ? (formatLabel(media.format) ?? names[index]) : short
-            titles[index + 1] = [label, year(media).map { String($0) }].compactMap { $0 }.joined(separator: " · ")
+        var labels: [Int: TabLabel] = [:]
+        var hasSeasons = false
+        for (index, media) in tabs.enumerated() where index > 0 {
+            let short = shortName(names[index], base: base)
+            let name: String
+            if short.isEmpty {
+                name = formatLabel(media.format) ?? names[index]
+            } else if short != names[index], let season = seasonName(short, base: base) {
+                name = season
+                hasSeasons = true
+            } else {
+                name = short
+            }
+            labels[index + 1] = TabLabel(name: withFormat(name, of: media), year: year(media))
         }
-        return titles
+        let firstName = hasSeasons ? "Season 1" : (formatLabel(first.format) ?? base)
+        labels[1] = TabLabel(name: withFormat(firstName, of: first), year: year(first))
+        return labels
+    }
+
+    /// "TV · 12 episodes": what a title of one entry is.
+    static func singleName(_ media: AniListMedia) -> String {
+        var parts: [String] = [formatLabel(media.format) ?? "TV"]
+        if let count = media.episodes, count > 1 { parts.append("\(count) episodes") }
+        return parts.joined(separator: " · ")
     }
 
     static func singleTitle(_ media: AniListMedia) -> String {
-        var parts: [String] = [formatLabel(media.format) ?? "TV"]
-        if let count = media.episodes, count > 1 { parts.append("\(count) episodes") }
-        if let year = year(media) { parts.append(String(year)) }
-        return parts.joined(separator: " · ")
+        TabLabel(name: singleName(media), year: year(media)).text
+    }
+
+    /// The format before the name of an entry that isn't TV or ONA ("Movie · Mugen Ressha-hen").
+    private static func withFormat(_ name: String, of media: AniListMedia) -> String {
+        guard !isTab(media), let format = formatLabel(media.format), name != format else { return name }
+        return "\(format) · \(name)"
+    }
+
+    private static let seasonOrdinals = [
+        "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth",
+    ]
+
+    /// "Season N" when the rest of an entry's name numbers it:
+    /// - "2nd Season", "Second Season", "Season 2", "Season II" → "Season 2", with what follows
+    ///   ("2nd Season Part 2" → "Season 2 Part 2", "Season 2: Arc" → "Season 2: Arc");
+    /// - a bare "2" or "II" → "Season 2", also before a colon and words the first entry's name
+    ///   has ("II: Isekai Ittara Honki Dasu").
+    /// nil for anything else, and for numbers past 30 ("Mob Psycho 100").
+    static func seasonName(_ rest: String, base: String) -> String? {
+        let words = rest.split(whereSeparator: { $0 == " " }).map(String.init)
+        guard let head = words.first else { return nil }
+        let separators = CharacterSet(charactersIn: ":-–—~,.!")
+        func word(_ index: Int) -> String {
+            guard words.indices.contains(index) else { return "" }
+            return words[index].trimmingCharacters(in: separators).lowercased()
+        }
+        func seasonNumber(_ text: String) -> Int? {
+            if let value = Int(text) { return value }
+            return romanNumber(text)
+        }
+        func ordinal(_ text: String) -> Int? {
+            if let index = seasonOrdinals.firstIndex(of: text) { return index + 1 }
+            let digits = text.prefix { $0.isNumber }
+            let suffix = text.dropFirst(digits.count)
+            guard !digits.isEmpty, ["st", "nd", "rd", "th"].contains(String(suffix)) else { return nil }
+            return Int(digits)
+        }
+
+        var found: Int?
+        var used = 0
+        var explicit = false
+        if word(0) == "season", let value = seasonNumber(word(1)) {
+            found = value; used = 2; explicit = true
+        } else if word(1) == "season", let value = ordinal(word(0)) {
+            found = value; used = 2; explicit = true
+        } else if let value = seasonNumber(head.trimmingCharacters(in: separators).lowercased()) {
+            found = value; used = 1
+        }
+        guard let number = found, (1...30).contains(number) else { return nil }
+
+        let tail = words.dropFirst(used).joined(separator: " ")
+            .trimmingCharacters(in: separators.union(.whitespaces))
+        if tail.isEmpty || base.range(of: tail, options: [.caseInsensitive, .diacriticInsensitive]) != nil {
+            return "Season \(number)"
+        }
+        guard explicit else { return nil }
+        let lower = tail.lowercased()
+        let joint = lower.hasPrefix("part") || lower.hasPrefix("cour") ? " " : ": "
+        return "Season \(number)\(joint)\(tail)"
+    }
+
+    /// II…XXX as a number; nil for anything else, and for a lone "I".
+    static func romanNumber(_ text: String) -> Int? {
+        let values: [Character: Int] = ["i": 1, "v": 5, "x": 10]
+        let letters = Array(text.lowercased())
+        guard letters.count >= 1, letters.count <= 6, letters.allSatisfy({ values[$0] != nil }) else { return nil }
+        var total = 0
+        for (index, letter) in letters.enumerated() {
+            let value = values[letter]!
+            if index + 1 < letters.count, value < values[letters[index + 1]]! {
+                total -= value
+            } else {
+                total += value
+            }
+        }
+        // Only the canonical spelling: "IIII" or "VX" aren't numbers.
+        guard total >= 2, total <= 30, roman(total) == text.lowercased() else { return nil }
+        return total
+    }
+
+    private static func roman(_ value: Int) -> String {
+        var value = value
+        var text = ""
+        for (number, letters) in [(10, "x"), (9, "ix"), (5, "v"), (4, "iv"), (1, "i")] {
+            while value >= number {
+                text += letters
+                value -= number
+            }
+        }
+        return text
     }
 
     /// `name` without the words it shares with `base` at its start; all of it when they share

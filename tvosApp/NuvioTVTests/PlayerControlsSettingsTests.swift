@@ -196,11 +196,11 @@ final class ActionPlaybackSessionTests: XCTestCase {
         ProfileSettings.setActiveProfile(profileID, isPrimary: false)
         WatchedStore.setActiveProfile(profileID)
         ContinueWatchingStore.setActiveProfile(profileID)
-        LastPlaybackStreamStore.save(metaId: meta.id, url: savedURL, season: 1, episode: 1)
+        LastPlaybackStreamStore.save(metaId: meta.id, url: savedURL, season: 1, episode: 1, profileId: profileID)
     }
 
     override func tearDown() {
-        LastPlaybackStreamStore.remove(metaId: meta.id, season: 1, episode: 1)
+        LastPlaybackStreamStore.remove(metaId: meta.id, season: 1, episode: 1, profileId: profileID)
         ContinueWatchingStore.eraseProfile(profileID)
         WatchedStore.eraseProfile(profileID)
         WatchedStore.setActiveProfile(previousWatchedID)
@@ -258,7 +258,7 @@ final class ActionPlaybackSessionTests: XCTestCase {
         XCTAssertNil(ContinueWatchingStore.item(for: meta.id), file: file, line: line)
         XCTAssertFalse(WatchedStore.contains(meta: meta), file: file, line: line)
         XCTAssertFalse(WatchedStore.containsEpisode(meta: meta, season: 1, episode: 1), file: file, line: line)
-        XCTAssertEqual(LastPlaybackStreamStore.load(metaId: meta.id, season: 1, episode: 1)?.url, savedURL, file: file, line: line)
+        XCTAssertEqual(LastPlaybackStreamStore.load(metaId: meta.id, season: 1, episode: 1, profileId: profileID)?.url, savedURL, file: file, line: line)
     }
 
     @MainActor
@@ -1003,6 +1003,21 @@ final class PlayerControlsSettingsTests: XCTestCase {
         controller.destroyPlayer()
     }
 
+    func testSiriSkipIntervalKeepsRequestedMagnitudeAndDirection() {
+        guard case .skip(let forward)? = PlayerRemoteIntent.skipInterval(37.5, isForward: true),
+              case .skip(let backward)? = PlayerRemoteIntent.skipInterval(37.5, isForward: false) else {
+            return XCTFail("Expected forward and backward skip intents")
+        }
+        XCTAssertEqual(forward, 37.5)
+        XCTAssertEqual(backward, -37.5)
+    }
+
+    func testSiriSkipIntervalRejectsNegativeAndNonFiniteValues() {
+        XCTAssertNil(PlayerRemoteIntent.skipInterval(-1, isForward: true))
+        XCTAssertNil(PlayerRemoteIntent.skipInterval(.nan, isForward: true))
+        XCTAssertNil(PlayerRemoteIntent.skipInterval(.infinity, isForward: false))
+    }
+
     @MainActor
     func testAetherPlaybackControllerExternalSubtitleSelectionAndMapping() throws {
         guard let controller = AetherPlaybackController() else {
@@ -1367,17 +1382,21 @@ final class PlayerControlsSettingsTests: XCTestCase {
             language: "eng",
             label: "English Full"
         )
-        let cases: [(tracks: [SubtitleTrack], expectedID: String)] = [
+        // Without the file's English, the add-on's English (ranked above Arabic) is loaded and
+        // selected once it arrives; the file's Arabic shows meanwhile.
+        let cases: [(tracks: [SubtitleTrack], expectedID: String, loadsExternal: Bool)] = [
             (
                 [
                     SubtitleTrack(id: "2", name: "English Full", language: "eng", isSelected: false),
                     SubtitleTrack(id: "3", name: "Arabic Full", language: "ara", isSelected: false)
                 ],
-                "2"
+                "2",
+                false
             ),
             (
                 [SubtitleTrack(id: "3", name: "Arabic Full", language: "ara", isSelected: false)],
-                "3"
+                "3",
+                true
             )
         ]
 
@@ -1393,7 +1412,8 @@ final class PlayerControlsSettingsTests: XCTestCase {
             model.mergeExternalSubtitles([englishExternal])
 
             XCTAssertEqual(model.subtitles.first(where: { $0.isSelected })?.id, testCase.expectedID)
-            XCTAssertTrue(model.pendingExternalSubtitles.isEmpty)
+            XCTAssertEqual(model.pendingExternalSubtitles.map(\.url), testCase.loadsExternal ? [englishExternal.url] : [])
+            XCTAssertEqual(model.isExternalSubtitleSelected(englishExternal), testCase.loadsExternal)
         }
     }
 
@@ -2600,6 +2620,36 @@ extension PlayerControlsSettingsTests {
     }
 
     @MainActor
+    func testCancelScrubbingKeepsControlsOpenAndSuppressesMove() {
+        let provider = ControlledScrubThumbnailProvider()
+        let model = PlayerViewModel(
+            sessionCoordinator: PlaybackSessionCoordinator(aetherControllerFactory: { nil }),
+            scrubThumbnailProvider: provider
+        )
+        model.time = PlayerTime(current: 120, duration: 3600)
+        model.pause()
+        XCTAssertEqual(model.status, .paused)
+        XCTAssertTrue(model.showControls)
+
+        // Engage scrubbing via touchpad
+        model.remoteTouchBegan()
+        model.remoteTouchMoved(dx: 60, dy: 0)
+        XCTAssertTrue(model.isScrubbing)
+        model.remoteTouchEnded(dx: 60, dy: 0)
+
+        // Cancel scrub (Back button tapped while preview / scrub is active)
+        model.cancelScrub()
+        XCTAssertFalse(model.isScrubbing, "Cancelling scrub must end scrubbing mode")
+        XCTAssertTrue(model.showControls, "Cancelling scrub must leave controls visible and not dismiss player")
+        XCTAssertTrue(model.moveSuppressed, "Cancelling scrub must briefly suppress move commands")
+
+        // Exit command debounce simulation
+        let now = CACurrentMediaTime()
+        model.lastRemoteBackHandledAt = now
+        XCTAssertFalse(CACurrentMediaTime() - model.lastRemoteBackHandledAt > 0.35, "Immediate duplicate exit command within cooldown must be suppressed")
+    }
+
+    @MainActor
     func testPauseClickJitterDoesNotTriggerScrubbing() {
         let provider = ControlledScrubThumbnailProvider()
         let model = PlayerViewModel(
@@ -3676,11 +3726,13 @@ extension PlayerControlsSettingsTests {
         model.sceneCoordinator.updateContext(context)
         let firstCapture = expectation(description: "Panel begins its playing capture loop")
         let pausedCapture = expectation(description: "Observed engine pause captures one frozen frame")
+        let resumedCapture = expectation(description: "Observed resume captures a frame")
         let explicitPauseCapture = expectation(description: "Explicit pause captures one frozen frame")
         frameProvider.onCapture = { count in
             if count == 1 { firstCapture.fulfill() }
             if count == 2 { pausedCapture.fulfill() }
-            if count == 3 { explicitPauseCapture.fulfill() }
+            if count == 3 { resumedCapture.fulfill() }
+            if count == 4 { explicitPauseCapture.fulfill() }
         }
         model.sceneCoordinator.openPanel()
         await fulfillment(of: [firstCapture], timeout: 2)
@@ -3709,13 +3761,16 @@ extension PlayerControlsSettingsTests {
         model.pollForTesting(using: engine)
         XCTAssertEqual(model.status, .playing)
         XCTAssertTrue(scene.isFrameSamplingActive, "The observed resume should restart scene sampling")
+        await fulfillment(of: [resumedCapture], timeout: 2)
+        XCTAssertEqual(frameProvider.captureCount, 3, "The resumed scene loop should capture before an explicit pause")
 
         model.pause()
         await fulfillment(of: [explicitPauseCapture], timeout: 2)
         engine.isPlayerPlaying = false
         engine.isTransportPlaying = false
         model.pollForTesting(using: engine)
-        XCTAssertEqual(frameProvider.captureCount, 3, "Polling must not duplicate the explicit pause capture")
+        model.pollForTesting(using: engine)
+        XCTAssertEqual(frameProvider.captureCount, 4, "Repeated paused polls must not duplicate the explicit pause capture")
         XCTAssertFalse(scene.isFrameSamplingActive)
     }
 
@@ -3861,7 +3916,12 @@ final class NextEpisodeAetherTransitionRegressionTests: XCTestCase {
             try? FileManager.default.removeItem(at: directory)
         }
 
-        let meta = NuvioMeta(id: "next-up-local-fixture", name: "Next Up Fixture", type: "series")
+        let fixtureIdentity = UUID().uuidString
+        let meta = NuvioMeta(
+            id: "next-up-local-fixture-\(fixtureIdentity)",
+            name: "Next Up Fixture \(fixtureIdentity)",
+            type: "series"
+        )
         let episode1 = NuvioVideo(id: "fixture:1:1", title: "Episode 1", season: 1, episode: 1)
         let episode2 = NuvioVideo(
             id: "fixture:1:2",

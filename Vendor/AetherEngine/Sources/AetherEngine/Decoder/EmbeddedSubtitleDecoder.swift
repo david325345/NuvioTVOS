@@ -62,48 +62,40 @@ final class EmbeddedSubtitleDecoder {
     /// for SRT, WebVTT or teletext uses the default 384x288 instead.
     private let assPlayRes: CGSize
 
+    /// AE#1006: a PGS track of a PQ source carries a PQ palette, converted to sRGB per display set.
+    private let pqPalette: Bool
+
     /// Open the subtitle decoder for `stream`. Returns `nil` if the codec couldn't be opened.
-    convenience init?(stream: UnsafeMutablePointer<AVStream>, sourceVideoWidth: Int32, sourceVideoHeight: Int32, preserveASSMarkup: Bool = false, teletextPage: Int? = nil) {
+    convenience init?(stream: UnsafeMutablePointer<AVStream>, sourceVideoWidth: Int32, sourceVideoHeight: Int32, sourceIsPQ: Bool = false, preserveASSMarkup: Bool = false, teletextPage: Int? = nil) {
         guard let codecpar = stream.pointee.codecpar else { return nil }
         self.init(codecpar: codecpar, sourceVideoWidth: sourceVideoWidth,
-                  sourceVideoHeight: sourceVideoHeight, preserveASSMarkup: preserveASSMarkup,
-                  teletextPage: teletextPage)
+                  sourceVideoHeight: sourceVideoHeight, sourceIsPQ: sourceIsPQ,
+                  preserveASSMarkup: preserveASSMarkup, teletextPage: teletextPage)
         // Some demuxers default to AVDISCARD_DEFAULT and swallow packets; force NONE so everything reaches av_read_frame.
         stream.pointee.discard = AVDISCARD_NONE
     }
 
     /// Open the subtitle decoder for a stream's parameters alone. #921: a bitmap sidecar keeps a
     /// copy of its parameters after its container is closed, and builds its drain decoders from it.
-    init?(codecpar: UnsafePointer<AVCodecParameters>, sourceVideoWidth: Int32, sourceVideoHeight: Int32, preserveASSMarkup: Bool = false, teletextPage: Int? = nil) {
+    init?(codecpar: UnsafePointer<AVCodecParameters>, sourceVideoWidth: Int32, sourceVideoHeight: Int32, sourceIsPQ: Bool = false, preserveASSMarkup: Bool = false, teletextPage: Int? = nil) {
         guard codecpar.pointee.codec_type == AVMEDIA_TYPE_SUBTITLE else { return nil }
         let id = codecpar.pointee.codec_id
-        guard let codec = avcodec_find_decoder(id),
-              let ctx = avcodec_alloc_context3(codec)
-        else { return nil }
-
-        if avcodec_parameters_to_context(ctx, codecpar) < 0 {
-            var local: UnsafeMutablePointer<AVCodecContext>? = ctx
-            avcodec_free_context(&local)
-            return nil
-        }
-
-        // Seed bitmap canvas from video dims; PCS overwrites once it arrives (probe can't always determine them upfront).
-        // AE#971: not DVB. dvbsubdec takes its canvas from the DDS, or the EN 300 743 default of 720x576
-        // without one, only while the context has no size, so a seed overrode both.
-        if Self.isBitmapCodec(id), id != AV_CODEC_ID_DVB_SUBTITLE {
-            if ctx.pointee.width == 0 { ctx.pointee.width = sourceVideoWidth }
-            if ctx.pointee.height == 0 { ctx.pointee.height = sourceVideoHeight }
-        }
-
-        var opts: OpaquePointer?
-        for (key, value) in Self.decoderOptions(for: id, teletextPage: teletextPage) {
-            av_dict_set(&opts, key, value, 0)
-        }
-        let openResult = avcodec_open2(ctx, codec, &opts)
-        av_dict_free(&opts)
-        if openResult < 0 {
-            var local: UnsafeMutablePointer<AVCodecContext>? = ctx
-            avcodec_free_context(&local)
+        guard let codec = avcodec_find_decoder(id) else { return nil }
+        let ctx: UnsafeMutablePointer<AVCodecContext>
+        do {
+            ctx = try FFmpegDecoderContext.open(
+                codec: codec, codecpar: codecpar, maxPixels: FFmpegDecoderContext.maxSubtitlePixels,
+                options: Self.decoderOptions(for: id, teletextPage: teletextPage)
+            ) { ctx in
+                // Seed bitmap canvas from video dims; PCS overwrites once it arrives (probe can't always determine them upfront).
+                // AE#971: not DVB. dvbsubdec takes its canvas from the DDS, or the EN 300 743 default of 720x576
+                // without one, only while the context has no size, so a seed overrode both.
+                if Self.isBitmapCodec(id), id != AV_CODEC_ID_DVB_SUBTITLE {
+                    if ctx.pointee.width == 0 { ctx.pointee.width = sourceVideoWidth }
+                    if ctx.pointee.height == 0 { ctx.pointee.height = sourceVideoHeight }
+                }
+            }
+        } catch {
             return nil
         }
 
@@ -115,6 +107,7 @@ final class EmbeddedSubtitleDecoder {
         self.emitsRawASSLines = preserveASSMarkup
             && (id == AV_CODEC_ID_ASS || id == AV_CODEC_ID_SSA)
         self.teletextPage = teletextPage
+        self.pqPalette = sourceIsPQ && id == AV_CODEC_ID_HDMV_PGS_SUBTITLE
 
         var playRes = SubtitleRectText.defaultASSPlayRes
         if let extra = codecpar.pointee.extradata, codecpar.pointee.extradata_size > 0 {
@@ -264,7 +257,8 @@ final class EmbeddedSubtitleDecoder {
                     rect,
                     videoWidth: Int(canvasW),
                     videoHeight: Int(canvasH),
-                    reportedCanvas: reportedCanvas
+                    reportedCanvas: reportedCanvas,
+                    pqPalette: pqPalette
                 ) {
                     bodies.append(.image(image))
                 }
@@ -670,12 +664,13 @@ final class EmbeddedSubtitleDecoder {
     /// Palette from libavcodec is 32-bit with alpha in the high byte and BGR below ([B,G,R,A] on little-endian);
     /// rewritten to RGBA for CGImage's premultipliedLast. Internal for unit tests (#146).
     /// `reportedCanvas` replaces `canvasSize` when the plane's shape differs from its pixel grid (AE#971 DVB,
-    /// AE#993 DVD).
+    /// AE#993 DVD). `pqPalette` converts a PQ palette to sRGB first (AE#1006).
     static func imageForSubtitleRect(
         _ rect: UnsafeMutablePointer<AVSubtitleRect>,
         videoWidth: Int,
         videoHeight: Int,
-        reportedCanvas: CGSize? = nil
+        reportedCanvas: CGSize? = nil,
+        pqPalette: Bool = false
     ) -> SubtitleImage? {
         let r = rect.pointee
         guard r.type == SUBTITLE_BITMAP,
@@ -689,6 +684,8 @@ final class EmbeddedSubtitleDecoder {
         let stride = Int(r.linesize.0)
         // Malformed rect guard: stride < width would read past the plane allocation.
         guard stride >= width else { return nil }
+        // Decoders that skip the context's max_pixels (xsub) can still hand over a huge plane (audit DEC-201).
+        guard width * height <= Int(FFmpegDecoderContext.maxSubtitlePixels) else { return nil }
 
         // AE#628: resolve the palette once. Every pixel below is then one table read instead of a
         // palette walk plus a premultiply; on a full-canvas plane that is the difference between 5 ms
@@ -699,10 +696,14 @@ final class EmbeddedSubtitleDecoder {
         var visible = [Bool](repeating: false, count: 256)
         var premultiplied = [UInt32](repeating: 0, count: 256)
         for i in 0..<256 {
-            let b = UInt32(palettePtr[i * 4 + 0])
-            let g = UInt32(palettePtr[i * 4 + 1])
-            let red = UInt32(palettePtr[i * 4 + 2])
+            var b = UInt32(palettePtr[i * 4 + 0])
+            var g = UInt32(palettePtr[i * 4 + 1])
+            var red = UInt32(palettePtr[i * 4 + 2])
             let a = UInt32(palettePtr[i * 4 + 3])
+            if pqPalette, a > 0 {
+                let rgb = PQSubtitlePalette.sRGB(fromPQ: UInt8(red), UInt8(g), UInt8(b))
+                (red, g, b) = (UInt32(rgb.r), UInt32(rgb.g), UInt32(rgb.b))
+            }
             visible[i] = palettePtr[i * 4 + 3] >= alphaThreshold
             premultiplied[i] = ((red * a + 127) / 255)
                 | (((g * a + 127) / 255) << 8)

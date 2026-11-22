@@ -11,6 +11,11 @@ final class PlaybackAudioTapBroker {
     private weak var engine: AetherEngine?
     private var subscribers: [UUID: AsyncStream<AudioTapBuffer>.Continuation] = [:]
     private var consumerTask: Task<Void, Never>?
+    /// Identifies the current consumer task. `installAudioTap()` finishes the previous tap's
+    /// stream, so a replaced consumer still reaches its end handler; it must not tear down
+    /// or reinstall the tap that replaced it. Nor may its buffers reach subscribers: one can
+    /// already be on its way to the main actor when the tap is replaced (see `broadcast`).
+    private(set) var consumerGeneration: UInt64 = 0
     private var isReconnecting = false
     
     init(engine: AetherEngine?) {
@@ -85,6 +90,8 @@ final class PlaybackAudioTapBroker {
         }
         print("[AudioTapBroker] ✅ Installed audio tap on AetherEngine (live delivery source: true)")
         
+        consumerGeneration &+= 1
+        let generation = consumerGeneration
         consumerTask = Task.detached(priority: .userInitiated) { [weak self, engineStream] in
             var bufferCount = 0
             for await buffer in engineStream {
@@ -95,27 +102,35 @@ final class PlaybackAudioTapBroker {
                     print("[AudioTapBroker] Yielded buffer #\(bufferCount): pts=\(String(format: "%.2f", buffer.sourceTime))s, frames=\(buffer.buffer.frameLength), discontinuity=\(buffer.discontinuity)")
                 }
                 #endif
-                await self?.broadcast(buffer: buffer)
+                await self?.broadcast(buffer: buffer, generation: generation)
             }
             print("[AudioTapBroker] Engine tap stream ended after \(bufferCount) buffer(s)")
-            await self?.handleEngineStreamEnded()
+            await self?.handleEngineStreamEnded(generation: generation)
         }
     }
     
     private func teardownEngineTap() {
         print("[AudioTapBroker] Teardown engine tap")
+        consumerGeneration &+= 1
         consumerTask?.cancel()
         consumerTask = nil
         engine?.removeAudioTap()
     }
     
-    private func broadcast(buffer: AudioTapBuffer) {
+    /// The consumer hops to the main actor for each buffer. If `updateEngine` (or a teardown)
+    /// replaces the tap while a buffer is waiting to hop, cancelling the consumer doesn't stop
+    /// that call, so without this check the previous session's audio, with its source time,
+    /// would reach the current subscribers.
+    func broadcast(buffer: AudioTapBuffer, generation: UInt64) {
+        guard generation == consumerGeneration else { return }
         for continuation in subscribers.values {
             continuation.yield(buffer)
         }
     }
     
-    private func handleEngineStreamEnded() {
+    private func handleEngineStreamEnded(generation: UInt64) {
+        // A torn-down or replaced consumer: the current tap, if any, is not this one's.
+        guard generation == consumerGeneration else { return }
         consumerTask = nil
         // If subscribers are still active, attempt to re-install if the engine has a new session
         guard !subscribers.isEmpty, let engine, engine.audioTapHasDeliverySource else {

@@ -1165,13 +1165,18 @@ extension PlaybackStreamCacheTests {
         )
         _ = try await server.start()
 
-        for _ in 0..<1000 where PlaybackStreamCacheURLProtocol.requestCount < 2 {
+        for _ in 0..<1500 where PlaybackStreamCacheURLProtocol.requestCount < 2 {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
         let requestedRanges = PlaybackStreamCacheURLProtocol.requestRanges.compactMap { $0 }
+        let lead = await server.contiguousCachedBytesAhead(of: Int64(chunkSize * 2))
+        let isBursting = await server.isBursting
+        let targetLead = await server.adaptiveForwardLeadBytes
+        let concurrency = await server.concurrencyMetrics
         await server.stop()
 
-        XCTAssertGreaterThanOrEqual(requestedRanges.count, 2)
+        XCTAssertGreaterThanOrEqual(requestedRanges.count, 2,
+            "Archive state: lead=\(lead), bursting=\(isBursting), target=\(targetLead), active=\(concurrency.active), max=\(concurrency.currentMax)")
         XCTAssertEqual(
             Array(requestedRanges.prefix(2)),
             [

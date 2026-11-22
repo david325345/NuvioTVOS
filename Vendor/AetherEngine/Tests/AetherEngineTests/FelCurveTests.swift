@@ -25,6 +25,15 @@ struct FelCurveTests {
         nal.withUnsafeBufferPointer { DoviRpuGuard.parse($0.baseAddress!, $0.count) }
     }
 
+    @Test("FEL picture matching requires a usable GOP timeline")
+    func pictureTimestamps() {
+        // The first GOP of a stream-copy cut can have packets missing both PTS and DTS.
+        #expect(FelCurveLookahead.frameSpacing(forSortedTimestamps: [.min, .min, 0, 42, 125]) == nil)
+        #expect(FelCurveLookahead.frameSpacing(forSortedTimestamps: [.min + 1, .max]) == nil)
+        #expect(FelCurveLookahead.frameSpacing(forSortedTimestamps: [-41, 0, 0, 42]) == 41)
+        #expect(FelCurveLookahead.frameSpacing(forSortedTimestamps: [42, 42]) == 1)
+    }
+
     @Test("uniform pivots match the split Profile 7 streams use for luma")
     func uniformPivots() {
         #expect(FelCurve.uniform(pieces: 8) == [0, 128, 256, 384, 512, 640, 768, 896, 1023])
@@ -70,6 +79,54 @@ struct FelCurveTests {
         let residual = FelCurveFit.lumaResidual(FelCurveSamples(), pivots: stream.pivots)
         #expect(residual.coefs == [0, 0, 0, 0, 0, 0])
         #expect(stream.adding(residual) == stream)
+    }
+
+    /// Residual of a fitted curve at normalised base-layer input, in normalised VDR units.
+    static func residual(_ coefs: [Double], pivots: [UInt16], at x: Double) -> Double {
+        var piece = pivots.count - 2
+        for p in 0..<(pivots.count - 2) where x < Double(pivots[p + 1]) / 1023 {
+            piece = p
+            break
+        }
+        return coefs[3 * piece] + coefs[3 * piece + 1] * x + coefs[3 * piece + 2] * x * x
+    }
+
+    @Test("pieces above the sampled range hold the residual of the brightest sampled piece")
+    func emptyUpperPiecesHoldEdge() {
+        // A scene that opens dark: every sample sits below code 512, then the scene brightens.
+        var samples = FelCurveSamples()
+        for i in 0..<20_000 {
+            samples.base.append(Float(70 + i % 440))
+            samples.residual.append(40)
+        }
+        let pivots = FelCurve.uniform(pieces: 8)
+        let residual = FelCurveFit.lumaResidual(samples, pivots: pivots)
+        for x in stride(from: 0.55, through: 1.0, by: 0.05) {
+            #expect(abs(Self.residual(residual.coefs, pivots: pivots, at: x) - 40.0 / 4095) < 1e-6)
+        }
+    }
+
+    @Test("pieces between sampled ranges join both edges without a step")
+    func emptyInnerPiecesJoinEdges() {
+        var samples = FelCurveSamples()
+        for i in 0..<20_000 {
+            let dark = i % 2 == 0
+            samples.base.append(Float(dark ? 64 + i % 190 : 770 + i % 250))
+            samples.residual.append(dark ? 20 : 60)
+        }
+        let pivots = FelCurve.uniform(pieces: 8)
+        let residual = FelCurveFit.lumaResidual(samples, pivots: pivots)
+        // Pieces 2..5 (256..768) carry no samples; at the pivots that bound them both sides must agree.
+        for p: UInt16 in [256, 384, 512, 640, 768] {
+            let x = Double(p) / 1023
+            let below = Self.residual(residual.coefs, pivots: pivots, at: x - 1e-9)
+            let above = Self.residual(residual.coefs, pivots: pivots, at: x)
+            #expect(abs(below - above) < 1e-6, "step at pivot \(p)")
+        }
+        #expect(abs(Self.residual(residual.coefs, pivots: pivots, at: 0.1) - 20.0 / 4095) < 1e-6)
+        #expect(abs(Self.residual(residual.coefs, pivots: pivots, at: 0.9) - 60.0 / 4095) < 1e-6)
+        let mid = Self.residual(residual.coefs, pivots: pivots, at: 0.5)
+        #expect(mid > 20.0 / 4095 && mid < 60.0 / 4095)
     }
 
     @Test("curves with other pivots are not added")

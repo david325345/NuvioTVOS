@@ -1,9 +1,99 @@
 import SwiftUI
 import UIKit
 
+/// The UIKit scroll view under a SwiftUI ScrollView, found from a view in its content.
+final class TVScrollViewBox {
+    weak var scrollView: UIScrollView? {
+        didSet {
+            guard scrollView !== oldValue, let scrollView, oldValue != nil else { return }
+            onReplaced?(scrollView)
+        }
+    }
+
+    /// Called when SwiftUI put the content in another scroll view than the one found before.
+    var onReplaced: ((UIScrollView) -> Void)?
+}
+
+struct TVScrollViewFinder: UIViewRepresentable {
+    let box: TVScrollViewBox
+
+    func makeUIView(context: Context) -> FinderView {
+        let view = FinderView()
+        view.box = box
+        view.isUserInteractionEnabled = false
+        return view
+    }
+
+    func updateUIView(_ uiView: FinderView, context: Context) {
+        uiView.box = box
+        uiView.findScrollView()
+    }
+
+    final class FinderView: UIView {
+        weak var box: TVScrollViewBox?
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            findScrollView()
+        }
+
+        /// Looked for again whenever this is on screen: SwiftUI may put the content in another
+        /// scroll view (Details while its metadata loads), and the one found first, kept alive
+        /// off screen, was moved instead of the one on screen.
+        func findScrollView() {
+            guard let box, window != nil else { return }
+            var view = superview
+            while let current = view {
+                if let scrollView = current as? UIScrollView {
+                    if box.scrollView !== scrollView { box.scrollView = scrollView }
+                    return
+                }
+                view = current.superview
+            }
+        }
+    }
+}
+
+/// Moves a scroll view the app scrolls itself (its scrolling for focus off): by Core Animation
+/// when animated, which goes on in the render server, outside the main thread, once started.
+/// tvOS's own scroll for focus and a SwiftUI scroll animation both move the scroll view frame by
+/// frame on the main thread, and stall with whatever else a move costs there (the focused card,
+/// the hero, rows being built).
+enum TVScrollMove {
+    static let duration: TimeInterval = 0.36
+
+    static func move(
+        _ scrollView: UIScrollView,
+        to target: CGPoint,
+        animated: Bool,
+        duration: TimeInterval = TVScrollMove.duration
+    ) {
+        let inset = scrollView.adjustedContentInset
+        let maxX = max(scrollView.contentSize.width + inset.right - scrollView.bounds.width, -inset.left)
+        let maxY = max(scrollView.contentSize.height + inset.bottom - scrollView.bounds.height, -inset.top)
+        let offset = CGPoint(
+            x: min(max(target.x, -inset.left), maxX),
+            y: min(max(target.y, -inset.top), maxY)
+        )
+        guard animated else {
+            scrollView.contentOffset = offset
+            return
+        }
+        UIView.animate(
+            withDuration: duration,
+            delay: 0,
+            usingSpringWithDamping: 1,
+            initialSpringVelocity: 0,
+            options: [.beginFromCurrentState, .allowUserInteraction]
+        ) {
+            scrollView.contentOffset = offset
+        }
+    }
+}
+
 /// A row of cards that tvOS doesn't scroll: Core Animation moves it so the card at `index` is
-/// where the first card is at rest (under the row's title), as Home's rows. The move runs in the
-/// render server, so it stays smooth while the main thread builds what focus brought.
+/// where the first card is at rest (under the row's title). The move runs in the render server,
+/// so it stays smooth while the main thread builds what focus brought.
 ///
 /// `step`: from one card's start to the next one's. The cards draw past the row's edges, and
 /// there is room after the last card for it to come to the start.

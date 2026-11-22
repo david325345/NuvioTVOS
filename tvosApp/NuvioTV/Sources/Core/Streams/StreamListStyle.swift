@@ -132,6 +132,14 @@ struct StreamListStyle: Equatable {
     var episodeHeader = true
     /// The focused card shows its whole name and description.
     var expandFocused = false
+    /// Remove file-size fragments from the displayed name and description.
+    var hideFileSize = false
+    /// Remove add-on names from displayed stream names and cards.
+    var hideAddonName = false
+    /// Remove file names and description details from stream cards.
+    var hideDescription = false
+    /// Draw SF Symbols in place of the emoji add-ons use as line markers.
+    var symbolIcons = false
 
     init() {}
 
@@ -143,6 +151,10 @@ struct StreamListStyle: Equatable {
         descriptionLines: Int,
         episodeHeader: Bool,
         expandFocused: Bool,
+        hideFileSize: Bool = false,
+        hideAddonName: Bool = false,
+        hideDescription: Bool = false,
+        symbolIcons: Bool = false,
         detailSize: String = Step.standard.rawValue,
         badgeSize: String = Step.standard.rawValue,
         logoSize: String = Step.standard.rawValue,
@@ -156,6 +168,10 @@ struct StreamListStyle: Equatable {
         self.descriptionLines = descriptionLines > 0 ? descriptionLines : nil
         self.episodeHeader = episodeHeader
         self.expandFocused = expandFocused
+        self.hideFileSize = hideFileSize
+        self.hideAddonName = hideAddonName
+        self.hideDescription = hideDescription
+        self.symbolIcons = symbolIcons
         self.detailSize = Step(rawValue: detailSize) ?? .standard
         self.badgeSize = Step(rawValue: badgeSize) ?? .standard
         self.logoSize = Step(rawValue: logoSize) ?? .standard
@@ -181,12 +197,95 @@ struct StreamListStyle: Equatable {
             descriptionLines: int(SettingsKey.streamListDescriptionLines, 6),
             episodeHeader: bool(SettingsKey.streamListEpisodeHeader, true),
             expandFocused: bool(SettingsKey.streamListExpandFocused, false),
+            hideFileSize: bool(SettingsKey.streamListHideFileSize, false),
+            hideAddonName: bool(SettingsKey.streamListHideAddonName, false),
+            hideDescription: bool(SettingsKey.streamListHideDescription, false),
+            symbolIcons: bool(SettingsKey.streamListSymbolIcons, false),
             detailSize: string(SettingsKey.streamListDetailSize),
             badgeSize: string(SettingsKey.streamListBadgeSize),
             logoSize: string(SettingsKey.streamListLogoSize),
             spacing: string(SettingsKey.streamListSpacing),
             height: string(SettingsKey.streamListHeight))
     }
+
+    /// Display-only cleanup; the underlying stream remains available unchanged for sorting,
+    /// playback, and badge matching. Returning the input directly when disabled preserves the
+    /// existing display exactly.
+    static func displayText(_ text: String, hidingFileSize: Bool) -> String {
+        guard hidingFileSize else { return text }
+        let fullRange = NSRange(text.startIndex..., in: text)
+        guard fileSizePattern.firstMatch(in: text, range: fullRange) != nil else { return text }
+
+        let normalizedText = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        let lines = normalizedText.components(separatedBy: "\n").compactMap { line -> String? in
+            let range = NSRange(line.startIndex..., in: line)
+            guard fileSizePattern.firstMatch(in: line, range: range) != nil else { return line }
+
+            var cleaned = fileSizePattern.stringByReplacingMatches(
+                in: line,
+                range: range,
+                withTemplate: ""
+            )
+            cleaned = cleaned.replacingOccurrences(of: #"[ \t]{2,}"#, with: " ", options: .regularExpression)
+            cleaned = repeatedSeparatorPattern.stringByReplacingMatches(
+                in: cleaned,
+                range: NSRange(cleaned.startIndex..., in: cleaned),
+                withTemplate: " $1 "
+            )
+            cleaned = cleaned.replacingOccurrences(
+                of: #"[ \t]+([,;:])"#,
+                with: "$1",
+                options: .regularExpression
+            )
+            cleaned = cleaned.trimmingCharacters(
+                in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "|•·/,:;–—-"))
+            )
+            return cleaned.isEmpty ? nil : cleaned
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Strips the add-on name from the displayed text (such as `"Torrentio\n1080p"` -> `"1080p"`).
+    static func displayText(_ text: String, hidingAddonName addonName: String) -> String {
+        let trimmedAddon = addonName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedAddon.isEmpty else { return text }
+        let lines = text.components(separatedBy: .newlines)
+        let cleanedLines = lines.compactMap { line -> String? in
+            let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmedLine.caseInsensitiveCompare(trimmedAddon) == .orderedSame ||
+               trimmedLine.caseInsensitiveCompare("[\(trimmedAddon)]") == .orderedSame {
+                return nil
+            }
+            let pattern = #"(?i)\b"# + NSRegularExpression.escapedPattern(for: trimmedAddon) + #"\b"#
+            if let regex = try? NSRegularExpression(pattern: pattern) {
+                let range = NSRange(line.startIndex..., in: line)
+                var result = regex.stringByReplacingMatches(in: line, range: range, withTemplate: "")
+                result = result.replacingOccurrences(of: #"[ \t]{2,}"#, with: " ", options: .regularExpression)
+                result = repeatedSeparatorPattern.stringByReplacingMatches(
+                    in: result,
+                    range: NSRange(result.startIndex..., in: result),
+                    withTemplate: " $1 "
+                )
+                result = result.trimmingCharacters(
+                    in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "|•·/,:;–—-"))
+                )
+                return result.isEmpty ? nil : result
+            }
+            return trimmedLine
+        }
+        return cleanedLines.joined(separator: "\n")
+    }
+
+    private static let fileSizePattern = try! NSRegularExpression(
+        pattern: #"(?<![\p{L}\p{N}])(?:(?:💾|💽|📦)[ \t]*[:=]?[ \t]*)?(?:(?:file[ \t_-]*size|size)[ \t]*[:=]?[ \t]*)?\d+(?:[.,]\d+)?[ \t]*(?:[KMGT](?:I?B))(?![\p{L}\p{N}])(?![ \t]*/[ \t]*s(?:ec(?:ond)?s?)?\b)"#,
+        options: [.caseInsensitive]
+    )
+
+    private static let repeatedSeparatorPattern = try! NSRegularExpression(
+        pattern: #"\s*([|•·/,:;–—-])(?:\s*[|•·/,:;–—-])+\s*"#
+    )
 
     // MARK: Sizes
 

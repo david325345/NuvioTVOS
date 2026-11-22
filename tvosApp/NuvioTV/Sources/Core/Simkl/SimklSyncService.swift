@@ -2174,16 +2174,18 @@ struct SimklLibraryService {
                 path: isInWatchlist ? "sync/add-to-list" : "sync/history/remove",
                 body: body
             )
-            guard (200..<300).contains(status), service.isCurrentAuthorization(),
-                  TraktSettingsStore.librarySourceMode(in: store) == .simkl else { return false }
-            NotificationCenter.default.post(
-                name: TraktLibraryService.mutationNotification,
-                object: TraktLibraryMutation(meta: meta, isInWatchlist: isInWatchlist)
-            )
-            NotificationCenter.default.post(
-                name: TraktSettingsStore.libraryChangedNotification,
-                object: nil
-            )
+            guard (200..<300).contains(status) else { return false }
+            guard TraktSettingsStore.librarySourceMode(in: store) == .simkl else { return false }
+            if service.isCurrentAuthorization() {
+                NotificationCenter.default.post(
+                    name: TraktLibraryService.mutationNotification,
+                    object: TraktLibraryMutation(meta: meta, isInWatchlist: isInWatchlist)
+                )
+                NotificationCenter.default.post(
+                    name: TraktSettingsStore.libraryChangedNotification,
+                    object: nil
+                )
+            }
             return true
         } catch {
             return false
@@ -2470,7 +2472,73 @@ enum SelectedLibraryService {
         }
     }
 
+    static func isInLibrary(meta: NuvioMeta) -> Bool {
+        let source = TraktSettingsStore.librarySourceMode
+        guard source != .local else {
+            return LibraryStore.contains(metaId: meta.id, type: meta.type)
+        }
+        let profileId = LibraryStore.activeProfileId
+        let store = ProfileSettings.store(for: profileId)
+        let bindingId = RemoteLibraryStore.accountBindingID(for: source, profileId: profileId, in: store)
+        return RemoteLibraryStore.contains(meta: meta, source: source, profileId: profileId, accountBindingId: bindingId)
+    }
+
+    static func isInLibrary(metaId: String, type: String) -> Bool {
+        let source = TraktSettingsStore.librarySourceMode
+        guard source != .local else {
+            return LibraryStore.contains(metaId: metaId, type: type)
+        }
+        let profileId = LibraryStore.activeProfileId
+        let store = ProfileSettings.store(for: profileId)
+        let bindingId = RemoteLibraryStore.accountBindingID(for: source, profileId: profileId, in: store)
+        return RemoteLibraryStore.contains(metaId: metaId, type: type, source: source, profileId: profileId, accountBindingId: bindingId)
+    }
+
+    /// Writes for the owner `context` captured. The AniList id mapping can
+    /// take a while; once it's done, the write happens only if that profile
+    /// and account are still current, and always to the store, scope and
+    /// account captured, so it never lands in another profile's or account's
+    /// library while being reported for this one.
     @MainActor
+    static func setWatchlist(
+        _ meta: NuvioMeta,
+        isInWatchlist: Bool,
+        context: SelectedLibraryMutationContext,
+        resolve: (NuvioMeta) async -> NuvioMeta = { await AniListService.libraryMeta(for: $0) },
+        write: (NuvioMeta, Bool, LibraryWriteTarget) async -> Bool = { await writeWatchlist($0, isInWatchlist: $1, to: $2) }
+    ) async -> Bool {
+        let target = context.target
+        let resolved = await resolve(meta)
+        guard context.isCurrent else { return false }
+        return await write(resolved, isInWatchlist, target)
+    }
+
+    /// Writes to exactly `target`; never reads the active profile.
+    static func writeWatchlist(_ meta: NuvioMeta, isInWatchlist: Bool, to target: LibraryWriteTarget) async -> Bool {
+        switch target.source {
+        case .local:
+            return false
+        case .trakt:
+            guard let trakt = target.trakt else { return false }
+            return await TraktLibraryService.setWatchlist(meta, isInWatchlist: isInWatchlist, context: trakt)
+        case .simkl:
+            return await SimklLibraryService.setWatchlist(
+                meta, isInWatchlist: isInWatchlist, store: target.store, profileScope: target.profileScope
+            )
+        case .mdblist:
+            return await MdbListLibraryService.setWatchlist(
+                meta, isInWatchlist: isInWatchlist, store: target.store, profileScope: target.profileScope
+            )
+        case .wetrakr:
+            return await WeTrakrLibraryService.setWatchlist(
+                meta, isInWatchlist: isInWatchlist, store: target.store, profileScope: target.profileScope
+            )
+        }
+    }
+
+    /// Writes for whichever profile and account are active when the mapping
+    /// finishes. Prefer `setWatchlist(_:isInWatchlist:context:)` for anything
+    /// that is queued or reported later; no app code calls this one any more.
     static func setWatchlist(_ meta: NuvioMeta, isInWatchlist: Bool) async -> Bool {
         // An AniList title goes by the IMDb/TMDB ids it maps to.
         let meta = await AniListService.libraryMeta(for: meta)
@@ -2910,7 +2978,8 @@ struct SimklProgressService {
         if results.count < 20 {
             let needed = 20 - results.count
             let libraryResponse: SimklAllItemsResponse?
-            if let cached = SimklSyncCache.items(in: store) {
+            let itemSnapshot = SimklSyncCache.itemSnapshot(in: store)
+            if let cached = itemSnapshot?.items, itemSnapshot?.activities?.all == activities.all {
                 libraryResponse = cached
             } else {
                 libraryResponse = await SimklSyncLoader.libraryItems(using: service)
@@ -2918,18 +2987,40 @@ struct SimklProgressService {
 
             var candidateSeeds: [SimklProgressItemSeed] = []
             var candidateKeys = Set<String>()
+            var libraryMetas: [NuvioMeta] = []
+
+            let allShows: [(String, SimklSyncItem)] = (libraryResponse?.shows ?? []).map { ("series", $0) }
+            let allAnime: [(String, SimklSyncItem)] = (libraryResponse?.anime ?? []).map { ("series", $0) }
+            let allMovies: [(String, SimklSyncItem)] = (libraryResponse?.movies ?? []).map { ("movie", $0) }
+            let allLibraryItems = allShows + allAnime + allMovies
+
+            // Register all titles in user's Simkl account so seeds from history cannot
+            // resurrect series that are already completed, dropped, on-hold, plan to watch,
+            // or caught up.
+            for (type, item) in allLibraryItems {
+                if let placeholder = placeholderMeta(item: item, type: type) {
+                    libraryMetas.append(placeholder)
+                    candidateKeys.insert("\(type):\(placeholder.id.lowercased())")
+                    if let imdb = placeholder.imdbId?.lowercased(), !imdb.isEmpty {
+                        candidateKeys.insert("\(type):\(imdb)")
+                    }
+                }
+                let itemIdentity = SimklAllItemsResponse.identity(item).lowercased()
+                candidateKeys.insert("\(type):\(itemIdentity)")
+                if let simkl = item.ids?.simkl, simkl > 0 {
+                    candidateKeys.insert("\(type):simkl:\(simkl)")
+                }
+                if let tmdb = item.ids?.tmdb, tmdb > 0 {
+                    candidateKeys.insert("\(type):tmdb:\(tmdb)")
+                }
+            }
 
             // 1. Titles in user's active Simkl Watching list (shows, anime, movies)
-            let watchingShows: [(String, SimklSyncItem)] = (libraryResponse?.shows ?? []).compactMap { $0.status?.lowercased() == "watching" ? ("series", $0) : nil }
-            let watchingAnime: [(String, SimklSyncItem)] = (libraryResponse?.anime ?? []).compactMap { $0.status?.lowercased() == "watching" ? ("series", $0) : nil }
-            let watchingMovies: [(String, SimklSyncItem)] = (libraryResponse?.movies ?? []).compactMap { $0.status?.lowercased() == "watching" ? ("movie", $0) : nil }
-            let watchingItems = watchingShows + watchingAnime + watchingMovies
+            let watchingItems = allLibraryItems.filter { $0.1.status?.lowercased() == "watching" }
 
             for (type, item) in watchingItems {
                 guard let placeholder = placeholderMeta(item: item, type: type) else { continue }
                 guard !playbackMetas.contains(where: { WatchedStore.sameContent($0, placeholder) }) else { continue }
-                let key = "\(type):\(placeholder.id.lowercased())"
-                guard candidateKeys.insert(key).inserted else { continue }
 
                 let date = parseDate(item.lastWatchedAt)
                     ?? parseDate(item.addedToWatchlistAt)
@@ -2976,10 +3067,12 @@ struct SimklProgressService {
                 }
             }
 
-            // 2. Up Next seeds from Watched History
+            // 2. Up Next seeds from Watched History (only for titles not in library response)
             for seed in upNextSeeds {
                 guard !playbackMetas.contains(where: { WatchedStore.sameContent($0, seed.meta) }) else { continue }
                 let key = "series:\(seed.meta.id.lowercased())"
+                guard !candidateKeys.contains(key),
+                      !libraryMetas.contains(where: { WatchedStore.sameContent($0, seed.meta) }) else { continue }
                 guard candidateKeys.insert(key).inserted else { continue }
 
                 candidateSeeds.append(SimklProgressItemSeed(
@@ -3132,6 +3225,16 @@ struct SimklProgressService {
             targetSeason = s
             targetEpisode = e
             matchedVideo = meta.videos?.first(where: { $0.season == s && $0.episode == e })
+            if matchedVideo == nil, let refreshed = try? await repository.refreshMetadata(
+                id: seed.meta.id,
+                type: "series"
+            ) {
+                meta = refreshed
+                matchedVideo = meta.videos?.first(where: { $0.season == s && $0.episode == e })
+            }
+            if let videos = meta.videos, !videos.isEmpty, matchedVideo == nil {
+                return nil
+            }
         } else {
             let watchedSeason = seed.upNextWatchedSeason ?? 1
             let watchedEp = seed.episode ?? 1
@@ -3149,14 +3252,10 @@ struct SimklProgressService {
                     in: meta
                 )
             }
-            if let next {
-                targetSeason = next.season
-                targetEpisode = next.episode
-                matchedVideo = next
-            } else {
-                targetSeason = watchedSeason
-                targetEpisode = watchedEp + 1
-            }
+            guard let next else { return nil }
+            targetSeason = next.season
+            targetEpisode = next.episode
+            matchedVideo = next
         }
 
         if let released = matchedVideo?.released {

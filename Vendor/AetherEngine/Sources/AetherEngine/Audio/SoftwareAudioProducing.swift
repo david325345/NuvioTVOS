@@ -25,7 +25,8 @@ protocol SoftwareAudioProducing: AnyObject, Sendable {
     func flush()
     func close()
     /// The end of the source: whatever the producer still holds, stamped like `decode`'s output.
-    /// Only the APAC encoder holds anything (its last packets); the others have nothing.
+    /// The APAC encoder holds its last packets, `AudioDecoder` the sub-1024-sample remainder and the
+    /// shaping graph's latency (AUD-205); a passthrough has nothing.
     func endOfStream() -> [CMSampleBuffer]
     /// Drain only if the producer has not been flushed since the source read reached EOF.
     func endOfStream(epoch: UInt64) -> [CMSampleBuffer]
@@ -38,7 +39,8 @@ protocol SoftwareAudioProducing: AnyObject, Sendable {
     func takeRuntimeFailure() -> String?
     /// Stop producing buffers after the renderer itself rejects the selected route.
     func stopAfterFailure(_ message: String)
-    /// The object renderer's latest activity for software-route telemetry, or nil without object audio.
+    /// `LiveTelemetry.objectAudio`: what the object renderer is doing. nil for every producer but the
+    /// APAC one, which renders TrueHD Atmos and DTS:X.
     var objectAudioActivity: ObjectAudioActivity? { get }
 }
 
@@ -69,4 +71,6 @@ extension SoftwareAudioProducing {
     var objectAudioActivity: ObjectAudioActivity? { nil }
 }
 
-extension AudioDecoder: SoftwareAudioProducing {}
+extension AudioDecoder: SoftwareAudioProducing {
+    func endOfStream() -> [CMSampleBuffer] { drain() }
+}

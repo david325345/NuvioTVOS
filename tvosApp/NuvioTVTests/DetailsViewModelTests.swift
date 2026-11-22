@@ -624,4 +624,137 @@ final class DetailsViewModelTests: XCTestCase {
         let resolved = incomingWithNewCert.preservingEnrichment(from: existing)
         XCTAssertEqual(resolved.certification, "TV-MA")
     }
+
+    func testDetailsRelatedItemsSnapshotCaptureSupportsCastAndCompanies() {
+        let person = TmdbPersonMetadata(name: "Christopher Nolan", role: "Director", profileURL: nil, tmdbId: 525)
+        let company = MetaCompany(name: "Syncopy", logoURL: nil, tmdbId: 999, kind: .production)
+        let item = RelatedTitle(id: "tt1375666", name: "Inception", type: "movie", posterURL: nil, backdropURL: nil, year: 2010)
+
+        // Capture from related item
+        let itemSnapshot = DetailsRelatedItemsSnapshot.capture(
+            parentID: "tt0816692",
+            parentType: "movie",
+            selectedRelatedID: item.id,
+            items: [item],
+            people: [person],
+            companies: [company],
+            simklRatings: nil
+        )
+        XCTAssertNotNil(itemSnapshot)
+        XCTAssertEqual(itemSnapshot?.items.count, 1)
+
+        // Capture from cast person
+        let personSnapshot = DetailsRelatedItemsSnapshot.capture(
+            parentID: "tt0816692",
+            parentType: "movie",
+            selectedRelatedID: person.id,
+            items: [item],
+            people: [person],
+            companies: [company],
+            simklRatings: nil
+        )
+        XCTAssertNotNil(personSnapshot)
+        XCTAssertEqual(personSnapshot?.people.first?.id, person.id)
+
+        // Capture from production company
+        let companySnapshot = DetailsRelatedItemsSnapshot.capture(
+            parentID: "tt0816692",
+            parentType: "movie",
+            selectedRelatedID: company.id,
+            items: [item],
+            people: [person],
+            companies: [company],
+            simklRatings: nil
+        )
+        XCTAssertNotNil(companySnapshot)
+        XCTAssertEqual(companySnapshot?.companies.first?.id, company.id)
+
+        // Unknown id fails capture
+        let invalidSnapshot = DetailsRelatedItemsSnapshot.capture(
+            parentID: "tt0816692",
+            parentType: "movie",
+            selectedRelatedID: "unknown_id",
+            items: [item],
+            people: [person],
+            companies: [company],
+            simklRatings: nil
+        )
+        XCTAssertNil(invalidSnapshot)
+    }
+
+    func testLoadDetailsSeedsCompaniesAndPeopleSnapshotsImmediately() {
+        let person = TmdbPersonMetadata(name: "Christopher Nolan", role: "Director", profileURL: nil, tmdbId: 525)
+        let company = MetaCompany(name: "Syncopy", logoURL: nil, tmdbId: 999, kind: .production)
+        let item = RelatedTitle(id: "tt1375666", name: "Inception", type: "movie", posterURL: nil, backdropURL: nil, year: 2010)
+
+        let task = viewModel.loadDetails(
+            id: "tt0816692",
+            type: "movie",
+            relatedItemsSnapshot: [item],
+            relatedPeopleSnapshot: [person],
+            relatedCompaniesSnapshot: [company]
+        )
+        defer { task.cancel() }
+
+        // Immediately seeded on frame 0
+        XCTAssertEqual(viewModel.uiState.moreLikeThis.count, 1)
+        XCTAssertEqual(viewModel.uiState.people.count, 1)
+        XCTAssertEqual(viewModel.uiState.companies.count, 1)
+        XCTAssertEqual(viewModel.uiState.people.first?.id, person.id)
+        XCTAssertEqual(viewModel.uiState.companies.first?.id, company.id)
+    }
+
+    func testLoadDetailsSeedsCollectionSnapshotImmediately() {
+        let item1 = RelatedTitle(id: "tmdb:101", name: "Iron Man", type: "movie", posterURL: nil, backdropURL: nil, year: 2008)
+        let item2 = RelatedTitle(id: "tmdb:102", name: "Iron Man 2", type: "movie", posterURL: nil, backdropURL: nil, year: 2010)
+        let collection = TmdbMovieCollection(
+            id: 555,
+            name: "Iron Man Collection",
+            overview: "Iron Man film series",
+            posterURL: nil,
+            backdropURL: nil,
+            items: [item1, item2]
+        )
+
+        let task = viewModel.loadDetails(
+            id: "tt0816692",
+            type: "movie",
+            collectionSnapshot: collection
+        )
+        defer { task.cancel() }
+
+        // Immediately seeded on frame 0
+        XCTAssertEqual(viewModel.uiState.collection?.id, 555)
+        XCTAssertEqual(viewModel.uiState.collection?.name, "Iron Man Collection")
+        XCTAssertEqual(viewModel.uiState.collection?.items.count, 2)
+        XCTAssertEqual(viewModel.uiState.collection?.items.first?.id, "tmdb:101")
+    }
+
+    func testDetailsRelatedItemsSnapshotCapturesCollectionTarget() {
+        let item = RelatedTitle(id: "tmdb:101", name: "Iron Man", type: "movie", posterURL: nil, backdropURL: nil, year: 2008)
+        let collection = TmdbMovieCollection(
+            id: 555,
+            name: "Iron Man Collection",
+            overview: nil,
+            posterURL: nil,
+            backdropURL: nil,
+            items: [item]
+        )
+
+        let snapshot = DetailsRelatedItemsSnapshot.capture(
+            parentID: "tt0816692",
+            parentType: "movie",
+            focusTarget: DetailsFocusTarget(kind: .collection, itemID: item.id),
+            items: [item],
+            people: [],
+            companies: [],
+            simklRatings: nil,
+            collection: collection
+        )
+
+        XCTAssertNotNil(snapshot)
+        XCTAssertEqual(snapshot?.collection?.id, 555)
+        XCTAssertEqual(snapshot?.collection?.name, "Iron Man Collection")
+        XCTAssertEqual(snapshot?.items.count, 1)
+    }
 }
