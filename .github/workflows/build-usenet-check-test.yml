@@ -1,0 +1,45 @@
+name: Usenet check test (fork)
+
+# Fork only, never part of a PR: the Usenet availability check (usenet-availability) on current main, as the
+# separate test app (Nuvio Test), to try the Usenet check on an Apple TV.
+on:
+  push:
+    branches: [usenet-availability-test]
+  workflow_dispatch:
+
+jobs:
+  ipa:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Tuist
+        run: brew install tuist
+      - name: Make it a separate app (Nuvio Test)
+        # Its own bundle ID, name and App Group, so the test build installs next to the
+        # release app instead of replacing it. Only this job: the tests keep the real IDs.
+        run: |
+          set -euo pipefail
+          perl -pi -e 's/^let bundleID = "com\.pyksel\.nuviotvos"$/let bundleID = "com.pyksel.nuviotvos.test"/' tvosApp/Project.swift
+          grep -q '^let bundleID = "com.pyksel.nuviotvos.test"$' tvosApp/Project.swift
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Nuvio Test" tvosApp/NuvioTV/Info.plist
+          perl -pi -e 's/group\.com\.pyksel\.nuviotvos</group.com.pyksel.nuviotvos.test</' \
+            tvosApp/NuvioTV/NuvioTV.entitlements tvosApp/TopShelf/TopShelf.entitlements
+          perl -pi -e 's/^let projectVersion = "(\d+)"$/let projectVersion = "$1.$ENV{GITHUB_RUN_NUMBER}"/' tvosApp/Project.swift
+          echo "::notice::bundle com.pyksel.nuviotvos.test · Nuvio Test · build $(sed -n 's/^let projectVersion = "\(.*\)"$/\1/p' tvosApp/Project.swift)"
+      - name: Build unsigned IPA
+        run: |
+          set -o pipefail
+          report() {
+            grep -E "error: " build.log | grep -v "produced no further output" \
+              | sort -u | head -40 | while IFS= read -r line; do echo "::error::$line"; done
+          }
+          trap 'report' ERR
+          bash scripts/build-ipa.sh 2>&1 | tee build.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NuvioTV-Test-usenet-check-unsigned-ipa
+          path: build-ipa/NuvioTV-unsigned.ipa
+          retention-days: 7
