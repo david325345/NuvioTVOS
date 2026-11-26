@@ -340,8 +340,19 @@ final class UsenetEngineManager: ObservableObject {
         request.setValue("application/x-nzb, */*", forHTTPHeaderField: "Accept")
         let (data, response) = try await URLSession.shared.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard (200..<300).contains(status) else { throw UsenetError.nzbDownloadFailed(status) }
-        let nzb = try UsenetNZB.parse(data)
+        guard (200..<300).contains(status) else {
+            // Test build: what the indexer sent instead (Usenet Log).
+            usenetLog.error("usenet: NZB download failed — \(UsenetNZBDiagnostics.describe(data, response: response, url: url), privacy: .public)")
+            throw UsenetError.nzbDownloadFailed(status)
+        }
+        let nzb: UsenetNZB
+        do {
+            nzb = try UsenetNZB.parse(data)
+        } catch {
+            // Test build: what the indexer sent instead (Usenet Log).
+            usenetLog.error("usenet: NZB couldn't be read (\(error.localizedDescription, privacy: .public)) — \(UsenetNZBDiagnostics.describe(data, response: response, url: url), privacy: .public)")
+            throw error
+        }
         UsenetNZBCache.store(data, for: url)
         return nzb
     }

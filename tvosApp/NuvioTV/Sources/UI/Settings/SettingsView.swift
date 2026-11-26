@@ -25348,6 +25348,7 @@ private struct UsenetSettingsSection: View {
     @State private var speedLimit = String(UsenetSettings.speedLimitMbps())
     @State private var autoCheck = String(UsenetSettings.autoCheckCount())
     @State private var syncToAccount = UsenetSettings.syncChoice() ?? false
+    @State private var isShowingLog = false
 
     var body: some View {
         SettingsGroup(
@@ -25416,6 +25417,16 @@ private struct UsenetSettingsSection: View {
                 accentColor: accentColor
             )
 
+            // Test build only.
+            SettingsActionRow(
+                title: "Usenet Log",
+                subtitle: "Test build: what Usenet did since Nuvio started — checks, starts, failures, damage",
+                value: "",
+                accentColor: accentColor
+            ) {
+                isShowingLog = true
+            }
+
             SettingsToggleRow(
                 title: L10n.string("usenet_prefer_own_title", fallback: "Always Use My Servers"),
                 subtitle: L10n.string("usenet_prefer_own_subtitle", fallback: "Ignore servers an add-on sends with its streams. When off, yours are the fallback."),
@@ -25469,6 +25480,74 @@ private struct UsenetSettingsSection: View {
             UsenetServerEditSheet(server: server, accentColor: accentColor)
                 .modifier(ClearPresentationBackgroundIfAvailable())
         }
+        .sheet(isPresented: $isShowingLog) {
+            UsenetLogSheet()
+                .modifier(ClearPresentationBackgroundIfAvailable())
+        }
+    }
+}
+
+/// Test build only: `UsenetLogBook`, newest first.
+private struct UsenetLogSheet: View {
+    @ObservedObject private var book = UsenetLogBook.shared
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage(SettingsKey.amoled) private var amoled = false
+    @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
+
+    var body: some View {
+        ZStack {
+            Color.nuvioBackground(amoled: amoled, body: bodyColor).ignoresSafeArea()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Usenet Log")
+                        .font(.system(size: 36, weight: .bold))
+                        .foregroundColor(.white)
+                    Text("The last \(UsenetLogBook.limit) Usenet events since Nuvio started, newest first. Kept in memory only, without addresses.")
+                        .font(.system(size: 22))
+                        .foregroundColor(.white.opacity(0.6))
+                        .padding(.bottom, 10)
+
+                    HStack(spacing: 24) {
+                        Button("Done") { dismiss() }
+                        Button("Clear") { book.clear() }
+                    }
+                    .padding(.bottom, 16)
+
+                    if book.lines.isEmpty {
+                        Text("Nothing yet: check a stream or play one.")
+                            .font(.system(size: 24))
+                            .foregroundColor(.white.opacity(0.6))
+                    }
+                    ForEach(book.lines) { line in
+                        UsenetLogLineRow(line: line)
+                    }
+                }
+                .padding(.horizontal, 80)
+                .padding(.vertical, 60)
+            }
+        }
+    }
+}
+
+private struct UsenetLogLineRow: View {
+    let line: UsenetLogBook.Line
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        Text(line.date.formatted(date: .omitted, time: .standard) + "  " + line.text)
+            .font(.system(size: 22, design: .monospaced))
+            .foregroundColor(line.isError ? Color(red: 0.98, green: 0.52, blue: 0.48) : .white.opacity(0.88))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 6)
+            .padding(.horizontal, 14)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.white.opacity(isFocused ? 0.16 : 0))
+            )
+            // Focusable so the list scrolls with the remote.
+            .focusable()
+            .focused($isFocused)
     }
 }
 

@@ -1,7 +1,8 @@
 import Foundation
 import OSLog
 
-let usenetLog = Logger(subsystem: "com.nuvio.tv", category: "Usenet")
+/// Test build: also kept for Settings → Usenet → Usenet Log (`UsenetLogBook`).
+let usenetLog = UsenetLog()
 
 /// Token bucket for the optional speed cap: hands out bytes at a steady rate
 /// with a small burst, so requests are spread out instead of fired at once.
