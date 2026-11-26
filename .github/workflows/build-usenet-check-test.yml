@@ -17,6 +17,48 @@ jobs:
           submodules: recursive
       - name: Install Tuist
         run: brew install tuist
+      - name: Xcode version
+        id: xcode
+        run: echo "version=$(xcodebuild -version | tr -s ' \n' '-')" >> "$GITHUB_OUTPUT"
+      # The build of the dependencies (AetherEngine, MPVKit, packages) from the last IPA of
+      # this branch, so only what changed is compiled again.
+      - name: Restore the build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Developer/Xcode/DerivedData/NuvioTV-*
+            !~/Library/Developer/Xcode/DerivedData/NuvioTV-*/Logs
+          key: ipa-deriveddata-${{ steps.xcode.outputs.version }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            ipa-deriveddata-${{ steps.xcode.outputs.version }}-${{ github.ref_name }}-
+      - name: Same dates for unchanged vendored code
+        # A checkout dates every file now, so the cached build would look out of date. The
+        # date comes from each file's git blob instead: same content, same date; changed
+        # content, another date, so it's compiled again.
+        run: |
+          python3 - <<'PY'
+          import os, subprocess
+          def stamp(repo, paths):
+              listing = subprocess.run(["git", "-C", repo, "ls-files", "-s", "-z", "--", *paths],
+                                       capture_output=True, check=True).stdout
+              count = 0
+              for entry in listing.split(b"\0"):
+                  if not entry:
+                      continue
+                  meta, path = entry.split(b"\t", 1)
+                  mode, blob, _ = meta.split()
+                  if mode == b"160000":  # a submodule
+                      continue
+                  when = 978307200 + int(blob[:8], 16) % 300_000_000
+                  try:
+                      os.utime(os.path.join(repo, path.decode()), (when, when), follow_symlinks=False)
+                      count += 1
+                  except FileNotFoundError:
+                      pass
+              print(f"{repo}: {count} files")
+          stamp(".", ["Vendor"])
+          stamp("MPVKit", ["."])
+          PY
       - name: Make it a separate app (Nuvio Test)
         # Its own bundle ID, name and App Group, so the test build installs next to the
         # release app instead of replacing it. Only this job: the tests keep the real IDs.
@@ -30,8 +72,13 @@ jobs:
           perl -pi -e 's/^let projectVersion = "(\d+)"$/let projectVersion = "$1.$ENV{GITHUB_RUN_NUMBER}"/' tvosApp/Project.swift
           echo "::notice::bundle com.pyksel.nuviotvos.test · Nuvio Test · build $(sed -n 's/^let projectVersion = "\(.*\)"$/\1/p' tvosApp/Project.swift)"
       - name: Build unsigned IPA
+        env:
+          # Swift compiled file by file instead of a whole module at once: the runner's cores
+          # share the work, and unchanged files of the cached dependencies aren't compiled again.
+          XCODE_XCCONFIG_FILE: ${{ github.workspace }}/ci-test-build.xcconfig
         run: |
           set -o pipefail
+          echo "SWIFT_COMPILATION_MODE = singlefile" > "$XCODE_XCCONFIG_FILE"
           report() {
             grep -E "error: " build.log | grep -v "produced no further output" \
               | sort -u | head -40 | while IFS= read -r line; do echo "::error::$line"; done
