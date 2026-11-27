@@ -112,8 +112,11 @@ enum UsenetRar {
         guard pos + 24 <= b.count else { return .needMore }
         let (key, iv) = UsenetRarCrypto.rar4Key(password: password, salt: Data(b[pos..<(pos + 8)]))
         guard let first = UsenetRarCrypto.decrypt(Data(b[(pos + 8)..<(pos + 24)]), key: key, iv: iv) else { return .broken }
-        let headSize = Int(le16([UInt8](first), 5))
-        guard headSize >= 7 else { return .broken }
+        let firstBytes = [UInt8](first)
+        let headSize = Int(le16(firstBytes, 5))
+        // A wrong password decrypts to noise: a block type RAR doesn't have, or a size that
+        // would only wait for more bytes.
+        guard headSize >= 7, (0x73...0x7B).contains(firstBytes[2]) else { return .broken }
         let padded = (headSize + 15) / 16 * 16
         guard pos + 8 + padded <= b.count else { return .needMore }
         guard let plain = UsenetRarCrypto.decrypt(Data(b[(pos + 8)..<(pos + 8 + padded)]), key: key, iv: iv) else { return .broken }
