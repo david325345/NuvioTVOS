@@ -86,6 +86,12 @@ struct UsenetWaitQueue<Element> {
         return nil
     }
 
+    /// The first non-urgent element that `matches`.
+    mutating func popFirstNormal(where matches: (Element) -> Bool) -> Element? {
+        guard let index = normal.firstIndex(where: matches) else { return nil }
+        return normal.remove(at: index)
+    }
+
     mutating func removeAll() -> [Element] {
         defer {
             urgent = []
@@ -119,6 +125,21 @@ actor UsenetConnectionPool {
     /// providers drop idle connections after one to a few minutes.
     static let maxIdle: Duration = .seconds(60)
 
+    /// A fetch waiting for a connection.
+    struct Waiter {
+        let continuation: CheckedContinuation<UsenetNNTPConnection?, Never>
+        /// A read-ahead that may share a connection with other read-ahead (pipelining).
+        let shareable: Bool
+    }
+
+    /// A connection in use, with pipelining on: how many fetches wait for its answers and
+    /// whether more may join them.
+    struct BusyConnection {
+        let connection: UsenetNNTPConnection
+        var inFlight: Int
+        var shareable: Bool
+    }
+
     private struct ServerState {
         let config: UsenetServerConfig
         /// Connections this stream may open: `maxConnections`, lowered when
@@ -128,7 +149,9 @@ actor UsenetConnectionPool {
         var open = 0
         /// Each waiter is handed a released connection directly, or nil when
         /// a slot frees up (or the pool closes) and it should try again.
-        var waiters = UsenetWaitQueue<CheckedContinuation<UsenetNNTPConnection?, Never>>()
+        var waiters = UsenetWaitQueue<Waiter>()
+        /// Connections in use, with pipelining on.
+        var busy: [ObjectIdentifier: BusyConnection] = [:]
 
         init(config: UsenetServerConfig) {
             self.config = config
@@ -149,12 +172,17 @@ actor UsenetConnectionPool {
     private nonisolated let primaryLimit: UsenetLimitBox
     /// The speed cap in Mbit/s, 0 for none.
     nonisolated let speedLimitMbps: Int
+    /// Read-ahead requests one connection may have on the wire at once (pipelining); 1 sends
+    /// the next request after the answer.
+    nonisolated let pipelineDepth: Int
+    private var pipelined: Bool { pipelineDepth > 1 }
 
-    init(servers: [UsenetServerConfig], speedLimitMbps: Int = 0) {
+    init(servers: [UsenetServerConfig], speedLimitMbps: Int = 0, pipelineDepth: Int = 1) {
         self.servers = servers.map { ServerState(config: $0) }
         self.totalConnections = max(1, servers.reduce(0) { $0 + $1.maxConnections })
         self.primaryLimit = UsenetLimitBox(max(1, servers.first?.maxConnections ?? 1))
         self.speedLimitMbps = max(0, speedLimitMbps)
+        self.pipelineDepth = min(8, max(1, pipelineDepth))
         self.limiter = UsenetRateLimiter(megabitsPerSecond: speedLimitMbps)
     }
 
@@ -211,8 +239,11 @@ actor UsenetConnectionPool {
         var onConnected: (@Sendable () -> Void)?
         if let onProgress { onConnected = { @Sendable in onProgress(.connected) } }
         do {
+            // Only read-ahead shares a connection: what the player waits for never queues
+            // behind other answers.
+            let shareable = pipelined && (priority == .next || priority == .readAhead)
             switch try await run(messageID: messageID, statOnly: false, urgent: priority == .playback,
-                                 onConnected: onConnected, isIntact: isIntact) {
+                                 shareable: shareable, onConnected: onConnected, isIntact: isIntact) {
             case .body(let body): return .body(body)
             case .exists, .missing: return .missing
             }
@@ -275,7 +306,7 @@ actor UsenetConnectionPool {
         case missing
     }
 
-    private func run(messageID: String, statOnly: Bool, urgent: Bool,
+    private func run(messageID: String, statOnly: Bool, urgent: Bool, shareable: Bool = false,
                      onConnected: (@Sendable () -> Void)? = nil,
                      isIntact: (@Sendable (Data) async -> Bool)? = nil) async throws -> Answer {
         // The last copy that failed `isIntact`, returned when no server has a better one.
@@ -294,7 +325,7 @@ actor UsenetConnectionPool {
                 try Task.checkCancellation()
                 let connection: UsenetNNTPConnection
                 do {
-                    connection = try await acquire(index, urgent: urgent, onConnected: onConnected)
+                    connection = try await acquire(index, urgent: urgent, shareable: shareable, onConnected: onConnected)
                 } catch let error as UsenetNNTPError {
                     if case .authenticationFailed = error { authError = error; break }
                     if case .badGreeting = error { refusal = error; break }
@@ -334,11 +365,12 @@ actor UsenetConnectionPool {
                         authError = error
                         attempt = 3
                     default:
-                        discard(connection, from: index)
+                        // With pipelining the other requests on it fail too: one reconnect.
+                        let counted = discard(connection, from: index)
                         connectionError = error
                         // The others waiting idle most likely went with it (a pause, a
                         // full buffer): the next attempt opens a fresh connection.
-                        if error.isTransient {
+                        if error.isTransient, counted {
                             reconnects += 1
                             dropIdle(index)
                         }
@@ -375,6 +407,7 @@ actor UsenetConnectionPool {
             Task { await connection.close() }
             throw CancellationError()
         }
+        servers[index].busy[ObjectIdentifier(connection)] = nil
         servers[index].open = max(0, servers[index].open - 1)
         setLimit(index, max(1, servers[index].limit - 1))
         return connection
@@ -394,8 +427,9 @@ actor UsenetConnectionPool {
             let connections = servers[index].idle.map(\.connection)
             servers[index].idle = []
             servers[index].open = 0
+            servers[index].busy = [:]
             let waiters = servers[index].waiters.removeAll()
-            waiters.forEach { $0.resume(returning: nil) }
+            waiters.forEach { $0.continuation.resume(returning: nil) }
             Task { for connection in connections { await connection.close() } }
         }
     }
@@ -404,7 +438,7 @@ actor UsenetConnectionPool {
 
     /// `onConnected` runs as soon as the fetch has a connection or a slot to
     /// open one: from then on it will download and isn't worth moving up.
-    private func acquire(_ index: Int, urgent: Bool,
+    private func acquire(_ index: Int, urgent: Bool, shareable: Bool = false,
                          onConnected: (@Sendable () -> Void)? = nil) async throws -> UsenetNNTPConnection {
         while true {
             guard !closed else { throw CancellationError() }
@@ -415,7 +449,7 @@ actor UsenetConnectionPool {
                     continue
                 }
                 onConnected?()
-                return connection
+                return taken(connection, at: index, shareable: shareable)
             }
             if servers[index].open < servers[index].limit {
                 servers[index].open += 1
@@ -423,7 +457,7 @@ actor UsenetConnectionPool {
                 let connection = UsenetNNTPConnection(config: servers[index].config)
                 do {
                     try await connection.open()
-                    return connection
+                    return taken(connection, at: index, shareable: shareable)
                 } catch {
                     servers[index].open -= 1
                     if let limit = Self.limitAfterRefusal(error, open: servers[index].open, limit: servers[index].limit) {
@@ -440,23 +474,70 @@ actor UsenetConnectionPool {
                     throw error
                 }
             }
+            // Every connection in use: a read-ahead joins one that has room in its pipeline.
+            if shareable, let shared = joinable(index) {
+                servers[index].busy[ObjectIdentifier(shared)]?.inFlight += 1
+                onConnected?()
+                return shared
+            }
             let handed = await withCheckedContinuation { (continuation: CheckedContinuation<UsenetNNTPConnection?, Never>) in
-                servers[index].waiters.append(continuation, urgent: urgent)
+                servers[index].waiters.append(Waiter(continuation: continuation, shareable: shareable), urgent: urgent)
             }
             // A read-ahead cancelled while it waited (the player seeked away)
             // passes its turn on instead of downloading.
             if Task.isCancelled {
-                if let handed { release(handed, to: index) } else { wakeOne(index) }
+                if let handed {
+                    // A whole connection handed over is noted first, so giving it back counts.
+                    if pipelined, servers[index].busy[ObjectIdentifier(handed)] == nil {
+                        _ = taken(handed, at: index, shareable: false)
+                    }
+                    release(handed, to: index)
+                } else {
+                    wakeOne(index)
+                }
                 throw CancellationError()
             }
             guard let handed else { continue }      // a slot freed up: try again
+            // A connection shared from a pipeline was counted when it was handed over.
+            if pipelined, servers[index].busy[ObjectIdentifier(handed)] != nil {
+                onConnected?()
+                return handed
+            }
             if await handed.isClosed {
                 servers[index].open -= 1
                 continue
             }
             onConnected?()
-            return handed
+            return taken(handed, at: index, shareable: shareable)
         }
+    }
+
+    /// Notes a connection taken for one fetch, with pipelining on.
+    private func taken(_ connection: UsenetNNTPConnection, at index: Int, shareable: Bool) -> UsenetNNTPConnection {
+        if pipelined {
+            servers[index].busy[ObjectIdentifier(connection)] = BusyConnection(connection: connection, inFlight: 1, shareable: shareable)
+            fillPipeline(connection, at: index)
+        }
+        return connection
+    }
+
+    /// Hands a read-ahead connection to waiting read-ahead until its pipeline is full.
+    private func fillPipeline(_ connection: UsenetNNTPConnection, at index: Int) {
+        let id = ObjectIdentifier(connection)
+        while let entry = servers[index].busy[id], entry.shareable, entry.inFlight < pipelineDepth,
+              let waiter = servers[index].waiters.popFirstNormal(where: \.shareable) {
+            servers[index].busy[id]?.inFlight += 1
+            waiter.continuation.resume(returning: connection)
+        }
+    }
+
+    /// The read-ahead connection with the fewest answers pending, when one has room.
+    private func joinable(_ index: Int) -> UsenetNNTPConnection? {
+        guard pipelined else { return nil }
+        return servers[index].busy.values
+            .filter { $0.shareable && $0.inFlight < pipelineDepth }
+            .min { $0.inFlight < $1.inFlight }?
+            .connection
     }
 
     /// What a new connection the server turned away means. While other
@@ -489,8 +570,21 @@ actor UsenetConnectionPool {
             Task { await connection.close() }
             return
         }
+        if pipelined {
+            let id = ObjectIdentifier(connection)
+            // Discarded meanwhile (it failed for another fetch): nothing to give back.
+            guard var entry = servers[index].busy[id] else { return }
+            entry.inFlight -= 1
+            if entry.inFlight > 0 {
+                // Still answering others: waiting read-ahead may join them.
+                servers[index].busy[id] = entry
+                fillPipeline(connection, at: index)
+                return
+            }
+            servers[index].busy[id] = nil
+        }
         if let waiter = servers[index].waiters.popFirst() {
-            waiter.resume(returning: connection)
+            waiter.continuation.resume(returning: connection)
         } else {
             servers[index].idle.append(IdleConnection(connection: connection, since: .now))
         }
@@ -533,16 +627,23 @@ actor UsenetConnectionPool {
         return (fresh, stale)
     }
 
-    private func discard(_ connection: UsenetNNTPConnection, from index: Int) {
+    /// Closes a failed connection; false when another request on it already did (pipelining).
+    @discardableResult
+    private func discard(_ connection: UsenetNNTPConnection, from index: Int) -> Bool {
+        // With pipelining, every fetch on a failed connection discards it: only the first counts.
+        if pipelined, servers[index].busy.removeValue(forKey: ObjectIdentifier(connection)) == nil {
+            return false
+        }
         Task { await connection.close() }
         servers[index].open = max(0, servers[index].open - 1)
         wakeOne(index)
+        return true
     }
 
     /// A slot freed up (a connection closed or failed to open): the first
     /// waiter may open a new one.
     private func wakeOne(_ index: Int) {
-        servers[index].waiters.popFirst()?.resume(returning: nil)
+        servers[index].waiters.popFirst()?.continuation.resume(returning: nil)
     }
 
     static func describe(_ error: UsenetNNTPError) -> String {

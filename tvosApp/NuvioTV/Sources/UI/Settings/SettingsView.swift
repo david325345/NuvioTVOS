@@ -25348,6 +25348,7 @@ private struct UsenetSettingsSection: View {
     @State private var speedLimit = String(UsenetSettings.speedLimitMbps())
     @State private var autoCheck = String(UsenetSettings.autoCheckCount())
     @State private var failover = UsenetSettings.failover().rawValue
+    @State private var pipeline = String(UsenetSettings.pipelineDepth())
     @State private var syncToAccount = UsenetSettings.syncChoice() ?? false
     @State private var isShowingLog = false
 
@@ -25392,6 +25393,20 @@ private struct UsenetSettingsSection: View {
                 options: UsenetSettings.speedLimitOptions.map(String.init),
                 optionLabels: Dictionary(uniqueKeysWithValues: UsenetSettings.speedLimitOptions.map {
                     (String($0), $0 == 0 ? L10n.string("usenet_speed_unlimited", fallback: "Unlimited") : "\($0) Mbit/s")
+                }),
+                accentColor: accentColor
+            )
+
+            SettingsChoiceRow(
+                title: L10n.string("usenet_pipeline_title", fallback: "Requests per Connection"),
+                subtitle: L10n.string(
+                    "usenet_pipeline_subtitle",
+                    fallback: "Read-ahead asks each connection for several articles at once, so it doesn't pause for the server between them. Helps with few connections or a distant server; more connections help just as much. What the player waits for always comes first."
+                ),
+                selection: $pipeline,
+                options: UsenetSettings.pipelineOptions.map(String.init),
+                optionLabels: Dictionary(uniqueKeysWithValues: UsenetSettings.pipelineOptions.map {
+                    (String($0), $0 == 1 ? L10n.string("usenet_pipeline_off", fallback: "Off") : "\($0)")
                 }),
                 accentColor: accentColor
             )
@@ -25482,6 +25497,9 @@ private struct UsenetSettingsSection: View {
         }
         .onChange(of: failover) { _, value in
             UsenetSettings.setFailover(UsenetSettings.Failover(rawValue: value) ?? .usenetFirst)
+        }
+        .onChange(of: pipeline) { _, value in
+            UsenetSettings.setPipelineDepth(Int(value) ?? 1)
         }
         .onReceive(NotificationCenter.default.publisher(for: .usenetServersChanged)) { _ in
             model.reload()
