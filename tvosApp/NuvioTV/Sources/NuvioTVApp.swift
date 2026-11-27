@@ -4044,8 +4044,18 @@ struct ContentView: View {
     /// A Usenet stream URL becomes the on-device engine's local URL (nil when
     /// it can't start); every other URL is returned unchanged. `automatic`: picked for the
     /// viewer (failover, the next episode), so an upload that failed already is passed by.
+    /// Getting the next episode ready while Usenet plays (`UsenetPreparation.isAhead`), it is
+    /// only got ready and comes back as it is, for the player to start when the episode begins.
     private static func playableURL(for url: URL, automatic: Bool = false) async -> URL? {
         guard let spec = UsenetStreamSpec(url: url) else { return url }
+        if UsenetPreparation.isAhead {
+            do {
+                try await UsenetEngineManager.shared.prepare(spec)
+                return url
+            } catch {
+                return nil
+            }
+        }
         do {
             return try await UsenetEngineManager.shared.startStream(spec, skippingFailedUploads: automatic)
         } catch {
