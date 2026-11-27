@@ -25480,9 +25480,9 @@ private struct UsenetSettingsSection: View {
             UsenetServerEditSheet(server: server, accentColor: accentColor)
                 .modifier(ClearPresentationBackgroundIfAvailable())
         }
-        .sheet(isPresented: $isShowingLog) {
+        // Full screen, so Settings doesn't show through behind it.
+        .fullScreenCover(isPresented: $isShowingLog) {
             UsenetLogSheet()
-                .modifier(ClearPresentationBackgroundIfAvailable())
         }
     }
 }
