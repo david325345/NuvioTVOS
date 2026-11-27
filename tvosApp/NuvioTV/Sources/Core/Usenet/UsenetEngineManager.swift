@@ -325,6 +325,17 @@ final class UsenetEngineManager: ObservableObject {
         return usenet + streams.filter { !UsenetStreamSpec.isUsenetURL($0.directURL) }
     }
 
+    /// The sources failover tries, in order: unchanged unless a Usenet stream failed; then the
+    /// other Usenet streams first, and with Usenet Only (Settings → Usenet) nothing else.
+    nonisolated static func failoverCandidates(
+        _ ranked: [NuvioStream], failedURLs: Set<String>, mode: UsenetSettings.Failover
+    ) -> [NuvioStream] {
+        guard includesUsenet(failedURLs) else { return ranked }
+        let ordered = usenetFirst(ranked)
+        guard mode == .usenetOnly else { return ordered }
+        return ordered.filter { UsenetStreamSpec.isUsenetURL($0.directURL) }
+    }
+
     nonisolated static func isExcluded(sourceURL: String, excludedPlaybackURLs: Set<String>) -> Bool {
         guard let canonical = canonicalSource(sourceURL), !excludedPlaybackURLs.isEmpty else { return false }
         if excludedPlaybackURLs.contains(where: { canonicalSource($0) == canonical }) { return true }

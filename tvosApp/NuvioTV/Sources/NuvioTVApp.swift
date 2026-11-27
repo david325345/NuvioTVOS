@@ -3847,9 +3847,11 @@ struct ContentView: View {
             subtitleLanguages: subtitleLanguages
         )
         guard !ranked.isEmpty else { return nil }
-        // Failing over from a Usenet stream: Usenet again before anything else.
-        let candidates = UsenetEngineManager.includesUsenet(excludingURLs)
-            ? UsenetEngineManager.usenetFirst(ranked) : ranked
+        // Failing over from a Usenet stream: Usenet again before anything else, or only Usenet
+        // (Settings → Usenet → When a Usenet Stream Fails).
+        let candidates = UsenetEngineManager.failoverCandidates(
+            ranked, failedURLs: excludingURLs, mode: UsenetSettings.failover(store: store)
+        )
 
         for candidate in candidates {
             // Direct URL already known-bad this session.

@@ -25347,6 +25347,7 @@ private struct UsenetSettingsSection: View {
     @State private var prefersOwnServers = UsenetSettings.prefersOwnServers()
     @State private var speedLimit = String(UsenetSettings.speedLimitMbps())
     @State private var autoCheck = String(UsenetSettings.autoCheckCount())
+    @State private var failover = UsenetSettings.failover().rawValue
     @State private var syncToAccount = UsenetSettings.syncChoice() ?? false
     @State private var isShowingLog = false
 
@@ -25434,6 +25435,21 @@ private struct UsenetSettingsSection: View {
                 accentColor: accentColor
             )
 
+            SettingsChoiceRow(
+                title: L10n.string("usenet_failover_title", fallback: "When a Usenet Stream Fails"),
+                subtitle: L10n.string(
+                    "usenet_failover_subtitle",
+                    fallback: "A Usenet stream that breaks while playing switches to another Usenet stream first, then to other sources, or only to other Usenet streams."
+                ),
+                selection: $failover,
+                options: UsenetSettings.Failover.allCases.map(\.rawValue),
+                optionLabels: [
+                    UsenetSettings.Failover.usenetFirst.rawValue: L10n.string("usenet_failover_first", fallback: "Usenet First, Then Others"),
+                    UsenetSettings.Failover.usenetOnly.rawValue: L10n.string("usenet_failover_only", fallback: "Usenet Only"),
+                ],
+                accentColor: accentColor
+            )
+
             // Written only from the toggle: a profile that never chose leaves
             // the account's copy alone (see UsenetSettingsSync).
             SettingsToggleRow(
@@ -25463,6 +25479,9 @@ private struct UsenetSettingsSection: View {
         }
         .onChange(of: autoCheck) { _, value in
             UsenetSettings.setAutoCheckCount(Int(value) ?? 0)
+        }
+        .onChange(of: failover) { _, value in
+            UsenetSettings.setFailover(UsenetSettings.Failover(rawValue: value) ?? .usenetFirst)
         }
         .onReceive(NotificationCenter.default.publisher(for: .usenetServersChanged)) { _ in
             model.reload()

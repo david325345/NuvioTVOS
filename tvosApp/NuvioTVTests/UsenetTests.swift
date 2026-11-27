@@ -703,6 +703,14 @@ final class UsenetSourceTests: XCTestCase {
         let noUsenet = [ranked[0], ranked[2]]
         XCTAssertEqual(UsenetEngineManager.usenetFirst(noUsenet).map(\.name), noUsenet.map(\.name))
 
+        let failed: Set<String> = ["http://127.0.0.1:52001/usenet/token/video.mkv"]
+        XCTAssertEqual(UsenetEngineManager.failoverCandidates(ranked, failedURLs: failed, mode: .usenetFirst).map(\.name),
+                       ["Usenet 1080p", "Usenet 720p", "Debrid 2160p", "P2P 1080p"])
+        XCTAssertEqual(UsenetEngineManager.failoverCandidates(ranked, failedURLs: failed, mode: .usenetOnly).map(\.name),
+                       ["Usenet 1080p", "Usenet 720p"])
+        // A debrid stream failed: the ranking stays as it is.
+        XCTAssertEqual(UsenetEngineManager.failoverCandidates(ranked, failedURLs: ["https://debrid.example/1.mkv"], mode: .usenetOnly).map(\.name),
+                       ranked.map(\.name))
         XCTAssertTrue(UsenetEngineManager.includesUsenet(["http://127.0.0.1:52001/usenet/token/video.mkv"]))
         XCTAssertTrue(UsenetEngineManager.includesUsenet([usenetURL]))
         XCTAssertFalse(UsenetEngineManager.includesUsenet(["https://debrid.example/1.mkv", "http://127.0.0.1:52002/torrent/x"]))

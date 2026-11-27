@@ -178,6 +178,24 @@ enum UsenetSettings {
         diskReadAhead(store: store) ? Int64(diskReadAheadSizeMB(store: store)) << 20 : nil
     }
 
+    /// When a Usenet stream breaks while playing, which sources take over.
+    enum Failover: String, CaseIterable {
+        /// The other Usenet streams, then the rest (debrid, torrents, …).
+        case usenetFirst
+        /// The other Usenet streams only; with none working, the error.
+        case usenetOnly
+    }
+
+    static let failoverKey = "nuvio.tv.settings.integrations.usenetFailover"
+
+    static func failover(store: UserDefaults = ProfileSettings.current) -> Failover {
+        store.string(forKey: failoverKey).flatMap(Failover.init(rawValue:)) ?? .usenetFirst
+    }
+
+    static func setFailover(_ value: Failover, store: UserDefaults = ProfileSettings.current) {
+        store.set(value.rawValue, forKey: failoverKey)
+    }
+
     /// When on, your own servers are used even if the add-on sends its own.
     static func prefersOwnServers(store: UserDefaults = ProfileSettings.current) -> Bool {
         store.bool(forKey: preferOwnServersKey)
