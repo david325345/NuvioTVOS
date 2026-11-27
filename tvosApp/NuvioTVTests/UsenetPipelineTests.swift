@@ -171,7 +171,8 @@ final class UsenetPipelineTests: XCTestCase {
             guard case .body(let body)? = results[id] else {
                 return XCTFail("\(id): \(String(describing: results[id]))", file: file, line: line)
             }
-            XCTAssertTrue(body.contains("body of \(id)\r\n"), "\(id) read \(body)", file: file, line: line)
+            // The body comes without its last line break.
+            XCTAssertEqual(body, "body of \(id)", file: file, line: line)
         }
     }
 
