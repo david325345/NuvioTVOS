@@ -16306,9 +16306,6 @@ private struct SMBSettingsSection: View {
             SMBServerEditSheet(server: nil, accentColor: accentColor)
                 .modifier(ClearPresentationBackgroundIfAvailable())
         }
-        .fullScreenCover(item: $tuningServer) { server in
-            UsenetTuneSheet(server: server, accentColor: accentColor)
-        }
         .sheet(item: $editingServer) { server in
             SMBServerEditSheet(server: server, accentColor: accentColor)
                 .modifier(ClearPresentationBackgroundIfAvailable())
@@ -16387,11 +16384,6 @@ private struct SMBServerRow: View {
                     enabled: connectionState.isConnected,
                     isLoading: testState == .testing,
                     action: onTest
-                )
-                SMBRowButton(
-                    title: L10n.string("usenet_tune", fallback: "Tune"),
-                    accentColor: accentColor,
-                    action: onTune
                 )
                 Spacer()
                 SMBDeleteButton(action: onDelete)
@@ -25744,6 +25736,9 @@ private struct UsenetSettingsSection: View {
             UsenetServerEditSheet(server: nil, accentColor: accentColor)
                 .modifier(ClearPresentationBackgroundIfAvailable())
         }
+        .fullScreenCover(item: $tuningServer) { server in
+            UsenetTuneSheet(server: server, accentColor: accentColor)
+        }
         .sheet(item: $editingServer) { server in
             UsenetServerEditSheet(server: server, accentColor: accentColor)
                 .modifier(ClearPresentationBackgroundIfAvailable())
@@ -25856,6 +25851,11 @@ private struct UsenetServerRow: View {
                     accentColor: accentColor,
                     isLoading: testState == .testing,
                     action: onTest
+                )
+                SMBRowButton(
+                    title: L10n.string("usenet_tune", fallback: "Tune"),
+                    accentColor: accentColor,
+                    action: onTune
                 )
                 Spacer()
                 SMBDeleteButton(action: onDelete)
