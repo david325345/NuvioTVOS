@@ -124,13 +124,18 @@ final class CalendarViewModel: ObservableObject {
         let manualFollows = CalendarManualFollowStore.items(profileID: profileContext.profileID)
         let manualFollowSignature = CalendarManualFollowStore.signature(profileID: profileContext.profileID)
         pendingManualFollowSignature = manualFollowSignature
+        CalendarTestLog.note("load started (\(keepsShown ? "behind the shown calendar" : "spinner, nothing to show"))")
         loadTask = Task { [weak self] in
+            let loadStart = ContinuousClock.now
             guard !Task.isCancelled else { return }
             guard profileContext.isCurrent else {
                 self?.discardStaleProfileLoad(generation)
                 return
             }
+            var phase = ContinuousClock.now
             let continueWatchingItems = await CalendarLibrarySource.fetchContinueWatchingItems()
+            CalendarTestLog.note("Continue Watching: \(continueWatchingItems.count) items in \(CalendarTestLog.ms(since: phase)) ms")
+            phase = ContinuousClock.now
             guard !Task.isCancelled else { return }
             guard profileContext.isCurrent else {
                 self?.discardStaleProfileLoad(generation)
@@ -141,6 +146,10 @@ final class CalendarViewModel: ObservableObject {
                 for: additionalContinueWatchingIDs,
                 profileContext: profileContext
             )
+            let viaAddons = additionalContinueWatchingIDs.filter {
+                NuvioMeta.canonicalImdbID(from: $0) == nil && !$0.hasPrefix("tmdb:")
+            }.count
+            CalendarTestLog.note("progress ledger: \(additionalContinueWatchingIDs.count) series, \(viaAddons) looked up through add-ons, in \(CalendarTestLog.ms(since: phase)) ms")
             guard !Task.isCancelled else { return }
             guard profileContext.isCurrent else {
                 self?.discardStaleProfileLoad(generation)
@@ -155,6 +164,7 @@ final class CalendarViewModel: ObservableObject {
                 additionalContinueWatchingIDs: additionalContinueWatchingIDs
             )
             let period = CalendarBuilder.period(today: inputs.day)
+            CalendarTestLog.note("shows: \(sources.items.count) (manual \(sources.manualFollowItemIDs.count), watched or in progress \(sources.automaticFollowItemIDs.count)), \(period.first) – \(period.last)")
             let service = CalendarLibrarySource.makeService(metas: sources.metas)
             do {
                 let result = try await service.load(
@@ -201,6 +211,7 @@ final class CalendarViewModel: ObservableObject {
                     sourceItems: "\(sources.watchSourceSignature)|\(manualFollowSignature)"
                 )
                 self.state = .loaded(result, loadedAt: loadedAt)
+                CalendarTestLog.note("load done in \(CalendarTestLog.ms(since: loadStart)) ms: \(result.allEntries.count) entries, \(result.skipped.count) skipped")
                 self.saveSnapshot(result, loadedAt: loadedAt)
                 self.addAirTimes(to: result, generation: generation)
                 if needsSourceRefresh || Self.settingsSignature() != madeWith.settings {
@@ -259,8 +270,18 @@ final class CalendarViewModel: ObservableObject {
         let snapshots = self.snapshots
         state = .loading
         restoreTask = Task { [weak self] in
+            let readStart = ContinuousClock.now
             let snapshot = await snapshots.read()
             guard let self, !Task.isCancelled else { return }
+            if let snapshot {
+                let reason = snapshot.testLogUnusableReason(settings: capturedInputs.settings, now: Date())
+                    ?? (self.currentInputs().settings != capturedInputs.settings ? "settings changed while reading" : nil)
+                let age = Int(Date().timeIntervalSince(snapshot.loadedAt) / 60)
+                CalendarTestLog.note(reason.map { "saved calendar not shown: \($0)" }
+                    ?? "saved calendar shown (\(age) min old, \(snapshot.hasSources(self.currentInputs().sourceItems) ? "same shows" : "other shows, loads again")), read in \(CalendarTestLog.ms(since: readStart)) ms")
+            } else {
+                CalendarTestLog.note("no saved calendar")
+            }
             self.restoreTask = nil
             let currentInputs = self.currentInputs()
             if let snapshot,
@@ -343,6 +364,7 @@ final class CalendarViewModel: ObservableObject {
             }
         }
         let client = CalendarLibrarySource.makeClient()
+        let airStart = ContinuousClock.now
         airTimesTask = Task { [weak self] in
             let entries = await CalendarTvmazeTimes().apply(
                 to: result.allEntries,
@@ -358,6 +380,7 @@ final class CalendarViewModel: ObservableObject {
                 }
             )
             guard !Task.isCancelled else { return }
+            CalendarTestLog.note("TVmaze times added in \(CalendarTestLog.ms(since: airStart)) ms")
             self?.showAirTimes(entries, generation: generation, isFinal: true)
         }
     }

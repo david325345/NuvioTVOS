@@ -63,9 +63,12 @@ struct CalendarService: Sendable {
 
         // 1. Resolve ids, then drop duplicates (the same title saved twice
         //    under different ids).
+        var phase = ContinuousClock.now
         let resolutions = await concurrentMap(items) { item in
             (item, await resolveTmdbId(item))
         }
+        CalendarTestLog.note("TMDB ids: \(items.count) titles in \(CalendarTestLog.ms(since: phase)) ms (\(resolutions.filter { $0.1 == nil }.count) without one)")
+        phase = ContinuousClock.now
 
         var skipped: [CalendarSkippedItem] = []
         var targets: [(item: CalendarItem, tmdbId: Int, key: String)] = []
@@ -99,6 +102,8 @@ struct CalendarService: Sendable {
         let outcomes = await concurrentMap(targets) { target in
             (target, await fetch(item: target.item, tmdbId: target.tmdbId, first: first, last: last))
         }
+        CalendarTestLog.note("TMDB details and seasons: \(targets.count) titles (\(targets.filter { $0.item.kind == .series }.count) series) in \(CalendarTestLog.ms(since: phase)) ms, \(maxConcurrent) at a time")
+        phase = ContinuousClock.now
 
         var entries: [CalendarEntry] = []
         for (target, outcome) in outcomes {
@@ -122,6 +127,9 @@ struct CalendarService: Sendable {
                 imdbByTmdb[target.tmdbId] = String(target.item.id.prefix { $0 != ":" })
             }
             entries = await animeTimes.apply(to: entries, imdbByTmdb: imdbByTmdb, first: first, last: last)
+            let shows = Set(entries.filter(\.isAnime).map(\.tmdbId)).count
+            CalendarTestLog.note("anime times (arm-server, AniList schedule): \(shows) anime in \(CalendarTestLog.ms(since: phase)) ms")
+            phase = ContinuousClock.now
         }
 
         if let aniList {
@@ -130,6 +138,7 @@ struct CalendarService: Sendable {
             }
             let covered = await CalendarAniList.covered(shows: shows, cache: animeTimes?.cache ?? .shared)
             let found = await aniList.load(followed: aniListFollows, covered: covered, first: first, last: last)
+            CalendarTestLog.note("AniList titles: \(aniListFollows.count) followed, \(found.entries.count) entries in \(CalendarTestLog.ms(since: phase)) ms\(found.failed ? ", AniList didn't answer" : "")")
             entries += found.entries
             for item in aniListFollows {
                 let isManualFollow = manualFollowItemIDs?.contains(item.sourceIdentityKey) ?? true

@@ -25419,8 +25419,8 @@ private struct UsenetSettingsSection: View {
 
             // Test build only.
             SettingsActionRow(
-                title: "Usenet Log",
-                subtitle: "Test build: what Usenet did since Nuvio started — checks, starts, failures, damage",
+                title: "Test Log",
+                subtitle: "Test build: what Usenet and the Calendar did since Nuvio started",
                 value: "",
                 accentColor: accentColor
             ) {
@@ -25500,10 +25500,10 @@ private struct UsenetLogSheet: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Usenet Log")
+                    Text("Test Log")
                         .font(.system(size: 36, weight: .bold))
                         .foregroundColor(.white)
-                    Text("The last \(UsenetLogBook.limit) Usenet events since Nuvio started, newest first. Kept in memory only, without addresses.")
+                    Text("The last \(UsenetLogBook.limit) Usenet and Calendar events since Nuvio started, newest first. Kept in memory only, without addresses.")
                         .font(.system(size: 22))
                         .foregroundColor(.white.opacity(0.6))
                         .padding(.bottom, 10)
@@ -25515,7 +25515,7 @@ private struct UsenetLogSheet: View {
                     .padding(.bottom, 16)
 
                     if book.lines.isEmpty {
-                        Text("Nothing yet: check a stream or play one.")
+                        Text("Nothing yet: check or play a Usenet stream, or open the Calendar.")
                             .font(.system(size: 24))
                             .foregroundColor(.white.opacity(0.6))
                     }
