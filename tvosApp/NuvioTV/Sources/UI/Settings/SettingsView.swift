@@ -24444,6 +24444,7 @@ private struct SettingsChoiceRow: View {
     let options: [String]
     var optionLabels: [String: String]? = nil
     let accentColor: Color
+    var subtitleLineLimit: Int = 2
 
     @FocusState private var isFocused: Bool
     @State private var showOptions = false
@@ -24451,7 +24452,7 @@ private struct SettingsChoiceRow: View {
     var body: some View {
         Button { showOptions = true } label: {
             SettingsRowShell(isFocused: isFocused, accentColor: accentColor) {
-                SettingsRowText(title: title, subtitle: subtitle)
+                SettingsRowText(title: title, subtitle: subtitle, subtitleLineLimit: subtitleLineLimit)
 
                 Spacer(minLength: 24)
 
@@ -25624,14 +25625,15 @@ private struct UsenetSettingsSection: View {
                 title: L10n.string("usenet_pipeline_title", fallback: "Requests per Connection"),
                 subtitle: L10n.string(
                     "usenet_pipeline_subtitle",
-                    fallback: "Read-ahead asks each connection for several articles at once, so it doesn't pause for the server between them. Helps with few connections or a distant server; more connections help just as much. What the player waits for always comes first."
+                    fallback: "Read-ahead asks each connection for several articles at once instead of waiting for the server between them. Helps with few connections or a distant server; what the player waits for always comes first."
                 ),
                 selection: $pipeline,
                 options: UsenetSettings.pipelineOptions.map(String.init),
                 optionLabels: Dictionary(uniqueKeysWithValues: UsenetSettings.pipelineOptions.map {
                     (String($0), $0 == 1 ? L10n.string("usenet_pipeline_off", fallback: "Off") : "\($0)")
                 }),
-                accentColor: accentColor
+                accentColor: accentColor,
+                subtitleLineLimit: 4
             )
 
             UsenetDiskReadAheadRows(accentColor: accentColor)
@@ -25640,7 +25642,7 @@ private struct UsenetSettingsSection: View {
                 title: L10n.string("usenet_auto_check_title", fallback: "Check Availability on Usenet"),
                 subtitle: L10n.string(
                     "usenet_auto_check_subtitle",
-                    fallback: "When the stream list opens, check the first Usenet streams on your servers; each card shows what was found. Each check downloads the stream's NZB from its indexer, which counts against your API and download limits, so a premium account on the indexers you use is recommended."
+                    fallback: "When the stream list opens, the first Usenet streams are checked on your servers and each card shows the result. Every check downloads the stream's NZB, which counts against your indexer's API and download limits, so a premium indexer account is recommended."
                 ),
                 selection: $autoCheck,
                 options: UsenetSettings.autoCheckOptions.map(String.init),
@@ -25653,7 +25655,8 @@ private struct UsenetSettingsSection: View {
                     }
                     return (String(count), label)
                 }),
-                accentColor: accentColor
+                accentColor: accentColor,
+                subtitleLineLimit: 4
             )
 
             // Test build only.
