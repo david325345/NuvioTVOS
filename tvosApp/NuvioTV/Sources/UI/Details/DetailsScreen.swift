@@ -13051,6 +13051,12 @@ private struct TvStreamPickerOverlay: View {
         .task(id: streamCardPresentationCacheKey, priority: .utility) {
             await rebuildStreamCardPresentations()
         }
+        // Usenet streams listed: their first server gets a few connections ahead, so the one
+        // played skips connecting and logging in (UsenetEngineManager.connectAhead).
+        .task(id: firstUsenetStreamSpec?.url) {
+            guard let spec = firstUsenetStreamSpec else { return }
+            UsenetEngineManager.shared.connectAhead(for: spec)
+        }
         .alert(
             L10n.string("details_source_unavailable", fallback: "Source unavailable"),
             isPresented: Binding(
@@ -13140,6 +13146,13 @@ private struct TvStreamPickerOverlay: View {
         guard count != 0 else { return [] }
         let streams = activeSourceRows.filter { UsenetAvailabilityChecker.spec(for: $0) != nil }
         return count < 0 ? streams : Array(streams.prefix(count))
+    }
+
+    /// The first Usenet stream of the list, for `UsenetEngineManager.connectAhead`.
+    private var firstUsenetStreamSpec: UsenetStreamSpec? {
+        activeSourceRows.lazy
+            .compactMap { $0.directURL.flatMap(URL.init(string:)).flatMap(UsenetStreamSpec.init(url:)) }
+            .first
     }
 
     private var activeSourceRowFocusIDs: [String] {
