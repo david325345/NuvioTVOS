@@ -3,5 +3,3 @@
 //
 #import "TorrentEngine.h"
 #import "AIOCrashNotes.h"
-// Test build only (fork): node-yencode for the yEnc measurement.
-#import "YEncTest/NuvioYEncTest.h"

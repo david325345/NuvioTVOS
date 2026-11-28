@@ -345,8 +345,6 @@ final class UsenetEngineManager: ObservableObject {
         damagedGeneration = nil
         await server?.stop()
         await session?.stop()
-        // Test build only (fork): the yEnc measurement's summary for this stream.
-        if session != nil { UsenetYEncBench.flush() }
     }
 
     /// The player's duration for the playing Usenet stream, once (and when it

@@ -137,18 +137,7 @@ let appTarget: Target = .target(
     // NuvioTV/AppDelegate.swift is deliberately NOT globbed. It carries
     // @UIApplicationMain while NuvioTVApp.swift carries @main; compiling both
     // is a duplicate-entry-point error. The pbxproj excluded it the same way.
-    sources: [
-        "NuvioTV/Sources/**/*.swift",
-        // Test build only (fork), never part of a PR: node-yencode for the yEnc measurement
-        // (UsenetYEncBench). Its ARMv8 CRC and PMULL files need those CPU features turned on.
-        .glob(
-            "NuvioTV/YEncTest/*.cc",
-            excluding: ["NuvioTV/YEncTest/crc_arm.cc", "NuvioTV/YEncTest/crc_arm_pmull.cc"],
-            compilerFlags: "-Wno-unused-function"
-        ),
-        .glob("NuvioTV/YEncTest/crc_arm.cc", compilerFlags: "-march=armv8-a+crc -Wno-unused-function"),
-        .glob("NuvioTV/YEncTest/crc_arm_pmull.cc", compilerFlags: "-march=armv8-a+crc+crypto -Wno-unused-function"),
-    ],
+    sources: ["NuvioTV/Sources/**/*.swift"],
     resources: [
         "NuvioTV/Images.xcassets",
         "NuvioTV/Resources/AppLanguageCatalog.json",
@@ -200,8 +189,7 @@ let appTarget: Target = .target(
             "FRAMEWORK_SEARCH_PATHS": ["$(inherited)", "$(SRCROOT)/../Vendor/LibTorrent"],
             "HEADER_SEARCH_PATHS": ["$(inherited)", "$(SRCROOT)/../Vendor/LibTorrent"],
             "LD_RUNPATH_SEARCH_PATHS": ["$(inherited)", "@executable_path/Frameworks"],
-            // -lz: test build only (fork), zlib's CRC32 for the yEnc measurement.
-            "OTHER_LDFLAGS": ["$(inherited)", "-ObjC", "-lc++", "-lz", "-framework", "SystemConfiguration"],
+            "OTHER_LDFLAGS": ["$(inherited)", "-ObjC", "-lc++", "-framework", "SystemConfiguration"],
             "SWIFT_OBJC_BRIDGING_HEADER": "NuvioTV/NuvioTV-Bridging-Header.h",
             "VERSIONING_SYSTEM": "apple-generic",
         ],
