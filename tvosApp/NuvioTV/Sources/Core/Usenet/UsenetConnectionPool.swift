@@ -674,3 +674,104 @@ final class UsenetLimitBox: @unchecked Sendable {
         set { lock.lock(); stored = newValue; lock.unlock() }
     }
 }
+
+// MARK: - Test build only (fork): connections opened ahead and kept alive
+
+extension UsenetConnectionPool {
+    /// Opens up to `count` connections to the first server ahead of use (connecting, TLS and
+    /// the login) and leaves them idle for the stream that takes this pool, within its limit.
+    /// Returns how long each took (ms), and how many failed.
+    func warmUp(count: Int) async -> (opened: [Int], failed: Int) {
+        guard !closed, let index = servers.indices.first else { return ([], 0) }
+        let wanted = min(count, servers[index].limit - servers[index].open)
+        guard wanted > 0 else { return ([], 0) }
+        servers[index].open += wanted
+        let config = servers[index].config
+        let results = await withTaskGroup(of: (UsenetNNTPConnection?, Int).self,
+                                          returning: [(UsenetNNTPConnection?, Int)].self) { group in
+            for _ in 0..<wanted {
+                group.addTask {
+                    let clock = ContinuousClock()
+                    let started = clock.now
+                    let connection = UsenetNNTPConnection(config: config)
+                    do {
+                        try await connection.open()
+                        return (connection, Self.warmMilliseconds(clock.now - started))
+                    } catch {
+                        await connection.close()
+                        return (nil, Self.warmMilliseconds(clock.now - started))
+                    }
+                }
+            }
+            var all: [(UsenetNNTPConnection?, Int)] = []
+            for await result in group { all.append(result) }
+            return all
+        }
+        var opened: [Int] = []
+        var failed = 0
+        for (candidate, milliseconds) in results {
+            guard let connection = candidate, !closed else {
+                if let candidate { Task { await candidate.close() } } else { failed += 1 }
+                if !closed {
+                    servers[index].open = max(0, servers[index].open - 1)
+                    wakeOne(index)
+                }
+                continue
+            }
+            opened.append(milliseconds)
+            // A fetch already waiting gets it straight away, the rest wait idle.
+            if let waiter = servers[index].waiters.popFirst() {
+                waiter.continuation.resume(returning: connection)
+            } else {
+                servers[index].idle.append(IdleConnection(connection: connection, since: .now))
+            }
+        }
+        return (opened, failed)
+    }
+
+    /// Keeps idle connections the provider would drop as unused: one idle for longer than `after`
+    /// asks about an article that doesn't exist (STAT, nothing downloaded) and waits again from
+    /// now; one that fails is closed. Returns how many were kept and how many closed.
+    func keepIdleAlive(after: Duration) async -> (kept: Int, dropped: Int) {
+        guard !closed else { return (0, 0) }
+        var kept = 0
+        var dropped = 0
+        for index in servers.indices {
+            let now = ContinuousClock.now
+            let due = servers[index].idle.filter { now - $0.since > after }
+            guard !due.isEmpty else { continue }
+            servers[index].idle.removeAll { entry in due.contains { $0.connection === entry.connection } }
+            for entry in due {
+                let probe = "nuvio-keepalive-\(UInt32.random(in: 0...UInt32.max))@invalid"
+                do {
+                    _ = try await entry.connection.stat(messageID: probe)
+                    guard !closed else {
+                        Task { await entry.connection.close() }
+                        continue
+                    }
+                    if let waiter = servers[index].waiters.popFirst() {
+                        waiter.continuation.resume(returning: entry.connection)
+                    } else {
+                        servers[index].idle.append(IdleConnection(connection: entry.connection, since: .now))
+                    }
+                    kept += 1
+                } catch {
+                    Task { await entry.connection.close() }
+                    if !closed {
+                        servers[index].open = max(0, servers[index].open - 1)
+                        wakeOne(index)
+                    }
+                    dropped += 1
+                }
+            }
+        }
+        return (kept, dropped)
+    }
+
+    /// Connections open and waiting unused.
+    var idleConnections: Int { servers.reduce(0) { $0 + $1.idle.count } }
+
+    nonisolated static func warmMilliseconds(_ duration: Duration) -> Int {
+        Int(duration.components.seconds * 1000 + duration.components.attoseconds / 1_000_000_000_000_000)
+    }
+}
