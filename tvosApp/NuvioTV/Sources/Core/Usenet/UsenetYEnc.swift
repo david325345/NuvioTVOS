@@ -106,6 +106,8 @@ enum UsenetYEnc {
     /// Decode one article body as it came off the wire (CRLF lines, dot-stuffed,
     /// without the terminating "." line) in a single pass: no per-line objects.
     static func decode(body: Data, unstuffDots: Bool = true) throws -> UsenetYEncSegment {
+        // Test build only (fork): when this decoding and its CRC started, for UsenetYEncBench.
+        let benchStart = DispatchTime.now().uptimeNanoseconds
         var header = UsenetYEncHeader()
         var sawBegin = false
         var declaredPartSize: Int?
@@ -175,9 +177,20 @@ enum UsenetYEnc {
         guard sawBegin else { throw UsenetYEncError.missingBeginHeader }
 
         let outData = Data(out)
+        let benchDecoded = DispatchTime.now().uptimeNanoseconds
         var crc = UsenetCRC32()
         crc.update(outData)
         let computed = crc.checksum
+        // Test build only (fork): the same article through node-yencode, timed against this.
+        if unstuffDots {
+            UsenetYEncBench.measure(
+                body: body,
+                decoded: outData,
+                crc: computed,
+                swiftDecodeNs: benchDecoded &- benchStart,
+                swiftCRCNs: DispatchTime.now().uptimeNanoseconds &- benchDecoded
+            )
+        }
         // The whole-file `crc32` only describes THIS part when the article is single-part. For a
         // multipart segment we can only verify against the part-level `pcrc32`; if the poster
         // omitted it, accept the part (checking it against the whole-file CRC would falsely fail
