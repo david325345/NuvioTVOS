@@ -12621,11 +12621,13 @@ private struct TvEpisodeCard: View {
     private var episodeRatingItems: [TvEpisodeRatingItem] {
         var items: [TvEpisodeRatingItem] = []
 
-        for rating in episodeRatings {
+        // Only sources on in Settings → Ratings, as for the hero's ratings.
+        for rating in AddonRatingsService.episodeCardRatings(episodeRatings) {
             items.append(TvEpisodeRatingItem(rating))
         }
 
         if let ratingText,
+           AddonRatingsService.isHeroRatingSourceEnabled(MdbListDetailsService.providerIMDb),
            !items.contains(where: { AddonRatingsService.normalizedSourceKey($0.source) == "imdb" }) {
             items.append(
                 TvEpisodeRatingItem(
@@ -13469,11 +13471,13 @@ private struct TvStreamPickerOverlay: View {
         guard let episode else { return [] }
         var items: [TvEpisodeRatingItem] = []
 
-        for rating in episodeRatings {
+        // Only sources on in Settings → Ratings, as for the hero's ratings.
+        for rating in AddonRatingsService.episodeCardRatings(episodeRatings) {
             items.append(TvEpisodeRatingItem(rating))
         }
 
         if let ratingText = episode.rating?.trimmingCharacters(in: .whitespaces), !ratingText.isEmpty,
+           AddonRatingsService.isHeroRatingSourceEnabled(MdbListDetailsService.providerIMDb),
            !items.contains(where: { AddonRatingsService.normalizedSourceKey($0.source) == "imdb" }) {
             items.append(
                 TvEpisodeRatingItem(
