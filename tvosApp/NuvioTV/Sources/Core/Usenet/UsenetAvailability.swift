@@ -43,32 +43,16 @@ struct UsenetAvailabilityReport: Sendable, Equatable, Codable {
     /// whether or not anything was sampled.
     var played = false
 
-    /// Test build only (fork): what the check found inside the release's archive
-    /// (`UsenetReleaseResolver.peekArchive`); nil when it didn't look.
-    var archive: UsenetArchiveFinding? = nil
-    /// Test build only (fork): RAR volumes the NZB lists fewer articles of than the rest of their
-    /// set, and how many volumes that was judged on (each set's last one left out).
-    var shortVolumes: Int? = nil
-    var judgedVolumes: Int? = nil
-
     /// Damage this long a run stops playback (`UsenetStreamSession.damageConsecutiveMissing`).
     static let nzbGapsLimit = 3
-
-    /// Test build only (fork): shorter volumes in more than a fifth of those judged, the rule
-    /// UsenetStreamer rejects a release by.
-    var volumesLookIncomplete: Bool {
-        guard let short = shortVolumes, let judged = judgedVolumes, judged > 0 else { return false }
-        return Double(short) / Double(judged) > 0.2
-    }
 
     var verdict: Verdict {
         let health = UsenetHealthCheck.Result(checked: checked, missing: missing, tailMissing: tailMissing)
         if playbackProblem != nil || !UsenetHealthCheck.isPlayable(health)
-            || missingVolumes > 0 || nzbGaps >= Self.nzbGapsLimit
-            || archive?.blocksPlayback == true || volumesLookIncomplete {
+            || missingVolumes > 0 || nzbGaps >= Self.nzbGapsLimit {
             return .incomplete
         }
-        return missing > 0 || nzbGaps > 0 || (shortVolumes ?? 0) > 0 ? .partial : .available
+        return missing > 0 || nzbGaps > 0 ? .partial : .available
     }
 }
 
@@ -86,10 +70,6 @@ enum UsenetAvailability {
         var tailMissingInNZB: Bool
         var nzbGaps: Int
         var missingVolumes: Int
-        /// Test build only (fork): `shortVolumes(in:)`.
-        var shortVolumes = 0
-        var judgedVolumes = 0
-        var volumeCounts = ""
     }
 
     /// Articles of the sample downloaded rather than only asked about (about 1.5 MB).
@@ -118,51 +98,13 @@ enum UsenetAvailability {
            let lastNumber = last.segments.last?.number, lastNumber < declared {
             tailMissing = true
         }
-        let volumes = shortVolumes(in: files)
         return Plan(
             samples: samples,
             downloads: downloads,
             tailMissingInNZB: tailMissing,
             nzbGaps: files.reduce(0) { $0 + gaps(in: $1) },
-            missingVolumes: missingVolumes(in: files.map(\.name)),
-            shortVolumes: volumes.short,
-            judgedVolumes: volumes.judged,
-            volumeCounts: volumes.detail
+            missingVolumes: missingVolumes(in: files.map(\.name))
         )
-    }
-
-    /// Test build only (fork), after UsenetStreamer: the RAR volumes (each set's last one left
-    /// out, it is smaller) the NZB lists fewer articles of than most of their set's, a sign of a
-    /// mixed or incomplete upload, and how many volumes were judged (sets of three or more).
-    /// `detail` lists the odd ones for the log.
-    static func shortVolumes(in files: [UsenetFile]) -> (short: Int, judged: Int, detail: String) {
-        var sets: [String: [(index: Int, articles: Int)]] = [:]
-        for file in files {
-            guard let volume = volume(of: file.name) else { continue }
-            sets[volume.set, default: []].append((volume.index, file.segments.count))
-        }
-        var short = 0
-        var judged = 0
-        var details: [String] = []
-        for (name, volumes) in sets.sorted(by: { $0.key < $1.key }) {
-            let ordered = volumes.sorted { $0.index < $1.index }
-            guard ordered.count >= 3 else { continue }
-            let body = ordered.dropLast()
-            var counts: [Int: Int] = [:]
-            for volume in body { counts[volume.articles, default: 0] += 1 }
-            // The count most volumes have (the larger one on a tie).
-            guard let expected = counts.max(by: { ($0.value, $0.key) < ($1.value, $1.key) })?.key,
-                  expected > 0 else { continue }
-            judged += body.count
-            let fewer = body.filter { $0.articles < expected }
-            let more = body.filter { $0.articles > expected }
-            short += fewer.count
-            if !fewer.isEmpty || !more.isEmpty {
-                let listed = fewer.prefix(5).map { "#\($0.index)=\($0.articles)" }.joined(separator: " ")
-                details.append("\(name.suffix(32)): \(body.count) volumes of \(expected) articles, \(fewer.count) shorter \(listed), \(more.count) longer")
-            }
-        }
-        return (short, judged, details.joined(separator: "; "))
     }
 
     /// The files that make up what plays: the videos and archive volumes when the names
@@ -275,7 +217,7 @@ enum UsenetAvailability {
         }
         let missing = found.values.filter { !$0 }.count
         let tailMissing = plan.tailMissingInNZB || plan.samples.last.map { found[$0] == false } ?? false
-        var report = UsenetAvailabilityReport(
+        return UsenetAvailabilityReport(
             checked: found.count,
             missing: missing,
             tailMissing: tailMissing,
@@ -283,11 +225,6 @@ enum UsenetAvailability {
             missingVolumes: plan.missingVolumes,
             downloaded: plan.downloads.count
         )
-        if plan.judgedVolumes > 0 {
-            report.shortVolumes = plan.shortVolumes
-            report.judgedVolumes = plan.judgedVolumes
-        }
-        return report
     }
 }
 
@@ -472,9 +409,7 @@ final class UsenetAvailabilityChecker: ObservableObject {
             if report.played {
                 usenetLog.notice("usenet: remembered as played on these servers")
             } else {
-                let reason = report.playbackProblem?.rawValue
-                    ?? report.archive.flatMap { $0.blocksPlayback ? "archive: \($0.rawValue)" : nil }
-                    ?? "\(report.missing)/\(report.checked) sampled articles missing"
+                let reason = report.playbackProblem?.rawValue ?? "\(report.missing)/\(report.checked) sampled articles missing"
                 usenetLog.notice("usenet: remembered as incomplete (\(reason, privacy: .public))")
             }
             let entry = Remembered(report: report, at: Date(), servers: serversDigest(spec))
@@ -596,28 +531,10 @@ final class UsenetAvailabilityChecker: ObservableObject {
         let loaded = clock.now
         let plan = UsenetAvailability.plan(for: nzb, mustInclude: spec.fileMustInclude)
         guard !plan.samples.isEmpty else { throw UsenetError.noPlayableFile }
-        var report = try await UsenetAvailability.ask(plan, pool: pool)
+        let report = try await UsenetAvailability.ask(plan, pool: pool)
         let done = clock.now
         let name = nzb.title ?? UsenetAvailability.contentFiles(of: nzb, mustInclude: spec.fileMustInclude).first?.name ?? "release"
         usenetLog.notice("usenet: check \(name, privacy: .public) — \(report.verdict.rawValue, privacy: .public), \(report.missing)/\(report.checked) sampled articles missing (\(report.downloaded) downloaded), NZB gaps \(report.nzbGaps), missing volumes \(report.missingVolumes); NZB \(Self.milliseconds(loaded - started)) ms, servers \(Self.milliseconds(done - loaded)) ms")
-
-        // Test build only (fork): the volumes' article counts, and a look inside the archive.
-        if plan.judgedVolumes > 0 {
-            let counts = plan.volumeCounts.isEmpty ? "all alike" : plan.volumeCounts
-            usenetLog.notice("check-test: volume articles — \(plan.shortVolumes) of \(plan.judgedVolumes) volumes shorter than their set's (\(counts, privacy: .public))\(report.volumesLookIncomplete ? ", judged incomplete" : "")")
-        }
-        let resolver = UsenetReleaseResolver(nzb: nzb, pool: pool, mustInclude: spec.fileMustInclude, fileIdx: spec.fileIdx)
-        do {
-            let peek = try await resolver.peekArchive()
-            report.archive = peek.finding
-            let finding = peek.finding?.rawValue ?? "not looked into"
-            usenetLog.notice("check-test: archive — \(finding, privacy: .public): \(peek.detail, privacy: .public); \(Self.milliseconds(clock.now - done)) ms")
-        } catch {
-            usenetLog.error("check-test: archive look failed: \(error.localizedDescription, privacy: .public)")
-        }
-        if report.archive?.blocksPlayback == true || report.volumesLookIncomplete {
-            usenetLog.notice("check-test: \(name, privacy: .public) is now \(report.verdict.rawValue, privacy: .public)")
-        }
         return report
     }
 

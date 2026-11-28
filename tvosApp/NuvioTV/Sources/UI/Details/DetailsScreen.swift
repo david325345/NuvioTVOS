@@ -13621,18 +13621,6 @@ private struct TvStreamPickerOverlay: View {
             guard !streams.isEmpty else { return }
             usenetAvailability.check(streams)
         }
-        // Test build only (fork): connections opened ahead for the first Usenet stream listed,
-        // whether or not streams are checked.
-        .task(id: firstUsenetStreamForWarmUp?.id) {
-            guard let stream = firstUsenetStreamForWarmUp,
-                  let spec = UsenetAvailabilityChecker.spec(for: stream) else { return }
-            UsenetEngineManager.shared.warmUp(for: spec)
-        }
-    }
-
-    /// Test build only (fork): the first Usenet stream of the list, for `UsenetEngineManager.warmUp`.
-    private var firstUsenetStreamForWarmUp: NuvioStream? {
-        activeSourceRows.first { UsenetAvailabilityChecker.spec(for: $0) != nil }
     }
 
     private func sortMenuTitle(_ title: String, selected: Bool) -> String {
@@ -14868,10 +14856,6 @@ private struct TvStreamAvailabilityLine: View {
             if report.missing > 0 {
                 return L10n.format("usenet_check_partial", fallback: "Mostly available: %d of %d sampled articles missing", report.missing, report.checked)
             }
-            // Test build only (fork): volumes with fewer articles than the rest of their set.
-            if report.nzbGaps == 0, let short = report.shortVolumes, short > 0 {
-                return "Mostly available: \(short) archive volumes have fewer articles than the rest"
-            }
             return L10n.format("usenet_check_partial_nzb", fallback: "Mostly available: the NZB lacks %d articles", report.nzbGaps)
         case .incomplete:
             switch report.playbackProblem {
@@ -14882,24 +14866,8 @@ private struct TvStreamAvailabilityLine: View {
             case nil:
                 break
             }
-            // Test build only (fork): what the check found inside the archive.
-            if let archive = report.archive, archive.blocksPlayback {
-                switch archive {
-                case .compressed: return "Won't play: the video is compressed in its archive"
-                case .needsPassword: return "Won't play: the archive needs a password the NZB lacks"
-                case .wrongPassword: return "Won't play: the NZB's password doesn't open the archive"
-                case .noVideo: return "Won't play: no video in the archive"
-                case .unsupported: return "Won't play: an archive that can't be streamed"
-                case .damaged: return "Won't play: the archive's headers are unreadable"
-                case .stored, .nested: break
-                }
-            }
             if report.missingVolumes > 0 {
                 return L10n.format("usenet_check_incomplete_volumes", fallback: "Incomplete: %d archive volumes missing from the NZB", report.missingVolumes)
-            }
-            // Test build only (fork).
-            if report.volumesLookIncomplete, let short = report.shortVolumes {
-                return "Incomplete: \(short) archive volumes have fewer articles than the rest"
             }
             if report.tailMissing {
                 return L10n.string("usenet_check_incomplete_end", fallback: "Incomplete: the end of the release is missing")

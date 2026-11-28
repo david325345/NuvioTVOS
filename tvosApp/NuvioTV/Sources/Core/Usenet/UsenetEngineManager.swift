@@ -135,13 +135,8 @@ final class UsenetEngineManager: ObservableObject {
             throw UsenetError.noServers
         }
 
-        // Test build only (fork): connections opened ahead for these servers, when there are.
-        let startClock = ContinuousClock()
-        let startedAt = startClock.now
-        let speedLimit = UsenetSettings.speedLimitMbps()
-        let depth = UsenetSettings.pipelineDepth()
-        let warm = await takeWarmPool(servers: servers, speedLimitMbps: speedLimit, pipelineDepth: depth)
-        let pool = warm?.pool ?? UsenetConnectionPool(servers: servers, speedLimitMbps: speedLimit, pipelineDepth: depth)
+        let pool = UsenetConnectionPool(servers: servers, speedLimitMbps: UsenetSettings.speedLimitMbps(),
+                                        pipelineDepth: UsenetSettings.pipelineDepth())
         var health: UsenetHealthCheck.Result?
         var uploadIDs = Set<String>()
         let prepared = takePrepared(spec)
@@ -198,10 +193,6 @@ final class UsenetEngineManager: ObservableObject {
             Self.remember(source: spec.url.absoluteString, playback: url.absoluteString)
             if damagedGeneration == current { damagedStreamURL = url }
             startStatsLoop(session: session, pool: pool, generation: current)
-            let took = UsenetConnectionPool.warmMilliseconds(startClock.now - startedAt)
-            let how = warm.map { "\($0.idle) warm connection(s) waiting, opened \(Int($0.age)) s before" }
-                ?? "no warm connections (cold)"
-            usenetLog.notice("warm-test: \(source.name, privacy: .public) started in \(took) ms with \(how, privacy: .public)")
             return url
         } catch is CancellationError {
             await pool.shutdown()
@@ -322,104 +313,6 @@ final class UsenetEngineManager: ObservableObject {
     func stopAll() async {
         generation &+= 1
         await stopCurrent()
-    }
-
-    // MARK: - Test build only (fork): connections opened ahead and kept alive
-
-    private struct WarmPool {
-        let servers: [UsenetServerConfig]
-        let speedLimitMbps: Int
-        let pipelineDepth: Int
-        let pool: UsenetConnectionPool
-        let created: Date
-        var until: Date
-    }
-
-    private var warmPool: WarmPool?
-    private var warmKeeper: Task<Void, Never>?
-    private var warmKeptAlive = 0
-    /// Connections opened ahead, to the first server.
-    static let warmConnections = 4
-    /// How long they're kept after the stream list last showed Usenet streams.
-    static let warmLifetime: TimeInterval = 5 * 60
-    /// Idle connections older than this are kept alive (STAT), checked every `warmKeepAliveEvery`.
-    static let warmPingAfter: Duration = .seconds(25)
-    static let warmKeepAliveEvery: Duration = .seconds(10)
-
-    /// The stream list shows Usenet streams: opens a few connections to their servers ahead and
-    /// keeps them alive, so playing one skips connecting and logging in. Nothing while a stream
-    /// plays (it holds its own).
-    func warmUp(for spec: UsenetStreamSpec) {
-        guard !isStreaming else { return }
-        let servers = UsenetSettings.servers(for: spec)
-        guard let first = servers.first else { return }
-        let speedLimit = UsenetSettings.speedLimitMbps()
-        let depth = UsenetSettings.pipelineDepth()
-        let until = Date().addingTimeInterval(Self.warmLifetime)
-        if var warm = warmPool, warm.servers == servers, warm.speedLimitMbps == speedLimit, warm.pipelineDepth == depth {
-            warm.until = until
-            warmPool = warm
-            return
-        }
-        if let old = warmPool { Task { await old.pool.shutdown() } }
-        let pool = UsenetConnectionPool(servers: servers, speedLimitMbps: speedLimit, pipelineDepth: depth)
-        warmPool = WarmPool(servers: servers, speedLimitMbps: speedLimit, pipelineDepth: depth,
-                            pool: pool, created: Date(), until: until)
-        warmKeptAlive = 0
-        let count = min(Self.warmConnections, first.maxConnections)
-        let host = first.host
-        Task {
-            let result = await pool.warmUp(count: count)
-            let times = result.opened.sorted()
-            let median = times.isEmpty ? 0 : times[times.count / 2]
-            let list = times.map { String($0) }.joined(separator: ", ")
-            let failures = result.failed > 0 ? ", \(result.failed) failed" : ""
-            usenetLog.notice("warm-test: opened \(times.count) of \(count) connections to \(host, privacy: .public) ahead (connect + TLS + login: \(list) ms, median \(median) ms)\(failures)")
-        }
-        startWarmKeeper()
-    }
-
-    private func startWarmKeeper() {
-        guard warmKeeper == nil else { return }
-        warmKeeper = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: Self.warmKeepAliveEvery)
-                guard let self, !Task.isCancelled else { return }
-                guard let warm = self.warmPool else {
-                    self.warmKeeper = nil
-                    return
-                }
-                if Date() > warm.until {
-                    self.warmPool = nil
-                    self.warmKeeper = nil
-                    await warm.pool.shutdown()
-                    usenetLog.notice("warm-test: closed the warm connections, no stream played within \(Int(Self.warmLifetime / 60)) minutes (kept alive \(self.warmKeptAlive) times)")
-                    return
-                }
-                let result = await warm.pool.keepIdleAlive(after: Self.warmPingAfter)
-                self.warmKeptAlive += result.kept
-                if result.dropped > 0 {
-                    usenetLog.notice("warm-test: the server closed \(result.dropped) idle warm connection(s) (kept alive \(self.warmKeptAlive) times so far)")
-                }
-            }
-        }
-    }
-
-    /// The warm pool when it is for exactly these servers and settings, taken for a stream;
-    /// another one is closed.
-    private func takeWarmPool(servers: [UsenetServerConfig], speedLimitMbps: Int,
-                              pipelineDepth: Int) async -> (pool: UsenetConnectionPool, idle: Int, age: TimeInterval)? {
-        guard let warm = warmPool else { return nil }
-        warmPool = nil
-        warmKeeper?.cancel()
-        warmKeeper = nil
-        guard warm.servers == servers, warm.speedLimitMbps == speedLimitMbps, warm.pipelineDepth == pipelineDepth else {
-            await warm.pool.shutdown()
-            usenetLog.notice("warm-test: the warm connections were for other servers or settings, closed")
-            return nil
-        }
-        let idle = await warm.pool.idleConnections
-        return (warm.pool, idle, Date().timeIntervalSince(warm.created))
     }
 
     /// Errors where another release of the same title may well work, so the
